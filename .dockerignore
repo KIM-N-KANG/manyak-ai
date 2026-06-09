@@ -24,5 +24,8 @@ dist/
 build/
 *.egg-info/
 Reference/
+CHAT_PROMPT/
 CHAT-PROMPT/
+STORY_PROMPT/
+STORY-PROMPT/
 *.log
