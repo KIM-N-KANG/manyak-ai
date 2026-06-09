@@ -1,0 +1,14 @@
+.git/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+.claude/
+Reference/
+CHAT_PROMPT/
+STORY_PROMPT/
