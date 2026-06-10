@@ -124,7 +124,7 @@ LLM API 없이 파서 로직만 테스트합니다. 모의(fixture) 응답을 �
 
 **문장 수 판단 기준 (C-02)**:
 
-한국어 문장 종결을 마침표(`.`)와 `다`, `요`, `까`, `군`, `네`로 끝나는 패턴으로 감지합니다. 정규식 `[다요까군네]\.$`로 분리합니다. 4개가 아니면 실패 처리하되, ±1 오차는 경고(warning)로만 기록합니다.
+한국어 문장 종결을 마침표(`.`)와 `다`, `요`, `까`, `군`, `네`로 끝나는 패턴으로 감지합니다. `re.split(r'(?<=[다요까군네]\.)\s*', text)`로 분리합니다. 4개가 아니면 실패 처리하되, ±1 오차는 경고(warning)로만 기록합니다.
 
 ---
 
@@ -150,7 +150,7 @@ from difflib import SequenceMatcher
 def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
-pairs = [(s[0], s[1]), (s[0], s[2]), (s[1], s[2])]
+pairs = [(stories[0], stories[1]), (stories[0], stories[2]), (stories[1], stories[2])]
 for a, b in pairs:
     assert similarity(a.story, b.story) < 0.5
 ```
