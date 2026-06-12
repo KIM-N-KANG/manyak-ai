@@ -2,7 +2,8 @@ import json
 
 # from google import genai
 # from google.genai import types
-from openai import AsyncOpenAI
+from fastapi import HTTPException, status
+from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
 
@@ -23,12 +24,29 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> dict:
     #     ),
     # )
     # return json.loads(response.text)
-    response = await _client.chat.completions.create(
-        model=settings.upstage_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        response_format={"type": "json_object"},
-    )
-    return json.loads(response.choices[0].message.content)
+    try:
+        response = await _client.chat.completions.create(
+            model=settings.upstage_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="LLM이 빈 응답을 반환했습니다.",
+            )
+        return json.loads(content)
+    except OpenAIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"LLM 플랫폼 연동 중 오류가 발생했습니다: {str(e)}",
+        )
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="LLM이 올바른 JSON 형식을 반환하지 않았습니다.",
+        )
