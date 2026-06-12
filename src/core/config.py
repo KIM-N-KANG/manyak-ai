@@ -8,5 +8,11 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     debug: bool = False
 
+    # gemini_api_key: str
+    # gemini_model: str = "gemini-2.5-flash-lite"
+
+    upstage_api_key: str
+    upstage_model: str = "solar-pro2"
+
 
 settings = Settings()
