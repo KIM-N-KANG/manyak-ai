@@ -1,0 +1,7 @@
+INFO:     127.0.0.1:37602 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37602 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64527 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64527 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64527 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64527 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42758 - "POST /api/v1/story/storylines HTTP/1.1" 500 Internal Server Error
