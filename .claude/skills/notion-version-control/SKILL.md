@@ -22,7 +22,7 @@ description: |
 각 파일은 독립된 데이터베이스를 가지며, 새 버전 저장 시 기존 `active` 항목을
 `archived`로 전환하고 새 행을 `active`로 추가한다.
 
-프로젝트 루트: `c:\Users\dohyeong0423\Desktop\asm\Project\AI`
+프로젝트 루트: git 워킹 디렉토리 기준 (상대 경로로 동작)
 
 ---
 
@@ -185,5 +185,5 @@ git diff HEAD -- prompt/ reference/ --name-only
 | Notion 페이지를 찾을 수 없음 | "'prompt/spec-version-control' 페이지를 찾을 수 없습니다. 페이지 이름 또는 접근 권한을 확인해주세요." |
 | Notion MCP 도구 미활성화 | "Notion MCP 연결이 필요합니다. Claude Code 설정에서 Notion MCP가 활성화되어 있는지 확인해주세요." |
 | 파일 읽기 실패 | 해당 파일을 건너뛰고 나머지는 계속 저장. 건너뛴 파일 목록 사용자에게 알림 |
-| git 워킹 디렉토리 아님 | "프로젝트 루트(`c:\Users\dohyeong0423\Desktop\asm\Project\AI`)에서 실행해주세요." |
+| git 워킹 디렉토리 아님 | "마냑 AI 프로젝트 루트(git 저장소)에서 실행해주세요." |
 | reference/chat 파일의 chat-spec DB 매핑 불명확 | 사용자에게 어느 chat-spec 하위 DB(SAFETY/CORE/STORY/CHARACTER/USER/MEMORY)에 저장할지 확인 |
