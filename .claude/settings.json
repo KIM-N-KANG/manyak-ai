@@ -4,14 +4,9 @@
       "mcp__claude_ai_Notion__notion-fetch",
       "mcp__claude_ai_Notion__notion-create-pages",
       "mcp__claude_ai_Notion__notion-update-data-source",
-      "Read(//c/Users/dohyeong0423/Desktop/asm/Project/llm-wiki/**)",
       "mcp__claude_ai_Notion__notion-search",
       "Bash(gh api *)",
-      "Bash(claude plugin *)",
-      "Read(//c/Users/dohyeong0423/.claude/plugins/cache/claude-plugins-official/skill-creator/unknown/skills/**)"
-    ],
-    "additionalDirectories": [
-      "C:\\Users\\dohyeong0423\\.claude\\plugins\\cache\\claude-plugins-official\\skill-creator\\unknown\\skills"
+      "Bash(claude plugin *)"
     ]
   }
 }
