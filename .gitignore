@@ -30,3 +30,6 @@ Thumbs.db
 
 # Claude local settings
 .claude/settings.local.json
+
+# Claude skills (로컬 심볼릭 링크 — 하네스/개인 스킬은 레포 밖에서 관리)
+.claude/skills
