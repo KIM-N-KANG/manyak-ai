@@ -382,7 +382,9 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 > **첫 메시지 / 오프닝 장면 시드**: MVP는 AI가 선제적으로 거는 첫 메시지(`first_ai_message`)를 LLM으로 **생성하지 않는다.** 대신 세션 초기화(A-2) 때 작가가 쓴 `prologue`(+`start_situation`)를 **두 곳에 함께** 둔다 — ⓐ 첫 화면에 표시하고, ⓑ **런타임 History의 첫 항목(오프닝 장면, AI 나레이션 턴)으로 시드**한다. 그래야 사용자의 첫 입력(예: "레이에게 문을 열어준다")이 도착했을 때 채팅 LLM이 **직전 장면(밤·숙소·문 두드림)을 알고** 연결된 첫 응답을 만든다. ⓑ가 없으면 모델은 사용자가 화면에서 읽은 오프닝 장면을 보지 못해 첫 턴이 어긋난다(`{{핵심_전제}}`는 거시 배경만 줄 뿐 직전 장면을 주지 않는다).
 >
-> 이는 **새 텍스트를 LLM으로 만드는 게 아니라 이미 작성된 `prologue`/`start_situation`을 컨텍스트에 배치**하는 것이므로 'first_ai_message 미생성' 원칙과 충돌하지 않는다. 시드는 AI 응답이 아니라 무대 설정이며, **사용자 첫 입력 전에는 AI가 응답하지 않는다.** 표기는 2.5 규약을 따라 오프닝 장면을 `*지문*` 형태의 나레이션으로 둔다.
+> 이는 **새 텍스트를 LLM으로 만드는 게 아니라 이미 작성된 `prologue`/`start_situation`을 컨텍스트에 배치**하는 것이므로 'first_ai_message 미생성' 원칙과 충돌하지 않는다. 시드는 AI 응답이 아니라 무대 설정이며, **사용자 첫 입력 전에는 AI가 응답하지 않는다.**
+>
+> **지문 래핑 (결정적).** 표기는 2.5 규약을 따른다 — `prologue`/`start_situation` 원문에는 `*` 장식이 없으므로, **SessionInitializer가 시드 시 각 나레이션 단락을 결정적으로 `*…*`로 감싸** 지문(나레이션)으로 넣는다(LLM 없음). 감싸지 않으면 따옴표 없는 일반 텍스트가 되어 모델이 대사로 오인한다(2.5). 저장 원문은 `*` 없이 두고(첫 화면 표시 ⓐ는 원문 그대로 사용), 모델로 가는 History 경로에서만 래핑한다 — 화자 라벨의 **와이어 포맷 ↔ UI 표시 분리**와 동일한 구조다.
 
 **MVP 제외 (필드 차원):**
 
@@ -476,7 +478,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 | **ChatProvider** | LLM 호출 단일 통로 | OpenAI 호환 클라이언트 1개 | DeepSeek·Anthropic 어댑터 |
 | **SessionStore** | 세션 상태 read/write | in-memory dict | Redis·DB |
 | **PromptCompiler** | 시점 A-1: 희소 입력 → 스토리 명세 JSON | 하이브리드(LLM+치환) | — |
-| **SessionInitializer** | 시점 A-2: 저장 JSON 로드 → 슬롯 치환 + MEMORY 초기화 + 오프닝 장면(`prologue`·`start_situation`) History 시드 | 결정적 치환(LLM 없음) | — |
+| **SessionInitializer** | 시점 A-2: 저장 JSON 로드 → 슬롯 치환 + MEMORY 초기화 + 오프닝 장면(`prologue`·`start_situation`) History 시드(지문 `*…*` 래핑) | 결정적 치환(LLM 없음) | — |
 | **PromptAssembler** | 시점 B: 매 턴 조립 | 시스템+History+Depth+PHI | — |
 
 ---
