@@ -1,15 +1,13 @@
 import json
 
-# from google import genai
-# from google.genai import types
 from fastapi import HTTPException, status
 from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
-from src.schemas.story_compile import StoryCompileRequest, StorySpec
-from src.services.prompt import build_compile_prompt
+from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse, StorySpec
+from src.services.prompt import build_compile_prompt, build_refill_prompt
+from src.services.story_compile_render import spec_to_response
 
-# _client = genai.Client(api_key=settings.gemini_api_key)
 _client = AsyncOpenAI(
     api_key=settings.upstage_api_key,
     base_url="https://api.upstage.ai/v1",
@@ -18,6 +16,20 @@ _client = AsyncOpenAI(
 
 # 출력이 무한정 길어지지 않도록 상한. 컴파일 명세 JSON(인물 최대 3명)도 충분히 담긴다.
 _MAX_TOKENS = 4096
+
+# 빈 필수 필드를 채우기 위한 부분 재호출 최대 횟수. 초과하면 502로 막는다.
+_MAX_REFILL = 2
+
+# prompt_settings 하위에 속하는 재호출 블록명. 병합 시 prompt_settings 안에 덮어쓴다.
+_PROMPT_SETTINGS_BLOCKS = {
+    "world_setting",
+    "plot_setting",
+    "rule_setting",
+    "tone_setting",
+    "length_ratio",
+    "character_setting",
+    "user_role_setting",
+}
 
 
 def _strip_code_fence(text: str) -> str:
@@ -77,10 +89,118 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> dict:
     return await _complete_json(system_prompt, user_prompt)
 
 
-async def compile_story(request: StoryCompileRequest) -> StorySpec:
-    """시점 A-1: 희소 입력을 스토리 명세(StorySpec)로 컴파일한다.
+# ── 컴파일 결과 검증 (StorySpec 파싱 전 dict 단계) ──────────────────────────
+# Pydantic은 빈 문자열("")을 통과시키고, 파싱이 먼저 실패하면 재호출 기회가 사라진다.
+# 따라서 빈 필수 필드는 dict 단계에서 직접 탐지해 부분 재호출로 채운다.
+# meta.genre(코드가 입력 태그로 덮어씀)·user_role_setting.preference(선택)는 검증 제외.
 
-    PromptCompiler 추상 경계(4-SERVICE-IMPLEMENTATION.md 6절). HTTP 노출은 KNK-135.
+
+def _is_empty(value: object) -> bool:
+    """필수 필드가 비었는지 판정. 공백만·빈배열·null도 빈으로 본다."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
+def _as_dict(value: object) -> dict:
+    """LLM이 객체 자리에 문자열·null 등을 줘도 .get 접근에서 터지지 않게 방어한다."""
+    return value if isinstance(value, dict) else {}
+
+
+def _find_missing_keys(data: dict) -> list[str]:
+    """비어 있는 필수 필드의 경로 목록을 반환한다(빈 목록이면 통과).
+
+    LLM이 타입을 어겨도(객체 자리에 문자열 등) 여기서 빈 값으로 간주해 재호출/502로
+    흐르게 한다 — 500(AttributeError)으로 새지 않는다.
+    """
+    missing: list[str] = []
+
+    meta = _as_dict(data.get("meta"))
+    for k in ("title", "one_line_intro", "description"):
+        if _is_empty(meta.get(k)):
+            missing.append(f"meta.{k}")
+
+    ps = _as_dict(data.get("prompt_settings"))
+    for k in ("world_setting", "rule_setting", "tone_setting", "length_ratio"):
+        if _is_empty(ps.get(k)):
+            missing.append(f"prompt_settings.{k}")
+
+    plot = _as_dict(ps.get("plot_setting"))
+    for k in ("premise", "conflict"):
+        if _is_empty(plot.get(k)):
+            missing.append(f"prompt_settings.plot_setting.{k}")
+
+    chars = ps.get("character_setting")
+    if not isinstance(chars, list) or len(chars) == 0:
+        missing.append("prompt_settings.character_setting")
+    else:
+        for i, raw in enumerate(chars):
+            c = _as_dict(raw)
+            for k in ("name", "personality", "tone", "motivation", "attitude_to_user"):
+                if _is_empty(c.get(k)):
+                    missing.append(f"prompt_settings.character_setting[{i}].{k}")
+
+    ur = _as_dict(ps.get("user_role_setting"))
+    for k in ("name", "role", "background", "personality"):  # preference는 선택
+        if _is_empty(ur.get(k)):
+            missing.append(f"prompt_settings.user_role_setting.{k}")
+
+    start = _as_dict(data.get("start"))
+    for k in ("name", "prologue", "start_situation"):
+        if _is_empty(start.get(k)):
+            missing.append(f"start.{k}")
+
+    si = data.get("suggested_inputs")
+    if not isinstance(si, list) or len(si) != 3:  # 정확히 3개 필수
+        missing.append("suggested_inputs")
+    else:
+        for i, s in enumerate(si):
+            if _is_empty(s):
+                missing.append(f"suggested_inputs[{i}]")
+
+    return missing
+
+
+def _block_of(path: str) -> str:
+    """빈 필드 경로를 재호출/병합 단위인 블록명으로 환원한다."""
+    if path.startswith("meta"):
+        return "meta"
+    if path.startswith("start"):
+        return "start"
+    if path.startswith("suggested_inputs"):
+        return "suggested_inputs"
+    if path.startswith("prompt_settings."):
+        rest = path[len("prompt_settings."):]
+        return rest.split(".")[0].split("[")[0]
+    return path
+
+
+def _merge_blocks(data: dict, refill: dict, blocks: list[str]) -> None:
+    """부분 재호출 응답(refill)의 블록을 원본 data의 올바른 위치에 덮어쓴다."""
+    for b in blocks:
+        if b not in refill:
+            continue
+        if b in _PROMPT_SETTINGS_BLOCKS:
+            data.setdefault("prompt_settings", {})[b] = refill[b]
+        else:  # meta / start / suggested_inputs (top-level)
+            data[b] = refill[b]
+
+
+def _inject_genre(data: dict, genre_tags: list[str]) -> None:
+    """genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 덮어쓴다(3.3·3.4)."""
+    if isinstance(data.get("meta"), dict):
+        data["meta"]["genre"] = ", ".join(genre_tags)
+
+
+async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
+    """시점 A-1: 희소 입력을 스토리 명세로 컴파일해 백엔드 계약(nested 통글)으로 반환한다.
+
+    흐름: LLM 세분 JSON → genre 주입 → 빈 필수키 검증 → 빈 블록만 부분 재호출(최대 2회)
+    → StorySpec 파싱 → nested 통글 변환. PromptCompiler 추상 경계(6절). HTTP 노출은 KNK-78.
     """
     system_prompt, user_prompt = build_compile_prompt(
         request.selected_storyline,
@@ -90,15 +210,36 @@ async def compile_story(request: StoryCompileRequest) -> StorySpec:
         request.supporting_tags,
     )
     data = await _complete_json(system_prompt, user_prompt)
+    _inject_genre(data, request.genre_tags)
 
-    # genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 삼아 덮어쓴다(3.3·3.4).
-    if isinstance(data.get("meta"), dict):
-        data["meta"]["genre"] = ", ".join(request.genre_tags)
+    # 빈 필수 필드가 있으면 해당 블록만 다시 채운다(최대 _MAX_REFILL회).
+    missing = _find_missing_keys(data)
+    attempts = 0
+    while missing and attempts < _MAX_REFILL:
+        attempts += 1
+        blocks = sorted({_block_of(p) for p in missing})
+        refill_system, refill_user = build_refill_prompt(
+            user_prompt,
+            json.dumps(data, ensure_ascii=False),
+            blocks,
+        )
+        refill = await _complete_json(refill_system, refill_user)
+        _merge_blocks(data, refill, blocks)
+        _inject_genre(data, request.genre_tags)
+        missing = _find_missing_keys(data)
+
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"재호출 후에도 컴파일 결과에 필수 필드가 비어 있습니다: {missing}",
+        )
 
     try:
-        return StorySpec(**data)
+        spec = StorySpec(**data)
     except (TypeError, ValueError) as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"컴파일 결과가 스토리 명세 형식과 맞지 않습니다: {e}",
         )
+
+    return spec_to_response(spec)

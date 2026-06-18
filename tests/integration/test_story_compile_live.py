@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from src.schemas.story_compile import StoryCompileRequest, StorySpec
+from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
 from src.services.story_llm import compile_story
 
 
@@ -26,13 +26,15 @@ async def test_compile_story_live() -> None:
         supporting_tags=["충직한", "계산적인", "거친"],
     )
 
-    spec = await compile_story(request)
+    res = await compile_story(request)
 
     # 구조 불변식만 검증 — 내용 품질(Layer 4)은 범위 밖
-    assert isinstance(spec, StorySpec)
-    assert spec.meta.genre == "다크 판타지"  # genre 주입 정합
-    assert 1 <= len(spec.prompt_settings.character_setting) <= 3
-    assert spec.prompt_settings.world_setting.strip()
-    assert spec.prompt_settings.user_role_setting.role.strip()
-    assert spec.start.prologue.strip()
-    assert len(spec.suggested_inputs) <= 3
+    assert isinstance(res, StoryCompileResponse)
+    assert res.stories.title.strip()
+    # story_settings 4필드는 통글 마크다운
+    assert res.story_settings.world_setting.startswith("# 세계관")
+    assert "## " in res.story_settings.character_setting  # 인물 카드 1명 이상
+    assert res.story_settings.user_role_setting.strip()
+    assert "# 분량 배분" in res.story_settings.rule_setting
+    assert res.story_start_settings.prologue.strip()
+    assert len(res.story_suggested_inputs) == 3

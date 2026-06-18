@@ -51,3 +51,25 @@ def build_compile_prompt(
         .replace("{{주변_인물_태그}}", ", ".join(supporting_tags))
     )
     return _COMPILE_SYSTEM, user_text
+
+
+def build_refill_prompt(
+    original_user_prompt: str,
+    current_data_json: str,
+    missing_blocks: list[str],
+) -> tuple[str, str]:
+    """누락·빈 블록만 다시 채우기 위한 부분 재호출 프롬프트를 만든다.
+
+    직전 결과를 맥락으로 주고, 비어 있는 블록만 채워 그 블록만 키로 갖는 JSON을
+    반환하도록 요청한다. 잘 나온 다른 블록은 보존하기 위해 응답에 포함하지 않게 한다.
+    """
+    blocks_str = ", ".join(missing_blocks)
+    user_text = (
+        f"{original_user_prompt}\n\n"
+        f"--- 직전 생성 결과(JSON) ---\n{current_data_json}\n\n"
+        f"위 결과에서 다음 블록이 비어 있거나 누락됐다: {blocks_str}.\n"
+        f"이 블록들만 작성 규칙·스키마에 맞게 새로 채워서, **해당 블록만** 최상위 키로 "
+        f"갖는 JSON 객체를 반환하라. 다른 블록은 절대 포함하지 말 것. "
+        f"설명·머리말·코드 펜스 없이 JSON만 출력한다."
+    )
+    return _COMPILE_SYSTEM, user_text

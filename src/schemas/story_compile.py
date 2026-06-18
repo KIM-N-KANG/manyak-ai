@@ -58,8 +58,8 @@ class PromptSettings(BaseModel):
     rule_setting: str
     tone_setting: str
     length_ratio: str
-    # 주요 인물 최대 3명만 카드화 — 나머지는 world_setting 배경으로 흡수
-    character_setting: list[CharacterSetting] = Field(max_length=3)
+    # 주요 인물 1~3명 카드화 — 나머지는 world_setting 배경으로 흡수
+    character_setting: list[CharacterSetting] = Field(min_length=1, max_length=3)
     user_role_setting: UserRoleSetting
 
 
@@ -80,4 +80,43 @@ class StorySpec(BaseModel):
     meta: Meta
     prompt_settings: PromptSettings
     start: Start
-    suggested_inputs: list[str] = Field(max_length=3)
+    suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+
+
+# ── 컴파일 API output (백엔드 계약) ─────────────────────────────────────────
+# 내부 세분 스키마(StorySpec)를 ERD 4테이블에 1:1 대응하는 nested 형태로 재구성한 것.
+# story_settings 4필드는 사람이 읽기 좋은 통글 마크다운, 나머지는 값 그대로 전달한다.
+
+
+class StoriesOut(BaseModel):
+    """노출 메타(stories 테이블). genre는 백엔드가 입력 태그로 채우므로 제외한다."""
+
+    title: str
+    one_line_intro: str
+    description: str
+
+
+class StorySettingsOut(BaseModel):
+    """AI 프롬프트 재료(story_settings 테이블) — 통글 마크다운 4필드."""
+
+    world_setting: str
+    character_setting: str
+    user_role_setting: str
+    rule_setting: str
+
+
+class StoryStartSettingsOut(BaseModel):
+    """시작 설정(story_start_settings 테이블)."""
+
+    name: str
+    start_situation: str
+    prologue: str
+
+
+class StoryCompileResponse(BaseModel):
+    """컴파일 API output — ERD 4테이블에 1:1 대응하는 nested 계약본."""
+
+    stories: StoriesOut
+    story_settings: StorySettingsOut
+    story_start_settings: StoryStartSettingsOut
+    story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
