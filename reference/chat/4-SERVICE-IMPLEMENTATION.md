@@ -179,7 +179,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 | **SAFETY / CORE** | 채우지 않음 — **완전 정적**(콘텐츠 비의존) | 고정 템플릿 |
 | **MEMORY** | 빈 상태로 초기화 — 대화가 쌓이면서 요약·압축됨 | — |
 
-> **인물 수 상한**: 컴파일 LLM에 "스토리라인에 실제 등장하는 **주요 인물 최대 3명만** CHARACTER 카드로 만들고, 나머지는 STORY 배경 인물로 흡수"를 지시한다. 시스템 프롬프트 비대화·토큰 폭증을 막기 위함이다. (주인공은 카드가 아니라 **USER**가 소유한다.)
+> **인물 수 상한**: 컴파일 LLM에 "스토리라인에 실제 등장하는 **주요 인물 최대 5명만** CHARACTER 카드로 만들고, 나머지는 STORY 배경 인물로 흡수"를 지시한다. 시스템 프롬프트 비대화·토큰 폭증을 막기 위함이다. (주인공은 카드가 아니라 **USER**가 소유한다.)
 
 ### 3.3 레이어별 슬롯 스키마
 
@@ -187,23 +187,20 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 > **마냑 DB 바인딩 (`story_settings` → 레이어).** 슬롯의 재료는 한 흐름을 거쳐 형태가 두 번 바뀐다: **태그·스토리라인 → 컴파일(AI 부풀림, 시점 A-1) → `story_settings` 저장 → 슬롯 채움(시점 A-2).** 따라서 3.2(레이어별 채우기)가 "태그·스토리라인"을 소스로 적은 것(흐름의 앞 토막 = 컴파일 입력)과, 3.3 슬롯표가 `story_settings`를 소스로 적은 것(흐름의 뒤 토막 = 세션 슬롯 채움)은 같은 흐름의 다른 지점일 뿐 충돌이 아니다.
 >
-> 컴파일 산출물이 영속되는 `story_settings`의 7필드는 **STORY·CHARACTER·USER 세 정적 레이어에만** 귀속한다. 마냑 ERD 기준 귀속을 다음과 같이 **확정**한다.
+> 컴파일 결과가 영속되는 `story_settings`는 **통글 마크다운 4필드**이며, **STORY·CHARACTER·USER 세 정적 레이어에만** 귀속한다. 컴파일 LLM은 검증·부분 재호출이 쉽도록 **세분 JSON**으로 답하지만(3.4), 백엔드로 전달·DB 저장되는 형태는 `story_compile_render`가 조립한 **통글 4필드**다(세분→통글 변환은 컴파일 단계 A-1에서 끝난다). 마냑 ERD 기준 귀속을 다음과 같이 **확정**한다.
 >
-> | `story_settings` 필드 | 소유 레이어 | 대응 슬롯 | 비고 |
+> | `story_settings` 필드(통글) | 소유 레이어 | 대응 슬롯 | 비고 |
 > |---|---|---|---|
-> | `world_setting` | STORY | `{{세계관_설정}}` | |
-> | `plot_setting` | STORY | `{{핵심_전제}}`, `{{주요_갈등_가능성}}` | **객체** `{ premise, conflict }` — 2슬롯이라 구조화 저장(3.4). |
-> | `rule_setting` | **STORY** | `{{전개_규칙}}` | 작가가 쓴 스토리별 콘텐츠이므로 **CORE 아님**(CORE는 콘텐츠 비의존 고정, 2.5·3.2). 출력 형식의 고정 봉투만 CORE가 소유한다. `tone_setting`과 **별도 슬롯으로 분리**(아래 확정). |
-> | `tone_setting` | **STORY** | `{{문체_톤}}` | 서술 톤은 무대 연출 = STORY. 개별 NPC 말투만 CHARACTER `{{말투}}`가 가져간다. `rule_setting`·`length_ratio`와 **별도 슬롯으로 분리**(아래 확정). |
-> | `length_ratio` | **STORY** | `{{분량_배분}}` | 묘사 대 대사 비중(예: "묘사 4 : 대사 6"). 1번 명세서 직교 원칙상 서술 톤과 별개의 STORY 하위 책임이므로 `tone_setting`에 합치지 않고 **전용 필드로 분리**(아래 확정). |
-> | `character_setting` | CHARACTER | `{{인물명}}`/`{{성격}}`/`{{말투}}`/`{{동기}}`/`{{주인공에_대한_태도}}` | **객체 배열**(인물 1명 = 1원소·최대 3, 3.4). **주변인물만** — 텍스트에 주인공이 섞이면 컴파일 시 분리해 주인공 정보는 USER로 보낸다(2.1). |
-> | `user_role_setting` | USER | `{{주인공_호칭}}`/`{{역할_신분}}`/`{{배경_설정}}`/`{{성격_특징}}`/`{{입력_선호}}` | 주인공(1인칭 플레이어). **객체** — 5슬롯이 각 하위 키에 대응(3.4). |
+> | `world_setting` | STORY | `{{world_setting}}` | 세계관 + 전제 + 갈등을 한 통글로(`# 세계관` / `# 전제` / `# 갈등`). |
+> | `rule_setting` | STORY | `{{rule_setting}}` | 전개 규칙 + 문체 톤 + 분량 배분을 한 통글로(`# 전개 규칙` / `# 문체 톤` / `# 분량 배분`). 작가가 쓴 스토리별 콘텐츠라 **CORE 아님**(CORE는 콘텐츠 비의존 고정, 2.5·3.2). 출력 형식의 고정 봉투만 CORE가 소유. |
+> | `character_setting` | CHARACTER | `{{character_setting}}` | 주변인물 카드를 한 통글로(`# 등장인물` + 인물 1명당 `## 블록`, **최대 5명**). **주변인물만** — 텍스트에 주인공이 섞이면 컴파일 시 분리해 주인공 정보는 USER로 보낸다(2.1). 통글의 태도 서술은 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
+> | `user_role_setting` | USER | `{{user_role_setting}}` | 주인공(1인칭 플레이어) 프로필 통글(`# 주인공` …). |
 >
-> **슬롯 소스의 SSOT (확정).** 비-장르 슬롯은 원본 태그·추가정보를 **직접 참조하지 않는다.** 원본 입력은 컴파일(A-1) 때 `story_settings` 필드로 녹아들어 JSON에 원본이 남지 않으므로, 세션 슬롯 채움(A-2)은 **전부 `story_settings`의 컴파일 결과에서** 이뤄진다. 이때 **여러 슬롯으로 갈리는 필드는 줄글이 아니라 구조화 JSON 객체로 저장**한다 — `user_role_setting`(객체)·`character_setting`(객체 배열, 인물 1명 = 1원소·최대 3)·`plot_setting`(객체)의 하위 키가 각 슬롯에 **결정적으로** 치환된다(파싱 외 LLM·재분석 불필요). 그래야 "A-2 = LLM 없는 치환"이라는 원칙이 성립한다. 슬롯과 1:1인 `world_setting`·`rule_setting`·`tone_setting`·`length_ratio`는 문자열로 둔다. `{{장르}}`만 `stories.genre`에서 직접 치환하는 예외 경로다.
+> **통글 슬롯 = 통째 삽입 (확정).** 세션 초기화(A-2)는 각 통글 필드를 대응 슬롯에 **통째로 삽입**한다 — 하위 키 분해·재분석·LLM이 필요 없다. 컴파일(A-1)에서 세분 JSON의 필수 키를 검증한 뒤 `story_compile_render`가 이미 레이어별 통글로 조립해 두므로(세계관+전제+갈등→`world_setting`, 전개규칙+문체톤+분량배분→`rule_setting`, 인물 카드 반복→`character_setting`, 주인공→`user_role_setting`), A-2는 순수 치환이다. 이로써 "A-2 = LLM 없는 결정적 치환" 원칙이 **통글 단위**로 성립한다.
 >
-> **장르는 예외.** `{{장르}}` 슬롯은 위 컴파일 흐름을 따르지 않고 `stories.genre`에서 **그대로 치환**된다(`story_settings`를 거치지 않으며 AI 부풀림도 없음). 주인공·등장인물 태그와 달리 장르만 최종 스토리에 원본으로 남기 때문이다(태그 중 장르만 `stories`에 저장). 나머지 태그는 `story_settings`에 녹아든 형태로만 존재하므로 별도 슬롯 소스가 아니다.
+> **장르는 예외.** `{{장르}}` 슬롯만 위 흐름을 따르지 않고 `stories.genre`에서 **그대로 치환**된다(`story_settings`를 거치지 않으며 AI 부풀림도 없음). 주인공·등장인물 태그와 달리 장르만 최종 스토리에 원본으로 남기 때문이다(태그 중 장르만 `stories`에 저장). 나머지 태그는 `story_settings` 통글에 녹아든 형태로만 존재하므로 별도 슬롯 소스가 아니다.
 >
-> **슬롯 분리 (확정).** `rule_setting`(전개 규칙·연출)·`tone_setting`(서술 톤)·`length_ratio`(분량 배분)는 한 슬롯에 합치지 않고 각각 전용 슬롯 `{{전개_규칙}}`·`{{문체_톤}}`·`{{분량_배분}}`으로 **분리한다.** 1번 명세서의 스타일 직교 분리(원칙 0 — 전개 규칙·서술 톤·출력 구성 비율(분량 배분)은 STORY 안에서도 서로 다른 하위 책임)에 따른 결정이며, Phase 1에서 STORY 템플릿을 이 세 슬롯으로 작성한다(8절).
+> **레이어 직교성은 통글 안에서 유지 (확정).** 전개 규칙·서술 톤·분량 배분은 1번 명세서의 스타일 직교 분리(원칙 0 — STORY 안에서도 서로 다른 하위 책임)에 따라 구분되지만, **저장·슬롯 단위로는 `rule_setting` 한 통글**로 합친다(`# 전개 규칙` / `# 문체 톤` / `# 분량 배분` 헤더로 통글 내부에서 구분). 세계관·전제·갈등도 `world_setting` 한 통글에 헤더로 구분해 담는다. 직교성은 별도 슬롯이 아니라 **통글 내부 섹션 헤더**로 보존된다. STORY 템플릿은 이 통글 2개(+장르) 슬롯으로 작성한다(8절).
 >
 > SAFETY·CORE에는 대응하는 `story_settings` 필드가 없다(콘텐츠 비의존). MEMORY는 명세서가 아니라 런타임 대화로 채워진다(5절).
 
@@ -211,39 +208,27 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
 | `{{장르}}` | 치환 | `stories.genre` (예외 경로 — 유일하게 원본에서 직접 치환) |
-| `{{세계관_설정}}` | 컴파일 | `world_setting` |
-| `{{핵심_전제}}` | 컴파일 | `plot_setting.premise` (도입 상황) |
-| `{{전개_규칙}}` | 컴파일 | `rule_setting` (작가 전개 규칙·연출 + 장르 속도·긴장 곡선이 컴파일 시 반영됨) — **PHI로 재주입되는 정적 규칙** |
-| `{{문체_톤}}` | 컴파일 | `tone_setting` (서술 톤 + 장르 톤이 컴파일 시 반영됨) — **PHI로 재주입** |
-| `{{분량_배분}}` | 컴파일 | `length_ratio` (묘사 대 대사 비중, 예: "묘사 4 : 대사 6"; 장르 속도감이 컴파일 시 반영됨) — **PHI로 재주입** |
-| `{{주요_갈등_가능성}}` | 컴파일 | `plot_setting.conflict` (일어날 수 있는 사건·분기 — Actuality 아님) |
+| `{{world_setting}}` | 통글 삽입 | `world_setting` 통글(`# 세계관` / `# 전제` / `# 갈등`; 장르 세계관·도입 상황·갈등 가능성이 컴파일 시 반영됨) |
+| `{{rule_setting}}` | 통글 삽입 | `rule_setting` 통글(`# 전개 규칙` / `# 문체 톤` / `# 분량 배분`; 장르 속도·긴장 곡선이 컴파일 시 반영됨) — **전개 규칙·분량 배분 핵심이 PHI로 재주입** |
 
-#### CHARACTER-PROMPT.md (주변인물, **인물 1명당 1블록 반복 — 주요 인물 최대 3명**)
+#### CHARACTER-PROMPT.md (주변인물 통글 — **주요 인물 최대 5명**)
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
-| `{{인물명}}` | 컴파일 | `character_setting[].name` |
-| `{{성격}}` | 컴파일 | `character_setting[].personality` |
-| `{{말투}}` | 컴파일 | `character_setting[].tone` |
-| `{{동기}}` | 컴파일 | `character_setting[].motivation` (이 인물이 원하는 것) |
-| `{{주인공에_대한_태도}}` | 컴파일 | `character_setting[].attitude_to_user` (NPC가 주인공=사용자를 대하는 **초기 고정 태도**. 이후 변화는 MEMORY가 기록) |
+| `{{character_setting}}` | 통글 삽입 | `character_setting` 통글(`# 등장인물` + 인물 1명당 `## 블록`; 성격·말투·동기·주인공에 대한 태도 포함, 최대 5명). NPC가 주인공을 대하는 태도는 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
 
 #### USER-PROMPT.md (주인공, 1인칭)
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
-| `{{주인공_호칭}}` | 컴파일 | `user_role_setting.name` (호칭 — 추가정보 반영, 없으면 기본값) |
-| `{{역할_신분}}` | 컴파일 | `user_role_setting.role` |
-| `{{배경_설정}}` | 컴파일 | `user_role_setting.background` |
-| `{{성격_특징}}` | 컴파일 | `user_role_setting.personality` |
-| `{{입력_선호}}` | 컴파일 | `user_role_setting.preference` (선택 — 비어 있을 수 있음) |
+| `{{user_role_setting}}` | 통글 삽입 | `user_role_setting` 통글(`# 주인공` + 호칭·역할·배경·성격·입력 선호; 입력 선호는 비어 있을 수 있음) |
 
 #### SAFETY / CORE
 - **슬롯 없음.** 콘텐츠 비의존 정적 템플릿이므로 채우지 않는다.
 
 ### 3.4 스토리 명세 JSON 스키마 (MVP 확정본)
 
-시점 A-1(스토리 컴파일)의 영속 산출물이 **"스토리 명세 JSON"**이다. 스토리당 1개 만들어져 DB에 저장되고, 채팅 세션은 이를 읽어 슬롯을 채운다. MVP 확정 필드는 다음과 같다.
+시점 A-1(스토리 컴파일)의 산출물이 **"스토리 명세 JSON"**이다. 이는 컴파일 LLM이 검증·부분 재호출을 위해 내놓는 **세분 JSON(내부 표현)**이며, 백엔드로 전달·DB 저장되는 형태는 `story_compile_render`가 이를 변환한 **통글 4필드(`story_settings`) + 노출 메타/시작/추천**이다(아래 「세분 JSON → 백엔드 계약」 참조). MVP 확정 필드는 다음과 같다.
 
-> **요지**: 이 JSON 중 `prompt_settings` 7필드 + `meta.genre`만 STORY·CHARACTER·USER 3개 프롬프트의 빈칸을 채운다. 나머지(노출 메타·시작 화면·추천)는 프롬프트 바깥(노출·UI)에서 쓰인다.
+> **요지**: 이 세분 JSON 중 `prompt_settings`(7필드) + `meta.genre`가 STORY·CHARACTER·USER 3개 프롬프트의 재료가 된다 — 단 프롬프트에 실제로 꽂히는 것은 이들을 레이어별로 합친 **통글 4필드 + 장르**다(3.3). 나머지(노출 메타·시작 화면·추천)는 프롬프트 바깥(노출·UI)에서 쓰인다.
 
 | 영역 | 필드(컬럼) | 한글명 | 누가 채우나 | 프롬프트 유입 | 레이어 |
 |---|---|---|---|---|---|
@@ -251,13 +236,13 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 | | `one_line_intro` | 한 줄 소개 | AI 초안 + 사용자 확정 | ❌ 노출 | — |
 | | `description` | 스토리 소개 | AI 초안 + 사용자 확정 | ❌ 노출 (`world_setting`과 SSOT 분리) | — |
 | | `genre` | 장르 | 사용자 선택(태그) | ✅ `{{장르}}` 치환(예외 경로) | STORY |
-| 프롬프트 재료 (`story_settings`) | `world_setting` | 세계관 설정 | AI 컴파일 | ✅ | STORY |
-| | `plot_setting` | 사건 설정(객체 `{premise, conflict}`) | AI 컴파일 | ✅ | STORY |
-| | `rule_setting` | 규칙 설정 | AI 컴파일 | ✅ | STORY |
-| | `tone_setting` | 문체 설정(서술 톤) | AI 컴파일 | ✅ | STORY |
-| | `length_ratio` | 분량 배분(묘사 대 대사 비중) | AI 컴파일 | ✅ | STORY |
-| | `character_setting` | 인물 설정(객체 배열, **주변인물만**) | AI 컴파일 | ✅ | CHARACTER |
-| | `user_role_setting` | 역할 설정(객체, 주인공) | AI 컴파일 | ✅ | USER |
+| 프롬프트 재료 (세분 JSON → `story_settings` 통글 4필드) | `world_setting` | 세계관 설정 | AI 컴파일 | ✅ `{{world_setting}}` 통글 | STORY |
+| | `plot_setting` | 사건 설정(객체 `{premise, conflict}`) | AI 컴파일 | ✅ `{{world_setting}}` 통글로 흡수(`# 전제`/`# 갈등`) | STORY |
+| | `rule_setting` | 규칙 설정 | AI 컴파일 | ✅ `{{rule_setting}}` 통글 | STORY |
+| | `tone_setting` | 문체 설정(서술 톤) | AI 컴파일 | ✅ `{{rule_setting}}` 통글로 흡수(`# 문체 톤`) | STORY |
+| | `length_ratio` | 분량 배분(묘사 대 대사 비중) | AI 컴파일 | ✅ `{{rule_setting}}` 통글로 흡수(`# 분량 배분`) | STORY |
+| | `character_setting` | 인물 설정(객체 배열, **주변인물만**, 최대 5) | AI 컴파일 | ✅ `{{character_setting}}` 통글 | CHARACTER |
+| | `user_role_setting` | 역할 설정(객체, 주인공) | AI 컴파일 | ✅ `{{user_role_setting}}` 통글 | USER |
 | 시작 화면 (`story_start_settings`) | `name` | 시작 설정 이름 | AI 초안 + 사용자 확정 | ❌ UI 표시 | — |
 | | `prologue` | 프롤로그 | AI 초안 + 사용자 확정 | △ 첫 화면 도입 + **첫 턴 History 시드** | — (정적 레이어 아님) |
 | | `start_situation` | 시작 상황 | AI 초안 + 사용자 확정 | △ 첫 화면 도입 + **첫 턴 History 시드** | — (정적 레이어 아님) |
@@ -273,30 +258,30 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
     "description": "...",
     "genre": "..."
   },
-  "prompt_settings": {
-    "world_setting": "...",                 // STORY (문자열 — 1:1 슬롯)
-    "plot_setting": {                       // STORY (객체 — 2슬롯)
-      "premise": "...",                     //   → {{핵심_전제}}
-      "conflict": "..."                     //   → {{주요_갈등_가능성}}
+  "prompt_settings": {                       // ↓ 세분 키 — render가 통글 4필드로 합쳐 슬롯에 통째 삽입(3.3)
+    "world_setting": "...",                 // STORY → {{world_setting}} 통글
+    "plot_setting": {                       // STORY → {{world_setting}} 통글로 흡수
+      "premise": "...",                     //   # 전제
+      "conflict": "..."                     //   # 갈등
     },
-    "rule_setting": "...",                   // STORY (문자열 — {{전개_규칙}})
-    "tone_setting": "...",                   // STORY (문자열 — {{문체_톤}}, 서술 톤)
-    "length_ratio": "...",                   // STORY (문자열 — {{분량_배분}}, 묘사 대 대사 비중)
-    "character_setting": [                   // CHARACTER (객체 배열 — 주변인물만, 최대 3)
+    "rule_setting": "...",                   // STORY → {{rule_setting}} 통글(# 전개 규칙)
+    "tone_setting": "...",                   // STORY → {{rule_setting}} 통글로 흡수(# 문체 톤)
+    "length_ratio": "...",                   // STORY → {{rule_setting}} 통글로 흡수(# 분량 배분)
+    "character_setting": [                   // CHARACTER → {{character_setting}} 통글(인물당 ## 블록, 최대 5)
       {
-        "name": "...",                       //   → {{인물명}}
-        "personality": "...",                //   → {{성격}}
-        "tone": "...",                       //   → {{말투}}
-        "motivation": "...",                 //   → {{동기}}
-        "attitude_to_user": "..."            //   → {{주인공에_대한_태도}}
+        "name": "...",                       //   ## 이름
+        "personality": "...",                //   ### 성격
+        "tone": "...",                       //   ### 말투
+        "motivation": "...",                 //   ### 동기
+        "attitude_to_user": "..."            //   ### 주인공을 대하는 태도
       }
     ],
-    "user_role_setting": {                   // USER (객체 — 주인공)
-      "name": "...",                         //   → {{주인공_호칭}}
-      "role": "...",                         //   → {{역할_신분}}
-      "background": "...",                    //   → {{배경_설정}}
-      "personality": "...",                  //   → {{성격_특징}}
-      "preference": "..."                    //   → {{입력_선호}}
+    "user_role_setting": {                   // USER → {{user_role_setting}} 통글
+      "name": "...",                         //   ## 호칭
+      "role": "...",                         //   ## 역할
+      "background": "...",                    //   ## 배경
+      "personality": "...",                  //   ## 성격
+      "preference": "..."                    //   ## 입력 선호
     }
   },
   "start": {
@@ -371,7 +356,25 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 }
 ```
 
-> 위 예시에서 `plot_setting`은 `{ premise, conflict }` 객체, `character_setting`은 인물 3명의 객체 배열, `user_role_setting`은 단일 객체다. 각 객체는 `story_settings`의 **해당 필드 한 칸에 JSON 통째로** 저장되며(별도 컬럼 신설 없음), 세션 초기화(A-2)에서 하위 key를 슬롯에 결정적으로 꽂는다.
+> 위 세분 JSON은 컴파일 LLM의 **내부 표현**이다(예시는 인물 3명이지만 상한은 5명). `story_compile_render`가 이를 레이어별 **통글 마크다운**으로 합쳐 백엔드 계약(`StoryCompileResponse`)으로 변환한다 — `world_setting`←세계관+전제+갈등, `rule_setting`←전개규칙+문체톤+분량배분, `character_setting`←인물 카드(최대 5명) 반복, `user_role_setting`←주인공. `story_settings`에는 이 **통글 4필드만** 저장되며(세분 객체·별도 컬럼 없음), 세션 초기화(A-2)는 각 통글을 대응 슬롯에 통째로 삽입한다(3.3).
+
+##### 세분 JSON → 백엔드 계약 (통글 4필드, `StoryCompileResponse`)
+
+```json
+{
+  "stories": { "title": "...", "one_line_intro": "...", "description": "..." },
+  "story_settings": {
+    "world_setting": "# 세계관\n...\n\n# 전제\n...\n\n# 갈등\n...",
+    "character_setting": "# 등장인물\n\n## 레이\n### 성격\n...\n### 말투\n...\n### 동기\n...\n### 주인공을 대하는 태도\n...",
+    "user_role_setting": "# 주인공\n## 호칭\n...\n## 역할\n...\n## 배경\n...\n## 성격\n...\n## 입력 선호\n...",
+    "rule_setting": "# 전개 규칙\n...\n\n# 문체 톤\n...\n\n# 분량 배분\n묘사 6 : 대사 4"
+  },
+  "story_start_settings": { "name": "...", "start_situation": "...", "prologue": "..." },
+  "story_suggested_inputs": ["...", "...", "..."]
+}
+```
+
+> `genre`는 백엔드가 입력 장르 태그로 채우므로 `stories`에서 **제외**된다. `story_settings`는 세분 객체가 아니라 사람이 읽고 편집하는 **통글 마크다운 4필드**다. 세분 JSON의 `plot_setting`(전제·갈등)은 `world_setting` 통글에, `tone_setting`·`length_ratio`는 `rule_setting` 통글에 흡수된다.
 
 **재료 흐름:**
 
@@ -380,7 +383,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
                                          예외: genre는 stories.genre에서 그대로 치환
 ```
 
-> **첫 메시지 / 오프닝 장면 시드**: MVP는 AI가 선제적으로 거는 첫 메시지(`first_ai_message`)를 LLM으로 **생성하지 않는다.** 대신 세션 초기화(A-2) 때 작가가 쓴 `prologue`(+`start_situation`)를 **두 곳에 함께** 둔다 — ⓐ 첫 화면에 표시하고, ⓑ **런타임 History의 첫 항목(오프닝 장면, AI 나레이션 턴)으로 시드**한다. 그래야 사용자의 첫 입력(예: "레이에게 문을 열어준다")이 도착했을 때 채팅 LLM이 **직전 장면(밤·숙소·문 두드림)을 알고** 연결된 첫 응답을 만든다. ⓑ가 없으면 모델은 사용자가 화면에서 읽은 오프닝 장면을 보지 못해 첫 턴이 어긋난다(`{{핵심_전제}}`는 거시 배경만 줄 뿐 직전 장면을 주지 않는다).
+> **첫 메시지 / 오프닝 장면 시드**: MVP는 AI가 선제적으로 거는 첫 메시지(`first_ai_message`)를 LLM으로 **생성하지 않는다.** 대신 세션 초기화(A-2) 때 작가가 쓴 `prologue`(+`start_situation`)를 **두 곳에 함께** 둔다 — ⓐ 첫 화면에 표시하고, ⓑ **런타임 History의 첫 항목(오프닝 장면, AI 나레이션 턴)으로 시드**한다. 그래야 사용자의 첫 입력(예: "레이에게 문을 열어준다")이 도착했을 때 채팅 LLM이 **직전 장면(밤·숙소·문 두드림)을 알고** 연결된 첫 응답을 만든다. ⓑ가 없으면 모델은 사용자가 화면에서 읽은 오프닝 장면을 보지 못해 첫 턴이 어긋난다(`{{world_setting}}` 통글의 전제는 거시 배경만 줄 뿐 직전 장면을 주지 않는다).
 >
 > 이는 **새 텍스트를 LLM으로 만드는 게 아니라 이미 작성된 `prologue`/`start_situation`을 컨텍스트에 배치**하는 것이므로 'first_ai_message 미생성' 원칙과 충돌하지 않는다. 시드는 AI 응답이 아니라 무대 설정이며, **사용자 첫 입력 전에는 AI가 응답하지 않는다.**
 >
@@ -500,8 +503,8 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 1. `SAFETY-PROMPT.md` — 콘텐츠 비의존 가드레일 (슬롯 없음)
 2. `CORE-PROMPT.md` — 출력 형식·표기·길이 봉투 (슬롯 없음)
 3. `MEMORY-PROMPT.md` — 상태 스키마 + 기록 규칙 + 렌더 양식 (5절 ①)
-4. `STORY` / `CHARACTER` / `USER-PROMPT.md` — **슬롯 포함 템플릿**으로
-   - STORY는 `rule_setting`→`{{전개_규칙}}`, `tone_setting`→`{{문체_톤}}`을 **별도 슬롯으로 분리해** 작성한다(3.3 확정).
+4. `STORY` / `CHARACTER` / `USER-PROMPT.md` — **통글 슬롯 포함 템플릿**으로
+   - STORY는 `{{world_setting}}`·`{{rule_setting}}`(+`{{장르}}`), CHARACTER는 `{{character_setting}}`, USER는 `{{user_role_setting}}` 통글 슬롯으로 작성한다(3.3 확정). 전개규칙/문체톤/분량배분, 세계관/전제/갈등은 각 통글 내부 헤더로 구분된다.
 
 **Phase 2 — 스토리 컴파일 파이프라인 (시점 A-1)** (3절)
 5. 입력 스키마 정의 · 6. `PromptCompiler` 구현
@@ -528,7 +531,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 - Depth/PHI가 모델 기능이 아니라 조립 기법임과 검증 방식이 명시됨 (7절)
 - 입출력 표기 규약과 선택지 3슬롯의 소유(CORE)·내용(STORY)이 분리 명시됨 (2.5)
 - 사용자 입력 3종 처리와 갓모딩 굴절(STORY) 규칙이 명시됨 (2.6)
-- CHARACTER 카드가 주요 인물 최대 3명으로 제한됨 (3.2~3.3)
+- CHARACTER 카드가 주요 인물 최대 5명으로 제한됨 (3.2~3.3)
 - 요약 갱신이 턴 확정 시점에 일어나 재생성 오염을 막음 (4.2, 5.1)
 - History 영속은 백엔드 DB, SessionStore는 파생 요약만 보관임이 명시됨 (5절)
 - 작가 오프닝 장면(`prologue`·`start_situation`)이 첫 화면 표시 + 첫 턴 History 시드로 모델에 전달되어 첫 턴 연속성이 보장됨 (1절 A-2, 3.4, 4.2)

@@ -35,15 +35,27 @@ def _request() -> StoryCompileRequest:
 def test_valid_spec_parses() -> None:
     spec = StorySpec(**_load("spec_valid.json"))
     assert spec.meta.genre == "다크 판타지"
-    assert 1 <= len(spec.prompt_settings.character_setting) <= 3
+    assert 1 <= len(spec.prompt_settings.character_setting) <= 5
     assert spec.prompt_settings.plot_setting.premise
     assert spec.prompt_settings.user_role_setting.name
     assert len(spec.suggested_inputs) == 3
 
 
 def test_too_many_characters_rejected() -> None:
+    # 인물 6명 — 상한 5 초과로 거부(suggested_inputs는 정상 3개라 거부 사유는 인물 수뿐)
     with pytest.raises(ValidationError):
-        StorySpec(**_load("spec_chars_4.json"))
+        StorySpec(**_load("spec_chars_6.json"))
+
+
+def test_five_characters_allowed() -> None:
+    # 상한이 5명이므로 5명은 통과해야 한다.
+    data = _load("spec_valid.json")
+    base = data["prompt_settings"]["character_setting"][0]
+    data["prompt_settings"]["character_setting"] = [
+        dict(base, name=f"인물{i}") for i in range(5)
+    ]
+    spec = StorySpec(**data)
+    assert len(spec.prompt_settings.character_setting) == 5
 
 
 # ── 프롬프트 ────────────────────────────────────────────────────────────────
