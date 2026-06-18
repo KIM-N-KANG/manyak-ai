@@ -1,0 +1,122 @@
+from pydantic import BaseModel, Field
+
+
+class StoryCompileRequest(BaseModel):
+    """스토리 컴파일(시점 A-1) 입력 — 희소 입력.
+
+    백엔드가 보내는 선택 스토리라인 1편 + 추가정보 + 원본 태그.
+    """
+
+    selected_storyline: str
+    extra_info: str = ""
+    genre_tags: list[str]
+    protagonist_tags: list[str]
+    supporting_tags: list[str]
+
+
+class Meta(BaseModel):
+    """노출 메타. genre만 프롬프트(STORY)로 유입되고 나머지는 노출 전용."""
+
+    title: str
+    one_line_intro: str
+    description: str
+    genre: str
+
+
+class PlotSetting(BaseModel):
+    """STORY — 사건 설정. premise=핵심 전제(도입), conflict=갈등 가능성(Possibility)."""
+
+    premise: str
+    conflict: str
+
+
+class CharacterSetting(BaseModel):
+    """CHARACTER — 주변 인물 카드. 주인공은 포함하지 않는다(USER 소유)."""
+
+    name: str
+    personality: str
+    tone: str
+    motivation: str
+    attitude_to_user: str
+
+
+class UserRoleSetting(BaseModel):
+    """USER — 주인공(1인칭 플레이어) 프로필."""
+
+    name: str
+    role: str
+    background: str
+    personality: str
+    preference: str = ""
+
+
+class PromptSettings(BaseModel):
+    """STORY·CHARACTER·USER 세 정적 레이어의 슬롯 재료(`story_settings` 7필드)."""
+
+    world_setting: str
+    plot_setting: PlotSetting
+    rule_setting: str
+    tone_setting: str
+    length_ratio: str
+    # 주요 인물 1~3명 카드화 — 나머지는 world_setting 배경으로 흡수
+    character_setting: list[CharacterSetting] = Field(min_length=1, max_length=3)
+    user_role_setting: UserRoleSetting
+
+
+class Start(BaseModel):
+    """세션 시작 화면 + 첫 턴 History 시드 재료. 정적 레이어 아님."""
+
+    name: str
+    prologue: str
+    start_situation: str
+
+
+class StorySpec(BaseModel):
+    """스토리 컴파일(시점 A-1)의 영속 산출물 — 스토리 명세 JSON(MVP 확정본).
+
+    reference/chat/4-SERVICE-IMPLEMENTATION.md 3.4 스키마와 1:1 대응.
+    """
+
+    meta: Meta
+    prompt_settings: PromptSettings
+    start: Start
+    suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+
+
+# ── 컴파일 API output (백엔드 계약) ─────────────────────────────────────────
+# 내부 세분 스키마(StorySpec)를 ERD 4테이블에 1:1 대응하는 nested 형태로 재구성한 것.
+# story_settings 4필드는 사람이 읽기 좋은 통글 마크다운, 나머지는 값 그대로 전달한다.
+
+
+class StoriesOut(BaseModel):
+    """노출 메타(stories 테이블). genre는 백엔드가 입력 태그로 채우므로 제외한다."""
+
+    title: str
+    one_line_intro: str
+    description: str
+
+
+class StorySettingsOut(BaseModel):
+    """AI 프롬프트 재료(story_settings 테이블) — 통글 마크다운 4필드."""
+
+    world_setting: str
+    character_setting: str
+    user_role_setting: str
+    rule_setting: str
+
+
+class StoryStartSettingsOut(BaseModel):
+    """시작 설정(story_start_settings 테이블)."""
+
+    name: str
+    start_situation: str
+    prologue: str
+
+
+class StoryCompileResponse(BaseModel):
+    """컴파일 API output — ERD 4테이블에 1:1 대응하는 nested 계약본."""
+
+    stories: StoriesOut
+    story_settings: StorySettingsOut
+    story_start_settings: StoryStartSettingsOut
+    story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)

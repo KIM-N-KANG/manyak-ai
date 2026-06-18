@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from src.schemas.story import StorylinesRequest, StorylinesResponse
-from src.services.gemini import generate_storylines
+from src.services.story_llm import generate_storylines
 from src.services.prompt import build_story_prompt
 
 router = APIRouter()
