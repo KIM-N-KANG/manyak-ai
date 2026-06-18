@@ -185,7 +185,11 @@ def _merge_blocks(data: dict, refill: dict, blocks: list[str]) -> None:
         if b not in refill:
             continue
         if b in _PROMPT_SETTINGS_BLOCKS:
-            data.setdefault("prompt_settings", {})[b] = refill[b]
+            # LLM이 prompt_settings를 객체가 아닌 문자열·null로 줬다면 setdefault가
+            # 그 잘못된 값을 반환해 item 할당에서 TypeError(500)가 난다 — dict로 보정한다.
+            if not isinstance(data.get("prompt_settings"), dict):
+                data["prompt_settings"] = {}
+            data["prompt_settings"][b] = refill[b]
         else:  # meta / start / suggested_inputs (top-level)
             data[b] = refill[b]
 
