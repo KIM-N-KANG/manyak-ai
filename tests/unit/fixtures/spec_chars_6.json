@@ -42,6 +42,20 @@
         "tone": "조심스러운 말투.",
         "motivation": "생존.",
         "attitude_to_user": "두려워한다."
+      },
+      {
+        "name": "미라",
+        "personality": "냉소적인 정보상.",
+        "tone": "빈정대는 말투.",
+        "motivation": "이문.",
+        "attitude_to_user": "흥정 상대로 본다."
+      },
+      {
+        "name": "보른",
+        "personality": "과묵한 노병.",
+        "tone": "무뚝뚝한 말투.",
+        "motivation": "옛 맹세 이행.",
+        "attitude_to_user": "지켜본다."
       }
     ],
     "user_role_setting": {
@@ -57,5 +71,5 @@
     "prologue": "잿빛 비가 사흘째 왕성을 적신다.",
     "start_situation": "늦은 밤, 동료 레이가 방문을 두드린다."
   },
-  "suggested_inputs": ["레이에게 문을 열어준다", "경계하며 묻는다"]
+  "suggested_inputs": ["레이에게 문을 열어준다", "경계하며 묻는다", "침묵한다"]
 }

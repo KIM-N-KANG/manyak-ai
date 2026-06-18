@@ -58,8 +58,8 @@ class PromptSettings(BaseModel):
     rule_setting: str
     tone_setting: str
     length_ratio: str
-    # 주요 인물 1~3명 카드화 — 나머지는 world_setting 배경으로 흡수
-    character_setting: list[CharacterSetting] = Field(min_length=1, max_length=3)
+    # 주요 인물 1~5명 카드화 — 나머지는 world_setting 배경으로 흡수
+    character_setting: list[CharacterSetting] = Field(min_length=1, max_length=5)
     user_role_setting: UserRoleSetting
 
 

@@ -26,7 +26,7 @@
 - `rule_setting`: 사건 전개 속도·긴장 곡선·결정적 사건의 발생 조건 등 연출 규칙.
 - `tone_setting`: 장면 전체의 서술 톤·분위기(개별 인물 말투 아님).
 - `length_ratio`: 묘사와 대사의 비중을 "묘사 N : 대사 M" 형식으로 적는다.
-- `character_setting`: **이야기에 실제로 등장하는 주요 인물 최대 3명만** 카드로 만든다. 그 이상은 만들지 말고 `world_setting`의 배경으로 흡수한다. 각 인물은 `name`(이름·호칭), `personality`(성격), `tone`(말투), `motivation`(원하는 것), `attitude_to_user`(주인공을 대하는 **초기** 태도)를 채운다. 인물마다 말투·성격이 서로 구분되게 한다.
+- `character_setting`: **이야기에 실제로 등장하는 주요 인물 최대 5명만** 카드로 만든다. 그 이상은 만들지 말고 `world_setting`의 배경으로 흡수한다. 각 인물은 `name`(이름·호칭), `personality`(성격), `tone`(말투), `motivation`(원하는 것), `attitude_to_user`(주인공을 대하는 **초기** 태도)를 채운다. 인물마다 말투·성격이 서로 구분되게 한다.
 - `user_role_setting`: 주인공 프로필. `name`(호칭 — 추가정보 반영, 없으면 자연스러운 기본 호칭), `role`(역할·신분), `background`(배경), `personality`(성격), `preference`(입력 선호 — 없으면 빈 문자열).
 - `start.name`: 시작 설정 이름(예: "선왕의 장례식 날").
 - `start.prologue`: 플레이 첫 화면에 보일 도입 나레이션.
