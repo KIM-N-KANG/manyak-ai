@@ -3,10 +3,12 @@ layer: STORY
 name: 시나리오 및 세계관 설계
 priority: 4
 placement: STORY-core = 시스템 프롬프트 앞 + PHI (상시) / STORY-lore = World Info 트리거(MVP 제외)
-slots: [장르, world_setting, rule_setting]
+slots: [장르, world_setting, start_setting, rule_setting]
 slot_source: >-
   세션 초기화(A-2) 때 story_settings 통글 4필드에서 통째 삽입. world_setting(세계관+전제+갈등)·
   rule_setting(전개규칙+문체톤+분량배분)은 각 통글을 그대로 꽂고, 장르 슬롯만 stories.genre에서 직접 치환.
+  start_setting은 story_start_settings(name+prologue+start_situation)를 통글로 엮어 매 턴 삽입한다
+  (이 플레이의 출발점·전개 방향 전제). 장르와 함께 story_settings 외부 소스인 예외 슬롯이다.
 reinjection:
   phi: true           # 전개 규칙 + 분량 배분 핵심만(정적 지시문), PHI 내부 CORE 앞
   depth: false
@@ -25,10 +27,13 @@ boundary: >-
 
 {{world_setting}}
 
+{{start_setting}}
+
 {{rule_setting}}
 
 # 갈등 가능성과 전개의 취급
 
+- 위 **시작 설정**은 이 이야기가 출발한 지점이다. 같은 세계관이라도 이 출발점이 전개의 방향과 분위기를 정하므로, 매 장면을 이 시작점에서 비롯된 흐름으로 이어간다. 단 출발 전제일 뿐이므로 이후 무슨 일이 실제로 일어났는지는 `[현재 상태]`(MEMORY)를 진실로 삼는다 — 시작 설정이 이후 사건을 고정하지 않는다.
 - 위 **갈등**은 '일어날 수 있는 일'일 뿐 아직 일어나지 않았다. 어떤 분기가 실제로 실현됐는지는 `[현재 상태]`(MEMORY)에 기록된 사실만을 진실로 삼는다. 가능성을 기정사실처럼 서술하지 않는다.
 - 위 **전개 규칙**에 따라 사건의 속도와 긴장의 곡선을 조절한다. 결정적 사건은 충분한 빌드업 뒤에만 일어난다.
 - 위 **분량 배분** 비율로 묘사와 대사의 비중을 조절한다. 표기 형식은 CORE를 따르되, 얼마나 묘사하고 얼마나 대사할지는 이 비율이 결정한다.
