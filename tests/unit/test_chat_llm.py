@@ -1,0 +1,83 @@
+import pytest
+
+from src.services import chat_llm
+from src.services.chat_llm import _parse_choices, _split_output, stream_chat_turn
+
+
+# ── 출력 분리(B안 파싱) — 동기 ───────────────────────────────────────────────
+def test_split_output_with_marker() -> None:
+    full = "*레이가 다가선다.*\n레이: 안녕.\n[다음 행동]\n1. 인사한다\n2. 검을 뽑는다\n3. 돌아선다"
+    body, choices = _split_output(full)
+    assert body == "*레이가 다가선다.*\n레이: 안녕."
+    assert "[다음 행동]" not in body
+    assert choices == ["인사한다", "검을 뽑는다", "돌아선다"]
+
+
+def test_split_output_no_marker() -> None:
+    body, choices = _split_output("선택지 없는 본문만")
+    assert body == "선택지 없는 본문만"
+    assert choices == []
+
+
+def test_parse_choices_paren_and_dot() -> None:
+    assert _parse_choices("\n1) 가\n2. 나\n3) 다") == ["가", "나", "다"]
+
+
+# ── 스트리밍(B안) — async, LLM mock ─────────────────────────────────────────
+class _FakeDelta:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content: str) -> None:
+        self.delta = _FakeDelta(content)
+
+
+class _FakeChunk:
+    def __init__(self, content: str) -> None:
+        self.choices = [_FakeChoice(content)]
+
+
+@pytest.fixture
+def mock_stream(monkeypatch):
+    """청크 리스트를 받아 _client.chat.completions.create를 가짜 스트림으로 바꾼다."""
+
+    def _set(chunks: list[str]) -> None:
+        async def _agen():
+            for c in chunks:
+                yield _FakeChunk(c)
+
+        async def _create(**kwargs):
+            return _agen()
+
+        monkeypatch.setattr(chat_llm._client.chat.completions, "create", _create)
+
+    return _set
+
+
+async def test_stream_splits_body_and_choices(mock_stream) -> None:
+    # 마커가 토큰 경계에 걸치도록 쪼갬("[다음" + " 행동]")
+    mock_stream(["*지문*\n레이: 말한다.\n", "[다음", " 행동]\n1. 가\n2. 나\n3. 다"])
+    events = [e async for e in stream_chat_turn([])]
+
+    tokens = "".join(e["text"] for e in events if e["event"] == "token")
+    completed = next(e for e in events if e["event"] == "completed")
+
+    # B안: 선택지(마커 이후)는 token으로 흘리지 않는다
+    assert "[다음 행동]" not in tokens
+    assert "1. 가" not in tokens
+    # 본문은 흘렸고, 선택지는 completed에만
+    assert "레이: 말한다." in tokens
+    assert "[다음 행동]" not in completed["ai_output"]
+    assert completed["choices"] == ["가", "나", "다"]
+
+
+async def test_stream_no_marker_flushes_body(mock_stream) -> None:
+    mock_stream(["선택지 없는 ", "응답"])
+    events = [e async for e in stream_chat_turn([])]
+    tokens = "".join(e["text"] for e in events if e["event"] == "token")
+    completed = next(e for e in events if e["event"] == "completed")
+    assert tokens == "선택지 없는 응답"
+    assert completed["ai_output"] == "선택지 없는 응답"
+    assert completed["choices"] == []
