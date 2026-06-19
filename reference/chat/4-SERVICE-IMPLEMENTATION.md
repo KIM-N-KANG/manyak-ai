@@ -164,7 +164,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 > |---|---|---|
 > | 프롬프트 재료 (STORY/CHARACTER/USER) | `story_settings` | 정적 레이어 슬롯의 소스 — 3.3 바인딩 |
 > | 노출 메타 | `stories` (`title`, `one_line_intro`, `description`, `genre`) | 목록·상세 노출 전용(`genre`만 `{{장르}}` 슬롯에도 치환). **프롬프트 레이어 아님** |
-> | 세션 시작 화면 | `story_start_settings` (`name`, `prologue`, `start_situation`) | `name`=시작 설정 이름(UI 표시), `prologue`=프롤로그·`start_situation`=시작 상황(첫 화면 도입 **+ 첫 턴 History 시드** — 3.4·1절 A-2) |
+> | 세션 시작 화면 / STORY 슬롯 | `story_start_settings` (`name`, `prologue`, `start_situation`) | 세 곳에 쓰인다 — ⓐ `name`=시작 설정 이름(UI 표시), ⓑ `prologue`·`start_situation`=첫 화면 도입 + 첫 턴 History 시드(3.4·1절 A-2), ⓒ 세 필드를 통글로 엮어 **STORY `{{start_setting}}` 슬롯**에 매 턴 고정 삽입(이 플레이의 출발점·전개 방향 전제, 3.3). 시드(ⓑ)는 직전 장면 연속성이라 10턴 윈도우 밖으로 밀려나지만 슬롯(ⓒ)은 세션 내내 유지된다. |
 > | 첫 입력 추천 | `story_suggested_inputs` (`input_text`, 최대 3) | UI 추천 문구. 레이어 아님 |
 >
 > **SSOT 주의**: `stories.description`(노출 상세 소개)과 `story_settings.world_setting`(STORY 재료)은 내용이 겹치기 쉽다. 프롬프트에는 `world_setting`만 쓰고 `description`은 노출 전용으로 분리한다(0절 원칙).
@@ -183,7 +183,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 ### 3.3 레이어별 슬롯 스키마
 
-> 슬롯은 **사용자 입력을 꽂는 곳이 아니라, 세션 초기화(시점 A-2)에서 `story_settings`로부터 채워지는 출력 칸**이다. 아래 표의 **소스 열은 모두 `story_settings` 필드(또는 그 하위 키)**이며(`{{장르}}`만 `stories.genre` 예외), 세션 슬롯 채움은 전부 결정적 치환이다. 방식 열의 **컴파일**은 그 필드가 시점 A-1에서 컴파일 LLM으로 생성됐다는 뜻이고, **치환**은 원본 값이 가공 없이 그대로 들어간다는 뜻이다.
+> 슬롯은 **사용자 입력을 꽂는 곳이 아니라, 세션 초기화(시점 A-2)에서 `story_settings`로부터 채워지는 출력 칸**이다. 아래 표의 **소스 열은 대부분 `story_settings` 필드(또는 그 하위 키)**이며, 예외는 둘 — `{{장르}}`는 `stories.genre`, `{{start_setting}}`은 `story_start_settings`에서 온다. 세션 슬롯 채움은 전부 결정적 치환이다. 방식 열의 **컴파일**은 그 필드가 시점 A-1에서 컴파일 LLM으로 생성됐다는 뜻이고, **치환**은 원본 값이 가공 없이 그대로 들어간다는 뜻이다.
 
 > **마냑 DB 바인딩 (`story_settings` → 레이어).** 슬롯의 재료는 한 흐름을 거쳐 형태가 두 번 바뀐다: **태그·스토리라인 → 컴파일(AI 부풀림, 시점 A-1) → `story_settings` 저장 → 슬롯 채움(시점 A-2).** 따라서 3.2(레이어별 채우기)가 "태그·스토리라인"을 소스로 적은 것(흐름의 앞 토막 = 컴파일 입력)과, 3.3 슬롯표가 `story_settings`를 소스로 적은 것(흐름의 뒤 토막 = 세션 슬롯 채움)은 같은 흐름의 다른 지점일 뿐 충돌이 아니다.
 >
@@ -192,6 +192,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 > | `story_settings` 필드(통글) | 소유 레이어 | 대응 슬롯 | 비고 |
 > |---|---|---|---|
 > | `world_setting` | STORY | `{{world_setting}}` | 세계관 + 전제 + 갈등을 한 통글로(`# 세계관` / `# 전제` / `# 갈등`). |
+> | (`story_start_settings`) | STORY | `{{start_setting}}` | **예외 소스 — `story_settings` 아님.** `name`+`prologue`+`start_situation`을 통글로 엮어(`# 시작 설정: {name}` + 프롤로그·시작 상황) 매 턴 고정 삽입한다. 같은 세계관이어도 이 출발점이 전개 방향을 정하므로 STORY 소속. 첫 턴 History 시드(3.4)와 병행하며, 시드가 윈도우 밖으로 밀려나도 이 슬롯이 출발 전제를 유지한다. |
 > | `rule_setting` | STORY | `{{rule_setting}}` | 전개 규칙 + 문체 톤 + 분량 배분을 한 통글로(`# 전개 규칙` / `# 문체 톤` / `# 분량 배분`). 작가가 쓴 스토리별 콘텐츠라 **CORE 아님**(CORE는 콘텐츠 비의존 고정, 2.5·3.2). 출력 형식의 고정 봉투만 CORE가 소유. |
 > | `character_setting` | CHARACTER | `{{character_setting}}` | 주변인물 카드를 한 통글로(`# 등장인물` + 인물 1명당 `## 블록`, **최대 5명**). **주변인물만** — 텍스트에 주인공이 섞이면 컴파일 시 분리해 주인공 정보는 USER로 보낸다(2.1). 통글의 태도 서술은 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
 > | `user_role_setting` | USER | `{{user_role_setting}}` | 주인공(1인칭 플레이어) 프로필 통글(`# 주인공` …). |
@@ -209,6 +210,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 |---|---|---|
 | `{{장르}}` | 치환 | `stories.genre` (예외 경로 — 유일하게 원본에서 직접 치환) |
 | `{{world_setting}}` | 통글 삽입 | `world_setting` 통글(`# 세계관` / `# 전제` / `# 갈등`; 장르 세계관·도입 상황·갈등 가능성이 컴파일 시 반영됨) |
+| `{{start_setting}}` | 통글 삽입(예외 소스) | `story_start_settings`(`name`+`prologue`+`start_situation`)를 통글로 엮음(`# 시작 설정: {name}` + 프롤로그·시작 상황). 매 턴 고정 — 이 플레이의 출발점·전개 방향 전제. 첫 턴 History 시드(3.4)와 병행. |
 | `{{rule_setting}}` | 통글 삽입 | `rule_setting` 통글(`# 전개 규칙` / `# 문체 톤` / `# 분량 배분`; 장르 속도·긴장 곡선이 컴파일 시 반영됨) — **전개 규칙·분량 배분 핵심이 PHI로 재주입** |
 
 #### CHARACTER-PROMPT.md (주변인물 통글 — **주요 인물 최대 5명**)
@@ -243,9 +245,9 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 | | `length_ratio` | 분량 배분(묘사 대 대사 비중) | AI 컴파일 | ✅ `{{rule_setting}}` 통글로 흡수(`# 분량 배분`) | STORY |
 | | `character_setting` | 인물 설정(객체 배열, **주변인물만**, 최대 5) | AI 컴파일 | ✅ `{{character_setting}}` 통글 | CHARACTER |
 | | `user_role_setting` | 역할 설정(객체, 주인공) | AI 컴파일 | ✅ `{{user_role_setting}}` 통글 | USER |
-| 시작 화면 (`story_start_settings`) | `name` | 시작 설정 이름 | AI 초안 + 사용자 확정 | ❌ UI 표시 | — |
-| | `prologue` | 프롤로그 | AI 초안 + 사용자 확정 | △ 첫 화면 도입 + **첫 턴 History 시드** | — (정적 레이어 아님) |
-| | `start_situation` | 시작 상황 | AI 초안 + 사용자 확정 | △ 첫 화면 도입 + **첫 턴 History 시드** | — (정적 레이어 아님) |
+| 시작 화면 (`story_start_settings`) | `name` | 시작 설정 이름 | AI 초안 + 사용자 확정 | ✅ `{{start_setting}}` 통글 + UI 표시 | STORY |
+| | `prologue` | 프롤로그 | AI 초안 + 사용자 확정 | ✅ `{{start_setting}}` 통글 + 첫 화면 도입 + **첫 턴 History 시드** | STORY |
+| | `start_situation` | 시작 상황 | AI 초안 + 사용자 확정 | ✅ `{{start_setting}}` 통글 + 첫 화면 도입 + **첫 턴 History 시드** | STORY |
 | 추천 입력 (`story_suggested_inputs`) | `input_text` | 추천 입력(최대 3) | AI | ❌ 추천 버튼 | — |
 
 **JSON 형태:**
@@ -387,6 +389,8 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 >
 > 이는 **새 텍스트를 LLM으로 만드는 게 아니라 이미 작성된 `prologue`/`start_situation`을 컨텍스트에 배치**하는 것이므로 'first_ai_message 미생성' 원칙과 충돌하지 않는다. 시드는 AI 응답이 아니라 무대 설정이며, **사용자 첫 입력 전에는 AI가 응답하지 않는다.**
 >
+> **STORY `{{start_setting}}` 슬롯과의 병행 (역할 분리).** 시드(ⓑ)는 History 첫 항목이라 대화가 쌓이면 10턴 윈도우 밖으로 밀려나 사라진다 — 직전 장면 연속성은 첫 턴에만 필요하므로 의도된 소멸이다. 그러나 "이 플레이가 어떤 출발점에서 시작됐는가"라는 **전개 방향 전제**는 세션 내내 유지돼야 하므로, 같은 `prologue`·`start_situation`(+`name`)을 통글로 엮어 STORY `{{start_setting}}` 슬롯에도 **매 턴 고정 삽입**한다(3.3). 둘은 역할이 다르다 — **시드 = 직전 장면(연속성, 첫 턴 한정), 슬롯 = 출발 전제(전개 방향, 상시)**. 초반 턴에는 두 경로의 텍스트가 겹치지만 정적 레이어 prefix라 프롬프트 캐싱으로 비용이 무시할 수준이고, 후반에는 시드가 사라진 자리를 슬롯이 메워 출발점을 잃지 않는다.
+>
 > **지문 래핑 (결정적).** 표기는 2.5 규약을 따른다 — `prologue`/`start_situation` 원문에는 `*` 장식이 없으므로, **SessionInitializer가 시드 시 각 나레이션 단락을 결정적으로 `*…*`로 감싸** 지문(나레이션)으로 넣는다(LLM 없음). 감싸지 않으면 따옴표 없는 일반 텍스트가 되어 모델이 대사로 오인한다(2.5). 저장 원문은 `*` 없이 두고(첫 화면 표시 ⓐ는 원문 그대로 사용), 모델로 가는 History 경로에서만 래핑한다 — 화자 라벨의 **와이어 포맷 ↔ UI 표시 분리**와 동일한 구조다.
 
 **MVP 제외 (필드 차원):**
@@ -504,7 +508,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 2. `CORE-PROMPT.md` — 출력 형식·표기·길이 봉투 (슬롯 없음)
 3. `MEMORY-PROMPT.md` — 상태 스키마 + 기록 규칙 + 렌더 양식 (5절 ①)
 4. `STORY` / `CHARACTER` / `USER-PROMPT.md` — **통글 슬롯 포함 템플릿**으로
-   - STORY는 `{{world_setting}}`·`{{rule_setting}}`(+`{{장르}}`), CHARACTER는 `{{character_setting}}`, USER는 `{{user_role_setting}}` 통글 슬롯으로 작성한다(3.3 확정). 전개규칙/문체톤/분량배분, 세계관/전제/갈등은 각 통글 내부 헤더로 구분된다.
+   - STORY는 `{{world_setting}}`·`{{start_setting}}`·`{{rule_setting}}`(+`{{장르}}`), CHARACTER는 `{{character_setting}}`, USER는 `{{user_role_setting}}` 통글 슬롯으로 작성한다(3.3 확정). 전개규칙/문체톤/분량배분, 세계관/전제/갈등은 각 통글 내부 헤더로 구분된다. `{{start_setting}}`은 `story_start_settings`에서 엮은 예외 소스 슬롯이다(장르처럼 `story_settings` 밖).
 
 **Phase 2 — 스토리 컴파일 파이프라인 (시점 A-1)** (3절)
 5. 입력 스키마 정의 · 6. `PromptCompiler` 구현
