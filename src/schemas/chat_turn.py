@@ -5,8 +5,8 @@ reference/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 
 구조다. AI는 턴 사이에 아무것도 보관하지 않으며, 세션 식별자도 두지 않는다.
 
 - 입력: 백엔드 → AI (매 턴) — ChatTurnRequest
-- 출력: AI → 백엔드 (SSE 스트림) — manyak-server SSE 규격과 통일
-        (started → token → completed → error)
+- 출력: AI → 백엔드 (SSE 스트림). AI는 token·completed·error만 발행하고,
+        started·chatId·turnId는 백엔드가 발행·부착한다(manyak-server 규격과 통일).
 """
 
 from typing import Literal
@@ -53,13 +53,20 @@ class ChatTurnRequest(BaseModel):
 
     session_id를 두지 않는다 — AI는 무상태라 식별자로 조회·분기할 게 없고, 대화를
     묶는 책임은 백엔드(chatId)에 있다. genre는 `stories.genre`에서 직접 치환된다
-    (명세 3.3 예외 경로). history는 백엔드가 최근 10턴 윈도우로 잘라 전달한다.
+    (명세 3.3 예외 경로). history는 백엔드가 최근 10턴 윈도우로 잘라 전달하고,
+    summary는 채팅별 메모리 TEXT(대화 요약)로 매 턴 받아 참조한다(메모리 참조는 채팅
+    기능의 일부이며, 요약 생성은 Phase 4 별개 기능이다).
     """
 
     genre: str
     story_settings: ChatStorySettings
     history: list[ChatHistoryItem] = Field(default_factory=list)
     user_input: str
+    # MEMORY(대화 요약) — 채팅별로 하나씩 존재하는 메모리 TEXT(특정 채팅 수마다 압축·최신화).
+    # 메모리 참조는 채팅 기능의 일부이므로 매 턴 받아 조립기가 Depth(`[현재 상태]`)에 그대로
+    # 넣는다(빈 문자열이면 빈 칸 그대로). 메모리를 요약·기록(생성)하는 로직은 별개 기능(Phase 4)
+    # 이라, 그전까지 백엔드는 빈 문자열을 보낸다.
+    summary: str
 
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────
@@ -80,9 +87,20 @@ class TokenData(BaseModel):
 
 
 class CompletedData(BaseModel):
-    """event: completed — 누적 완성본 전체. 백엔드가 chatId·turnId를 더해 DB에 저장한다."""
+    """event: completed — 한 턴 응답 완료.
+
+    AI가 LLM 통짜 출력(상황·대사 + `[다음 행동]` 3개)을 갈라 두 필드로 나눠 담는다.
+
+    - aiOutput: 본문(상황 묘사 + 인물 대사)만. **선택지는 제외**한다. 백엔드가
+      chatId·turnId를 더해 이 값만 DB(history)에 저장한다 — 선택지는 '제안된
+      가능성'이라 실제 진행만 담는 History에 남기지 않는다(실제 진행은 사용자가 고른
+      다음 user 입력이다).
+    - choices: 다음 행동 선택지 3개(CORE 봉투가 보장). UI 버튼용이며 History에는
+      들어가지 않는다.
+    """
 
     aiOutput: str
+    choices: list[str]
 
 
 class ErrorData(BaseModel):
