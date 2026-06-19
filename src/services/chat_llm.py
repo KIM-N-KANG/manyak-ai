@@ -10,6 +10,7 @@
 - {"event": "error",     "code": ..., "message": ...}
 """
 
+import logging
 import re
 from collections.abc import AsyncIterator
 
@@ -18,9 +19,11 @@ from openai import AsyncOpenAI, OpenAIError
 from src.core.config import settings
 from src.schemas.chat_turn import EVENT_COMPLETED, EVENT_ERROR, EVENT_TOKEN
 
+logger = logging.getLogger(__name__)
+
 _client = AsyncOpenAI(
     api_key=settings.upstage_api_key,
-    base_url="https://api.upstage.ai/v1",
+    base_url=settings.upstage_api_url,
     timeout=90.0,  # 첫 토큰까지의 상한. 스트리밍이라 통상 빠르게 시작된다.
 )
 
@@ -62,6 +65,9 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
             stream=True,
         )
         async for chunk in stream:
+            # 메타데이터·필터 청크는 choices가 비어 올 수 있다 — 인덱싱 전에 가드.
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta.content or ""
             if not delta:
                 continue
@@ -90,4 +96,5 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
         ai_output, choices = _split_output(full)
         yield {"event": EVENT_COMPLETED, "ai_output": ai_output, "choices": choices}
     except OpenAIError as e:
+        logger.exception("채팅 LLM 스트리밍 실패")  # 스택트레이스 포함 서버 로그
         yield {"event": EVENT_ERROR, "code": "LLM_ERROR", "message": str(e)}

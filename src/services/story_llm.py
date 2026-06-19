@@ -10,7 +10,7 @@ from src.services.story_compile_render import spec_to_response
 
 _client = AsyncOpenAI(
     api_key=settings.upstage_api_key,
-    base_url="https://api.upstage.ai/v1",
+    base_url=settings.upstage_api_url,
     timeout=90.0,  # 무한 대기 방지 — 정상 컴파일은 ~10초, 초과 시 APITimeoutError → 502
 )
 

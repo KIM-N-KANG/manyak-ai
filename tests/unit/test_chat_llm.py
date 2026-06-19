@@ -35,15 +35,16 @@ class _FakeChoice:
 
 
 class _FakeChunk:
-    def __init__(self, content: str) -> None:
-        self.choices = [_FakeChoice(content)]
+    def __init__(self, content: str | None) -> None:
+        # content=None → choices가 빈 청크(메타데이터·필터 청크)를 흉내 낸다.
+        self.choices = [] if content is None else [_FakeChoice(content)]
 
 
 @pytest.fixture
 def mock_stream(monkeypatch):
     """청크 리스트를 받아 _client.chat.completions.create를 가짜 스트림으로 바꾼다."""
 
-    def _set(chunks: list[str]) -> None:
+    def _set(chunks: list[str | None]) -> None:
         async def _agen():
             for c in chunks:
                 yield _FakeChunk(c)
@@ -81,3 +82,13 @@ async def test_stream_no_marker_flushes_body(mock_stream) -> None:
     assert tokens == "선택지 없는 응답"
     assert completed["ai_output"] == "선택지 없는 응답"
     assert completed["choices"] == []
+
+
+async def test_stream_skips_empty_choices_chunk(mock_stream) -> None:
+    # choices가 빈 청크(메타/필터)가 섞여도 IndexError 없이 건너뛰고 본문만 흘린다.
+    mock_stream([None, "본문 ", None, "이어짐"])
+    events = [e async for e in stream_chat_turn([])]
+    tokens = "".join(e["text"] for e in events if e["event"] == "token")
+    completed = next(e for e in events if e["event"] == "completed")
+    assert tokens == "본문 이어짐"
+    assert completed["ai_output"] == "본문 이어짐"

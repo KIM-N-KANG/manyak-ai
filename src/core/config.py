@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # gemini_model: str = "gemini-2.5-flash-lite"
 
     upstage_api_key: str
+    upstage_api_url: str = "https://api.upstage.ai/v1"
     upstage_model: str = "solar-pro2"
 
 
