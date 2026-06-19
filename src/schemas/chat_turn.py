@@ -36,15 +36,19 @@ class ChatStorySettings(BaseModel):
 class ChatHistoryItem(BaseModel):
     """대화 기록 한 줄.
 
-    role=assistant: AI 출력 또는 **오프닝 시드**(prologue+start_situation).
-    role=user: 사용자 입력.
+    role=ASSISTANT: AI 출력 또는 **오프닝 시드**(prologue+start_situation).
+    role=USER: 사용자 입력.
+
+    role 값은 ERD `story_messages.role`(대문자 enum)과 맞춘다. 단 OpenAI 호환 LLM은
+    소문자 role(user/assistant)을 요구하므로, **조립기가 LLM 호출 직전 소문자로 변환**한다.
+    SYSTEM은 history에 넣지 않는다(시스템 프롬프트는 조립기가 따로 구성).
 
     오프닝 시드는 백엔드가 작가의 prologue·start_situation을 `*…*` 지문으로 래핑해
     history 첫 항목으로 깔아 보낸다(명세 2.5 표기 규약). AI는 첫 턴/이후 턴을
     구분하지 않고 받은 history를 그대로 조립한다.
     """
 
-    role: Literal["user", "assistant"]
+    role: Literal["USER", "ASSISTANT"]
     content: str
 
 
