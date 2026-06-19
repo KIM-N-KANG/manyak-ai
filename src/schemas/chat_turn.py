@@ -33,6 +33,26 @@ class ChatStorySettings(BaseModel):
     rule_setting: str
 
 
+class ChatStartSettings(BaseModel):
+    """시작 설정 — 이 플레이의 출발점이자 전개 방향을 정하는 전제. STORY 레이어 슬롯 재료.
+
+    `story_start_settings` 테이블에서 온다. `world_setting`(여러 플레이가 공유하는
+    공통 세계관)과 달리, 시작 설정은 **이 플레이 고유의 진입점**이다. 같은 세계관이어도
+    시작 설정이 다르면 스토리가 다르게 흘러가므로(명세상 world_setting의 갈등은
+    '일어날 수 있는 가능성'이고 start_situation은 그 갈등으로 들어가는 구체적 진입점),
+    매 턴 프롬프트(STORY `{{start_setting}}` 슬롯)에 고정 삽입해 모델이 전개 방향을
+    그 시작점에 맞춰 잡게 한다. 슬롯은 **입력(모델이 읽는 배경)**이지 출력이 아니다 —
+    이 값이 aiOutput으로 그대로 나오지 않는다.
+
+    조립기(T2)가 name·prologue·start_situation을 통글로 엮어 슬롯에 주입한다. name은
+    UI용 이름이지만 시작 설정의 정체성을 드러내므로 슬롯 재료에 포함한다.
+    """
+
+    name: str
+    prologue: str
+    start_situation: str
+
+
 class ChatHistoryItem(BaseModel):
     """대화 기록 한 줄.
 
@@ -57,13 +77,16 @@ class ChatTurnRequest(BaseModel):
 
     session_id를 두지 않는다 — AI는 무상태라 식별자로 조회·분기할 게 없고, 대화를
     묶는 책임은 백엔드(chatId)에 있다. genre는 `stories.genre`에서 직접 치환된다
-    (명세 3.3 예외 경로). history는 백엔드가 최근 10턴 윈도우로 잘라 전달하고,
-    summary는 채팅별 메모리 TEXT(대화 요약)로 매 턴 받아 참조한다(메모리 참조는 채팅
-    기능의 일부이며, 요약 생성은 Phase 4 별개 기능이다).
+    (명세 3.3 예외 경로). story_settings(공통 세계관·인물·규칙)와 start_settings(이
+    플레이 고유의 시작점)는 둘 다 STORY/CHARACTER/USER 정적 레이어 슬롯 재료다.
+    history는 백엔드가 최근 10턴 윈도우로 잘라 전달하고, summary는 채팅별 메모리
+    TEXT(대화 요약)로 매 턴 받아 참조한다(메모리 참조는 채팅 기능의 일부이며, 요약
+    생성은 Phase 4 별개 기능이다).
     """
 
     genre: str
     story_settings: ChatStorySettings
+    start_settings: ChatStartSettings
     history: list[ChatHistoryItem] = Field(default_factory=list)
     user_input: str
     # MEMORY(대화 요약) — 채팅별로 하나씩 존재하는 메모리 TEXT(특정 채팅 수마다 압축·최신화).
