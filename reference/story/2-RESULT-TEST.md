@@ -9,7 +9,7 @@
 검증 대상은 세 가지입니다.
 
 1. **출력 구조**: 응답이 지정된 JSON 스키마를 따르는지
-2. **출력 내용**: 이야기·질문이 기본 품질 기준을 만족하는지
+2. **출력 내용**: 이야기·추천 추가 정보가 기본 품질 기준을 만족하는지
 3. **출력 다양성**: 3편 이야기가 서로 충분히 다른 방향인지
 
 ---
@@ -53,9 +53,9 @@ LLM API 없이 파서 로직만 테스트합니다. 모의(fixture) 응답을 �
 | S-04 | `stories` 개수 | `len(stories) == 3` | assert |
 | S-05 | `id` 순서 | `stories[i].id == i+1` (1, 2, 3 순) | assert |
 | S-06 | `story` 필드 타입 | `isinstance(story, str)` and `len > 0` | assert |
-| S-07 | `questions` 필드 존재 및 타입 | `isinstance(questions, list)` | assert |
-| S-08 | `questions` 개수 | 각 이야기마다 `len(questions) == 3` | assert |
-| S-09 | 각 질문 타입 | `isinstance(q, str)` and `len > 0` | assert |
+| S-07 | `recommended_infos` 필드 존재 및 타입 | `isinstance(recommended_infos, list)` | assert |
+| S-08 | `recommended_infos` 개수 | 각 이야기마다 `len(recommended_infos) == 3` | assert |
+| S-09 | 각 추천 추가 정보 타입 | `isinstance(q, str)` and `len > 0` | assert |
 | S-10 | Pydantic 스키마 통과 | `StoryResponse(**data)` 예외 없음 | assert |
 
 ### 4-3. 픽스처 정의
@@ -66,9 +66,9 @@ LLM API 없이 파서 로직만 테스트합니다. 모의(fixture) 응답을 �
 ```json
 {
   "stories": [
-    { "id": 1, "story": "...", "questions": ["...", "...", "..."] },
-    { "id": 2, "story": "...", "questions": ["...", "...", "..."] },
-    { "id": 3, "story": "...", "questions": ["...", "...", "..."] }
+    { "id": 1, "story": "...", "recommended_infos": ["...", "...", "..."] },
+    { "id": 2, "story": "...", "recommended_infos": ["...", "...", "..."] },
+    { "id": 3, "story": "...", "recommended_infos": ["...", "...", "..."] }
   ]
 }
 ```
@@ -87,7 +87,7 @@ LLM API 없이 파서 로직만 테스트합니다. 모의(fixture) 응답을 �
 | 픽스처 이름 | 내용 | 기대 동작 |
 |---|---|---|
 | `fixture_stories_2.json` | `stories` 2개 | S-04 실패 → 서비스 레이어에서 처리 |
-| `fixture_questions_2.json` | 질문 2개인 이야기 포함 | S-08 실패 → Pydantic validation error |
+| `fixture_recommended_infos_2.json` | 추천 추가 정보 2개인 이야기 포함 | S-08 실패 → Pydantic validation error |
 | `fixture_not_json.txt` | JSON 아닌 텍스트 | `json.JSONDecodeError` → HTTPException 500 |
 
 ---
@@ -116,9 +116,9 @@ LLM API 없이 파서 로직만 테스트합니다. 모의(fixture) 응답을 �
 |---|---|---|---|
 | C-01 | 이야기 최소 길이 | 각 `story` 문자 수 ≥ 80자 | assert |
 | C-02 | 이야기 문장 수 | 각 `story`의 문장이 정확히 4개 | 아래 문장 분리 기준 참고 |
-| C-03 | 이모지 없음 | `story`와 `questions`에 이모지 문자 없음 | 유니코드 범위 검사 |
-| C-04 | 질문 최소 길이 | 각 `question` 문자 수 ≥ 10자 | assert |
-| C-05 | 질문 문장 수 | 각 `question`이 1문장 (마침표 1개 이하) | assert |
+| C-03 | 이모지 없음 | `story`와 `recommended_infos`에 이모지 문자 없음 | 유니코드 범위 검사 |
+| C-04 | 추가 정보 최소 길이 | 각 `recommended_info` 문자 수 ≥ 10자 | assert |
+| C-05 | 추가 정보 문장 수 | 각 `recommended_info`가 평서문 1문장 (마침표 1개) | assert |
 | C-06 | 태그 반영 여부 | 입력 태그 중 1개 이상이 이야기 3편 중 어느 곳에 등장 | 키워드 포함 검사 |
 | C-07 | 응답 시간 | 전체 API 응답 ≤ 30초 | `time.time()` 측정 |
 
@@ -175,7 +175,7 @@ for a, b in pairs:
 |---|---|---|---|
 | Q-01 | 웹소설 문체 | "이 이야기가 웹소설 도입부로 자연스러운가?" | 3편 모두 5점 중 3점 이상 |
 | Q-02 | 태그-이야기 정합성 | "이야기가 입력 태그를 자연스럽게 반영하는가?" | 3편 평균 3점 이상 |
-| Q-03 | 질문 특화성 | "이 질문이 해당 이야기의 고유 설정을 언급하는가?" | 9개 질문 중 7개 이상 합격 |
+| Q-03 | 추가 정보 특화성 | "이 추천 추가 정보가 해당 이야기의 고유 설정을 언급하는가?" | 9개 중 7개 이상 합격 |
 | Q-04 | 다양성 주관 판단 | "3편의 분위기와 방향이 확연히 다른가?" | 5점 중 4점 이상 |
 
 ### 7-4. Evaluator 프롬프트
@@ -223,7 +223,7 @@ Layer 1~3은 자동 테스트 통과가 완료 기준입니다. Layer 4는 수�
 | 항목 | 기준값 | 레이어 | 자동화 |
 |---|---|---|---|
 | stories 개수 | 정확히 3 | L1 | O |
-| questions 개수 | 이야기당 정확히 3 | L1 | O |
+| recommended_infos 개수 | 이야기당 정확히 3 | L1 | O |
 | story 문장 수 | 정확히 4 (±1 경고) | L2 | O |
 | story 최소 길이 | 80자 이상 | L2 | O |
 | 이모지 없음 | 0개 | L2 | O |
@@ -233,7 +233,7 @@ Layer 1~3은 자동 테스트 통과가 완료 기준입니다. Layer 4는 수�
 | 첫 문장 중복 | 0건 | L3 | O |
 | 웹소설 문체 점수 | 3편 모두 3점 이상 | L4 | X |
 | 태그-이야기 정합성 | 평균 3점 이상 | L4 | X |
-| 질문 특화성 통과율 | 9개 중 7개 이상 | L4 | X |
+| 추가 정보 특화성 통과율 | 9개 중 7개 이상 | L4 | X |
 | 다양성 주관 점수 | 4점 이상 | L4 | X |
 
 ---
@@ -248,7 +248,7 @@ tests/
       fixture_valid.json
       fixture_code_fence.txt
       fixture_stories_2.json
-      fixture_questions_2.json
+      fixture_recommended_infos_2.json
       fixture_not_json.txt
   integration/
     test_story_content.py      # Layer 2+3: 실제 API 호출 후 내용·다양성 검증
