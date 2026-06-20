@@ -10,7 +10,7 @@ class StorylinesRequest(BaseModel):
 class StoryItem(BaseModel):
     id: int
     story: str
-    questions: list[str]
+    recommended_infos: list[str]
 
 
 class StorylinesResponse(BaseModel):
