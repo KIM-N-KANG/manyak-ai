@@ -1,7 +1,12 @@
 import pytest
 
 from src.services import chat_llm
-from src.services.chat_llm import _parse_choices, _split_output, stream_chat_turn
+from src.services.chat_llm import (
+    _parse_choices,
+    _split_output,
+    _strip_speaker_bold,
+    stream_chat_turn,
+)
 
 
 # ── 출력 분리(B안 파싱) — 동기 ───────────────────────────────────────────────
@@ -21,6 +26,26 @@ def test_split_output_no_marker() -> None:
 
 def test_parse_choices_paren_and_dot() -> None:
     assert _parse_choices("\n1) 가\n2. 나\n3) 다") == ["가", "나", "다"]
+
+
+# ── 화자 볼드 라벨 정규화(KNK-194) — 동기 ────────────────────────────────────
+def test_strip_speaker_bold_outer_colon() -> None:
+    assert _strip_speaker_bold("**설하**: 차라도 드세요.") == "설하: 차라도 드세요."
+
+
+def test_strip_speaker_bold_inner_colon() -> None:
+    assert _strip_speaker_bold("**설하:** 차라도 드세요.") == "설하: 차라도 드세요."
+
+
+def test_strip_speaker_bold_keeps_emphasis() -> None:
+    # 콜론 없는 본문 강조는 화자 라벨이 아니므로 건드리지 않는다.
+    assert _strip_speaker_bold("그것은 **중요한** 단서다") == "그것은 **중요한** 단서다"
+
+
+def test_strip_speaker_bold_multiline() -> None:
+    text = "*등불이 흔들린다.*\n**설하:** 늦었군요.\n**장천**: 거래합시다."
+    expected = "*등불이 흔들린다.*\n설하: 늦었군요.\n장천: 거래합시다."
+    assert _strip_speaker_bold(text) == expected
 
 
 # ── 스트리밍(B안) — async, LLM mock ─────────────────────────────────────────
@@ -92,3 +117,13 @@ async def test_stream_skips_empty_choices_chunk(mock_stream) -> None:
     completed = next(e for e in events if e["event"] == "completed")
     assert tokens == "본문 이어짐"
     assert completed["ai_output"] == "본문 이어짐"
+
+
+async def test_stream_strips_speaker_bold_in_completed(mock_stream) -> None:
+    # 화자 라벨 볼드는 completed의 ai_output에서 제거된다(저장·표시값 정규화).
+    mock_stream(["*등불이 흔들린다.*\n**설하:** 늦었군요.\n[다음 행동]\n1. 가\n2. 나\n3. 다"])
+    events = [e async for e in stream_chat_turn([])]
+    completed = next(e for e in events if e["event"] == "completed")
+    assert "**" not in completed["ai_output"]
+    assert "설하: 늦었군요." in completed["ai_output"]
+    assert completed["choices"] == ["가", "나", "다"]
