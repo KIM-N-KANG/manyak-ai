@@ -51,16 +51,19 @@ def _strip_code_fence(text: str) -> str:
 
 
 async def _complete_json(
-    system_prompt: str, user_prompt: str, model: str = settings.deepseek_model
+    system_prompt: str, user_prompt: str, model: str | None = None
 ) -> dict:
     """LLM을 호출해 JSON 응답을 dict로 파싱한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
-    model 기본값은 컴파일용 deepseek_model(pro). 응답 속도가 중요한 경로(스토리라인)는
-    호출 측에서 flash 모델을 넘겨 덮어쓴다(KNK-215).
+    model이 None이면 컴파일용 deepseek_model(pro)로 폴백한다. 기본 인자에 settings 값을
+    직접 두면 import 시점에 고정돼 런타임 오버라이드(테스트 등)가 반영되지 않으므로 호출
+    시점에 해석한다. 응답 속도가 중요한 경로(스토리라인)는 호출 측에서 flash 모델을 넘겨
+    덮어쓴다(KNK-215).
     """
+    resolved_model = model if model is not None else settings.deepseek_model
     try:
         response = await _client.chat.completions.create(
-            model=model,
+            model=resolved_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
