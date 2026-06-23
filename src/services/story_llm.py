@@ -9,10 +9,14 @@ from src.services.prompt import build_compile_prompt, build_refill_prompt
 from src.services.story_compile_render import spec_to_response
 
 _client = AsyncOpenAI(
-    api_key=settings.upstage_api_key,
-    base_url=settings.upstage_api_url,
-    timeout=90.0,  # 무한 대기 방지 — 정상 컴파일은 ~10초, 초과 시 APITimeoutError → 502
+    api_key=settings.deepseek_api_key,
+    base_url=settings.deepseek_api_url,
+    timeout=90.0,  # 무한 대기 방지 — 정상 컴파일은 ~30초, 초과 시 APITimeoutError → 502
 )
+
+# DeepSeek V4를 비추론으로 호출한다(thinking 비활성). 컴파일은 창작 태스크라
+# 추론 모드가 출력 외국어 오염·평면화를 일으켜 비추론이 더 안정적이었다(KNK-208 벤치).
+_THINKING_DISABLED = {"thinking": {"type": "disabled"}}
 
 # 출력이 무한정 길어지지 않도록 상한. 컴파일 명세 JSON(인물 최대 5명)도 충분히 담긴다.
 _MAX_TOKENS = 6144
@@ -50,13 +54,14 @@ async def _complete_json(system_prompt: str, user_prompt: str) -> dict:
     """LLM을 호출해 JSON 응답을 dict로 파싱한다. 호출·빈응답·파싱 오류를 502로 변환한다."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.upstage_model,
+            model=settings.deepseek_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
             max_tokens=_MAX_TOKENS,
+            extra_body=_THINKING_DISABLED,
         )
         content = response.choices[0].message.content
         if not content:
