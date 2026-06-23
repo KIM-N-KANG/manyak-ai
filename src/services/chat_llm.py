@@ -22,10 +22,14 @@ from src.schemas.chat_turn import EVENT_COMPLETED, EVENT_ERROR, EVENT_TOKEN
 logger = logging.getLogger(__name__)
 
 _client = AsyncOpenAI(
-    api_key=settings.upstage_api_key,
-    base_url=settings.upstage_api_url,
+    api_key=settings.deepseek_api_key,
+    base_url=settings.deepseek_api_url,
     timeout=90.0,  # 첫 토큰까지의 상한. 스트리밍이라 통상 빠르게 시작된다.
 )
+
+# DeepSeek V4를 비추론으로 호출한다(thinking 비활성). 추론 모드는 첫 토큰 지연이
+# 크고 창작 출력 품질도 비추론이 더 안정적이었다(KNK-208 벤치).
+_THINKING_DISABLED = {"thinking": {"type": "disabled"}}
 
 # 선택지 영역 시작 마커(CORE 출력 봉투, 2.5). 이 앞까지가 본문(ai_output)이다.
 _CHOICES_MARKER = "[다음 행동]"
@@ -60,9 +64,10 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
 
     try:
         stream = await _client.chat.completions.create(
-            model=settings.upstage_model,
+            model=settings.deepseek_chat_model,
             messages=messages,
             stream=True,
+            extra_body=_THINKING_DISABLED,
         )
         async for chunk in stream:
             # 메타데이터·필터 청크는 choices가 비어 올 수 있다 — 인덱싱 전에 가드.

@@ -37,7 +37,7 @@ jobs:
 
       - name: Run tests
         env:
-          UPSTAGE_API_KEY: dummy-key-for-ci
+          DEEPSEEK_API_KEY: dummy-key-for-ci
         run: pytest
 
   docker:

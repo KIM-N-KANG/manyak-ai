@@ -11,9 +11,10 @@ class Settings(BaseSettings):
     # gemini_api_key: str
     # gemini_model: str = "gemini-2.5-flash-lite"
 
-    upstage_api_key: str
-    upstage_api_url: str = "https://api.upstage.ai/v1"
-    upstage_model: str = "solar-pro2"
+    deepseek_api_key: str
+    deepseek_api_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-pro"  # 스토리 컴파일용
+    deepseek_chat_model: str = "deepseek-v4-flash"  # 채팅 턴용
 
 
 settings = Settings()
