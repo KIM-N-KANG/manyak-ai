@@ -50,11 +50,17 @@ def _strip_code_fence(text: str) -> str:
     return stripped
 
 
-async def _complete_json(system_prompt: str, user_prompt: str) -> dict:
-    """LLM을 호출해 JSON 응답을 dict로 파싱한다. 호출·빈응답·파싱 오류를 502로 변환한다."""
+async def _complete_json(
+    system_prompt: str, user_prompt: str, model: str = settings.deepseek_model
+) -> dict:
+    """LLM을 호출해 JSON 응답을 dict로 파싱한다. 호출·빈응답·파싱 오류를 502로 변환한다.
+
+    model 기본값은 컴파일용 deepseek_model(pro). 응답 속도가 중요한 경로(스토리라인)는
+    호출 측에서 flash 모델을 넘겨 덮어쓴다(KNK-215).
+    """
     try:
         response = await _client.chat.completions.create(
-            model=settings.deepseek_model,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -91,7 +97,11 @@ async def _complete_json(system_prompt: str, user_prompt: str) -> dict:
 
 
 async def generate_storylines(system_prompt: str, user_prompt: str) -> dict:
-    return await _complete_json(system_prompt, user_prompt)
+    # 스토리라인 생성은 응답 속도가 사용자 체감에 직결돼 flash 모델을 쓴다(KNK-215).
+    # pro 대비 디코딩 ~2배 빨라 동일 분량 생성 시간이 절반 이하다(31s→12s 실측).
+    return await _complete_json(
+        system_prompt, user_prompt, model=settings.deepseek_chat_model
+    )
 
 
 # ── 컴파일 결과 검증 (StorySpec 파싱 전 dict 단계) ──────────────────────────
