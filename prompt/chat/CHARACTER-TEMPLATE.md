@@ -1,4 +1,6 @@
 ---
+version: 2
+updated: 2026-06-24
 layer: CHARACTER
 name: 등장인물 정의
 priority: 5           # 레이어 우선순위에서 CHARACTER > USER — 가스라이팅/갓모딩에 의한 캐릭터 붕괴 방지

@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from src.schemas.response_meta import ChatResponseMeta
+
 
 # ── 입력 (백엔드 → AI, 매 턴) ───────────────────────────────────────────────
 
@@ -131,6 +133,8 @@ class CompletedData(BaseModel):
     # 둔다. ⚠️ 직렬화 시 반드시 model_dump(by_alias=True)를 써야 와이어가 aiOutput이 된다(T3).
     ai_output: str = Field(serialization_alias="aiOutput")
     choices: list[str]
+    # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
+    meta: ChatResponseMeta | None = None
 
 
 class ErrorData(BaseModel):

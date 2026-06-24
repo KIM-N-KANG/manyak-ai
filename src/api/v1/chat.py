@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from src.core.config import settings
 from src.schemas.chat_turn import (
     EVENT_COMPLETED,
     EVENT_ERROR,
@@ -23,7 +24,8 @@ from src.schemas.chat_turn import (
     ErrorData,
     TokenData,
 )
-from src.services.chat_assembler import assemble
+from src.schemas.response_meta import ChatResponseMeta
+from src.services.chat_assembler import LAYER_VERSIONS, assemble
 from src.services.chat_llm import stream_chat_turn
 
 router = APIRouter()
@@ -42,9 +44,17 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
         if name == EVENT_TOKEN:
             yield _sse(name, TokenData(text=ev["text"]).model_dump())
         elif name == EVENT_COMPLETED:
+            meta = ChatResponseMeta(
+                model=ev.get("model") or settings.deepseek_chat_model,
+                prompt_versions=LAYER_VERSIONS,
+                provider=settings.llm_provider,
+                input_token_count=ev.get("input_tokens"),
+                output_token_count=ev.get("output_tokens"),
+                retry_count=0,  # chat은 단일 스트림 호출 — 재호출 없음
+            )
             payload = CompletedData(
-                ai_output=ev["ai_output"], choices=ev["choices"]
-            ).model_dump(by_alias=True)  # aiOutput 와이어 키로 직렬화
+                ai_output=ev["ai_output"], choices=ev["choices"], meta=meta
+            ).model_dump(by_alias=True)  # aiOutput·camelCase 메타로 직렬화
             yield _sse(name, payload)
         else:  # EVENT_ERROR
             yield _sse(name, ErrorData(code=ev["code"], message=ev["message"]).model_dump())

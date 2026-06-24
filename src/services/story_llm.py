@@ -1,16 +1,34 @@
 import json
 import logging
 import time
+from dataclasses import dataclass
 
 from fastapi import HTTPException, status
 from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
+from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse, StorySpec
-from src.services.prompt import build_compile_prompt, build_refill_prompt
+from src.services.prompt import COMPILE_VERSION, build_compile_prompt, build_refill_prompt
 from src.services.story_compile_render import spec_to_response
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LlmUsage:
+    """LLM 호출이 실제로 쓴 메타(로깅용). model은 응답이 돌려준 실제 모델명이다."""
+
+    model: str
+    input_tokens: int | None
+    output_tokens: int | None
+
+
+def _add_tokens(a: int | None, b: int | None) -> int | None:
+    """토큰 수를 합산한다(재호출 합산용). 둘 다 None이면 None, 아니면 누락을 0으로 본다."""
+    if a is None and b is None:
+        return None
+    return (a or 0) + (b or 0)
 
 _client = AsyncOpenAI(
     api_key=settings.deepseek_api_key,
@@ -56,13 +74,16 @@ def _strip_code_fence(text: str) -> str:
 
 async def _complete_json(
     system_prompt: str, user_prompt: str, model: str | None = None, *, label: str = "compile"
-) -> dict:
-    """LLM을 호출해 JSON 응답을 dict로 파싱한다. 호출·빈응답·파싱 오류를 502로 변환한다.
+) -> tuple[dict, LlmUsage]:
+    """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
     model이 None이면 컴파일용 deepseek_model(pro)로 폴백한다. 기본 인자에 settings 값을
     직접 두면 import 시점에 고정돼 런타임 오버라이드(테스트 등)가 반영되지 않으므로 호출
     시점에 해석한다. 응답 속도가 중요한 경로(스토리라인)는 호출 측에서 flash 모델을 넘겨
     덮어쓴다(KNK-215). label은 진단 로깅에서 호출 종류를 구분하는 용도다(KNK-222).
+
+    로깅용 메타는 응답에서 직접 뽑는다 — model은 response.model(실제 쓴 모델), 토큰은
+    response.usage(없으면 None). 이 한 곳이 메타의 출처라 모델을 바꿔도 따로 손댈 게 없다.
     """
     resolved_model = model if model is not None else settings.deepseek_model
     try:
@@ -101,7 +122,13 @@ async def _complete_json(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="LLM이 JSON 객체를 반환하지 않았습니다.",
             )
-        return parsed
+        usage = LlmUsage(
+            model=response.model or resolved_model,
+            # 토큰 필드 누락 시에도 'null 폴백' 계약을 지키도록 getattr로 방어한다.
+            input_tokens=getattr(response.usage, "prompt_tokens", None),
+            output_tokens=getattr(response.usage, "completion_tokens", None),
+        )
+        return parsed, usage
     except OpenAIError as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -114,10 +141,12 @@ async def _complete_json(
         )
 
 
-async def generate_storylines(system_prompt: str, user_prompt: str) -> dict:
-    # 스토리라인 생성은 응답 속도가 사용자 체감에 직결돼 flash 모델을 쓴다(KNK-215).
-    # pro 대비 디코딩 ~2배 빨라 동일 분량 생성 시간이 절반 이하다(31s→12s 실측).
-    # 진단 로깅에서 구분되도록 label="storylines"를 함께 넘긴다(KNK-222).
+async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dict, LlmUsage]:
+    """스토리라인 생성 — (결과 dict, 사용 메타)를 반환한다. 메타 조립은 엔드포인트가 한다.
+
+    응답 속도가 사용자 체감에 직결돼 flash 모델을 쓴다(KNK-215, pro 대비 ~2배 빠름).
+    label="storylines"로 진단 로깅을 구분한다(KNK-222).
+    """
     return await _complete_json(
         system_prompt, user_prompt, model=settings.deepseek_chat_model, label="storylines"
     )
@@ -247,8 +276,11 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         request.protagonist_tags,
         request.supporting_tags,
     )
-    data = await _complete_json(system_prompt, user_prompt, label="compile")
+    data, usage = await _complete_json(system_prompt, user_prompt, label="compile")
     _inject_genre(data, request.genre_tags)
+
+    # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
+    input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
 
     # 빈 필수 필드가 있으면 해당 블록만 다시 채운다(최대 _MAX_REFILL회).
     missing = _find_missing_keys(data)
@@ -264,7 +296,11 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             json.dumps(data, ensure_ascii=False),
             blocks,
         )
-        refill = await _complete_json(refill_system, refill_user, label=f"refill#{attempts}")
+        refill, refill_usage = await _complete_json(
+            refill_system, refill_user, label=f"refill#{attempts}"
+        )
+        input_tokens = _add_tokens(input_tokens, refill_usage.input_tokens)
+        output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
         _merge_blocks(data, refill, blocks)
         _inject_genre(data, request.genre_tags)
         missing = _find_missing_keys(data)
@@ -289,4 +325,13 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             detail=f"컴파일 결과가 스토리 명세 형식과 맞지 않습니다: {e}",
         )
 
-    return spec_to_response(spec)
+    response = spec_to_response(spec)
+    response.meta = StoryResponseMeta(
+        model=usage.model,
+        prompt_versions={"COMPILE": COMPILE_VERSION},
+        provider=settings.llm_provider,
+        input_token_count=input_tokens,
+        output_token_count=output_tokens,
+        retry_count=attempts,  # 부분 재호출 횟수(0~_MAX_REFILL)
+    )
+    return response

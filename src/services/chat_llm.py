@@ -84,15 +84,27 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
     full = ""          # 전체 누적 — 완료 시 본문/선택지 분리용
     pending = ""       # 아직 흘리지 않은 본문 버퍼 — 마커 prefix 겹침 보호
     body_done = False  # 마커를 만나 본문이 끝났는지
+    model: str | None = None              # 응답이 돌려준 실제 모델(로깅 메타)
+    input_tokens: int | None = None       # usage 청크에서 취득(없으면 None)
+    output_tokens: int | None = None
 
     try:
         stream = await _client.chat.completions.create(
             model=settings.deepseek_chat_model,
             messages=messages,
             stream=True,
+            stream_options={"include_usage": True},  # 마지막 청크에 usage 동봉(토큰 로깅)
             extra_body=_THINKING_DISABLED,
         )
         async for chunk in stream:
+            # 모델·usage는 choices가 빈 청크(특히 usage 전용 마지막 청크)에도 오므로
+            # choices 가드보다 먼저 수집한다.
+            model = getattr(chunk, "model", None) or model
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                # 토큰 필드 누락 시에도 'null 폴백' 계약을 지키도록 getattr로 방어한다.
+                input_tokens = getattr(usage, "prompt_tokens", None)
+                output_tokens = getattr(usage, "completion_tokens", None)
             # 메타데이터·필터 청크는 choices가 비어 올 수 있다 — 인덱싱 전에 가드.
             if not chunk.choices:
                 continue
@@ -123,7 +135,16 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
 
         ai_output, choices = _split_output(full)
         ai_output = _strip_speaker_bold(ai_output)  # 화자 라벨의 볼드 제거(저장·표시값)
-        yield {"event": EVENT_COMPLETED, "ai_output": ai_output, "choices": choices}
+        # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가 prompt_versions·provider를
+        # 더해 completed의 meta로 조립한다(KNK-243).
+        yield {
+            "event": EVENT_COMPLETED,
+            "ai_output": ai_output,
+            "choices": choices,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
     except OpenAIError as e:
         logger.exception("채팅 LLM 스트리밍 실패")  # 스택트레이스 포함 서버 로그
         yield {"event": EVENT_ERROR, "code": "LLM_ERROR", "message": str(e)}

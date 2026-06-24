@@ -1,4 +1,6 @@
 ---
+version: 1
+updated: 2026-06-24
 layer: SAFETY
 name: 정책 및 안전
 priority: 1            # 최상 — 충돌 시 모든 레이어를 이긴다

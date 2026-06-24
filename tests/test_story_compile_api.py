@@ -29,8 +29,8 @@ async def test_compile_endpoint_returns_nested_contract(
 ) -> None:
     """200 경로: LLM을 가짜로 두고 ERD 4테이블 nested 계약이 그대로 내려오는지 확인."""
 
-    async def fake_complete(system: str, user: str, **_kwargs: object) -> dict:
-        return _spec_valid()  # 완전한 결과 → 재호출 없음
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _spec_valid(), story_llm.LlmUsage("deepseek-test", 100, 200)
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -43,6 +43,15 @@ async def test_compile_endpoint_returns_nested_contract(
     assert body["story_settings"]["world_setting"].startswith("# 세계관")
     assert "## 레이" in body["story_settings"]["character_setting"]
     assert len(body["story_suggested_inputs"]) == 3
+    # 로깅 메타(KNK-243): story는 snake_case 와이어
+    meta = body["meta"]
+    assert meta["model"] == "deepseek-test"
+    assert meta["provider"] == "deepseek"
+    assert meta["prompt_versions"]["COMPILE"] >= 1
+    assert meta["input_token_count"] == 100
+    assert meta["output_token_count"] == 200
+    assert meta["retry_count"] == 0
+    assert "promptVersions" not in meta  # camelCase 아님(story는 snake)
 
 
 async def test_compile_endpoint_502_on_llm_error(
