@@ -20,7 +20,7 @@ def read_version(path: Path) -> int:
     frontmatter 블록이나 `version` 줄이 없으면 RuntimeError를 던진다 — 버전 누락은
     로깅 메타가 비는 것이라 조용히 넘기지 않고 모듈 로드 시점에 드러낸다.
     """
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")  # BOM 있으면 떼고 읽는다(없으면 utf-8과 동일)
     block = _FRONTMATTER_RE.match(text)
     if not block:
         raise RuntimeError(f"frontmatter 블록 없음: {path.name}")

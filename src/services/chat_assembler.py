@@ -35,7 +35,8 @@ def _layer_path(name: str) -> Path:
 
 
 def _load_layer(name: str) -> str:
-    return _body_only(_layer_path(name).read_text(encoding="utf-8"))
+    # utf-8-sig: BOM이 있으면 떼고 읽는다 — frontmatter가 본문에 새지 않게.
+    return _body_only(_layer_path(name).read_text(encoding="utf-8-sig"))
 
 
 # 레이어 본문은 정적이라 모듈 로드 시 1회만 읽어 캐시한다(매 턴 재치환은 .replace로 충분).
