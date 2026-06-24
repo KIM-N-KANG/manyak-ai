@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from src.schemas.response_meta import StoryResponseMeta
+
 
 class StoryCompileRequest(BaseModel):
     """스토리 컴파일(시점 A-1) 입력 — 희소 입력.
@@ -120,3 +122,4 @@ class StoryCompileResponse(BaseModel):
     story_settings: StorySettingsOut
     story_start_settings: StoryStartSettingsOut
     story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+    meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). compile_story가 항상 채운다.

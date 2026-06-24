@@ -168,8 +168,9 @@ def test_spec_to_response_renders_nested_markdown() -> None:
 
 # ── compile_story 통합 ──────────────────────────────────────────────────────
 async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_complete(system: str, user: str) -> dict:
-        return _load("spec_valid.json")  # 매번 완전한 결과 → 재호출 없음
+    async def fake_complete(system: str, user: str):
+        # 완전한 결과 → 재호출 없음. (dict, 사용 메타) 튜플 반환.
+        return _load("spec_valid.json"), story_llm.LlmUsage("deepseek-test", 100, 200)
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -178,31 +179,44 @@ async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyP
     assert res.stories.title == "잿빛 왕관"
     assert "## 레이" in res.story_settings.character_setting
     assert len(res.story_suggested_inputs) == 3
+    # 로깅 메타(KNK-243): model=응답값, prompt_versions=객체, retry_count=0(재호출 없음)
+    assert res.meta is not None
+    assert res.meta.model == "deepseek-test"
+    assert res.meta.provider == "deepseek"
+    assert list(res.meta.prompt_versions) == ["COMPILE"]
+    assert res.meta.prompt_versions["COMPILE"] >= 1
+    assert res.meta.input_token_count == 100
+    assert res.meta.output_token_count == 200
+    assert res.meta.retry_count == 0
 
 
 async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    async def fake_complete(system: str, user: str) -> dict:
+    async def fake_complete(system: str, user: str):
         calls.append(user)
         if len(calls) == 1:
             data = _load("spec_valid.json")
             data["prompt_settings"]["world_setting"] = ""  # 1차: 빈 필드
-            return data
-        return {"world_setting": "복구된 세계관 설정"}  # 재호출: 해당 블록만
+            return data, story_llm.LlmUsage("m", 100, 200)
+        return {"world_setting": "복구된 세계관 설정"}, story_llm.LlmUsage("m", 10, 20)
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
     res = await story_llm.compile_story(_request())
     assert len(calls) == 2  # 최초 1 + 부분 재호출 1
     assert "복구된 세계관 설정" in res.story_settings.world_setting
+    # retry_count=재호출 횟수, 토큰은 본호출+재호출 합산
+    assert res.meta.retry_count == 1
+    assert res.meta.input_token_count == 110  # 100 + 10
+    assert res.meta.output_token_count == 220  # 200 + 20
 
 
 async def test_compile_story_502_after_max_refill(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_complete(system: str, user: str) -> dict:
+    async def fake_complete(system: str, user: str):
         data = _load("spec_valid.json")
         data["start"]["prologue"] = ""  # 매번 빈 채 → 재호출로도 못 채움
-        return data
+        return data, story_llm.LlmUsage("m", 1, 1)
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 

@@ -127,3 +127,38 @@ async def test_stream_strips_speaker_bold_in_completed(mock_stream) -> None:
     assert "**" not in completed["ai_output"]
     assert "설하: 늦었군요." in completed["ai_output"]
     assert completed["choices"] == ["가", "나", "다"]
+
+
+# ── 로깅 메타 재료 수집(KNK-243) — model·usage ───────────────────────────────
+class _FakeUsage:
+    def __init__(self, prompt_tokens: int, completion_tokens: int) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
+class _MetaChunk:
+    """model·usage 속성을 가진 청크. usage 전용 청크는 choices가 비어 온다."""
+
+    def __init__(self, content: str | None = None, model: str | None = None, usage=None) -> None:
+        self.choices = [] if content is None else [_FakeChoice(content)]
+        self.model = model
+        self.usage = usage
+
+
+async def test_stream_captures_model_and_usage(monkeypatch) -> None:
+    # 본문 청크 + (choices 빈) usage 전용 마지막 청크에서 model·토큰을 취득해 completed에 싣는다.
+    async def _agen():
+        yield _MetaChunk(content="본문", model="deepseek-v4-flash")
+        yield _MetaChunk(content=None, model="deepseek-v4-flash", usage=_FakeUsage(11, 22))
+
+    async def _create(**kwargs):
+        assert kwargs.get("stream_options") == {"include_usage": True}  # 토큰 동봉 플래그
+        return _agen()
+
+    monkeypatch.setattr(chat_llm._client.chat.completions, "create", _create)
+
+    events = [e async for e in stream_chat_turn([])]
+    completed = next(e for e in events if e["event"] == "completed")
+    assert completed["model"] == "deepseek-v4-flash"
+    assert completed["input_tokens"] == 11
+    assert completed["output_tokens"] == 22

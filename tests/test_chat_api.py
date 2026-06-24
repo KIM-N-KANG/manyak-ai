@@ -68,8 +68,20 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     assert "ai_output" not in body
 
     completed = _data_of(body, "completed")
-    assert completed == {"aiOutput": "안녕", "choices": ["가", "나", "다"]}
+    assert completed["aiOutput"] == "안녕"
+    assert completed["choices"] == ["가", "나", "다"]
     assert _data_of(body, "token") == {"text": "안녕"}
+
+    # 로깅 메타(KNK-243): chat은 camelCase 와이어
+    meta = completed["meta"]
+    assert meta["provider"] == "deepseek"
+    assert meta["retryCount"] == 0
+    assert meta["promptVersions"]["SAFETY"] >= 1  # 6레이어 버전 객체
+    assert meta["model"]  # 이벤트에 model 없으면 설정값으로 폴백
+    # mock 이벤트엔 토큰이 없어 null
+    assert meta["inputTokenCount"] is None
+    assert meta["outputTokenCount"] is None
+    assert "input_token_count" not in body  # snake_case 아님(chat은 camel)
 
 
 async def test_chat_turn_sse_error(client, mock_events) -> None:

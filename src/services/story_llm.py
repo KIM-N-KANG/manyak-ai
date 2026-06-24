@@ -1,12 +1,30 @@
 import json
+from dataclasses import dataclass
 
 from fastapi import HTTPException, status
 from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
+from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse, StorySpec
-from src.services.prompt import build_compile_prompt, build_refill_prompt
+from src.services.prompt import COMPILE_VERSION, build_compile_prompt, build_refill_prompt
 from src.services.story_compile_render import spec_to_response
+
+
+@dataclass
+class LlmUsage:
+    """LLM 호출이 실제로 쓴 메타(로깅용). model은 응답이 돌려준 실제 모델명이다."""
+
+    model: str
+    input_tokens: int | None
+    output_tokens: int | None
+
+
+def _add_tokens(a: int | None, b: int | None) -> int | None:
+    """토큰 수를 합산한다(재호출 합산용). 둘 다 None이면 None, 아니면 누락을 0으로 본다."""
+    if a is None and b is None:
+        return None
+    return (a or 0) + (b or 0)
 
 _client = AsyncOpenAI(
     api_key=settings.deepseek_api_key,
@@ -50,8 +68,12 @@ def _strip_code_fence(text: str) -> str:
     return stripped
 
 
-async def _complete_json(system_prompt: str, user_prompt: str) -> dict:
-    """LLM을 호출해 JSON 응답을 dict로 파싱한다. 호출·빈응답·파싱 오류를 502로 변환한다."""
+async def _complete_json(system_prompt: str, user_prompt: str) -> tuple[dict, LlmUsage]:
+    """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
+
+    로깅용 메타는 응답에서 직접 뽑는다 — model은 `response.model`(실제 쓴 모델), 토큰은
+    `response.usage`(없으면 None). 이 한 곳이 메타의 출처라 모델을 바꿔도 따로 손댈 게 없다.
+    """
     try:
         response = await _client.chat.completions.create(
             model=settings.deepseek_model,
@@ -77,7 +99,13 @@ async def _complete_json(system_prompt: str, user_prompt: str) -> dict:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="LLM이 JSON 객체를 반환하지 않았습니다.",
             )
-        return parsed
+        usage = LlmUsage(
+            model=response.model or settings.deepseek_model,
+            # 토큰 필드 누락 시에도 'null 폴백' 계약을 지키도록 getattr로 방어한다.
+            input_tokens=getattr(response.usage, "prompt_tokens", None),
+            output_tokens=getattr(response.usage, "completion_tokens", None),
+        )
+        return parsed, usage
     except OpenAIError as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -90,7 +118,8 @@ async def _complete_json(system_prompt: str, user_prompt: str) -> dict:
         )
 
 
-async def generate_storylines(system_prompt: str, user_prompt: str) -> dict:
+async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dict, LlmUsage]:
+    """스토리라인 생성 — (결과 dict, 사용 메타)를 반환한다. 메타 조립은 엔드포인트가 한다."""
     return await _complete_json(system_prompt, user_prompt)
 
 
@@ -218,8 +247,11 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         request.protagonist_tags,
         request.supporting_tags,
     )
-    data = await _complete_json(system_prompt, user_prompt)
+    data, usage = await _complete_json(system_prompt, user_prompt)
     _inject_genre(data, request.genre_tags)
+
+    # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
+    input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
 
     # 빈 필수 필드가 있으면 해당 블록만 다시 채운다(최대 _MAX_REFILL회).
     missing = _find_missing_keys(data)
@@ -232,7 +264,9 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             json.dumps(data, ensure_ascii=False),
             blocks,
         )
-        refill = await _complete_json(refill_system, refill_user)
+        refill, refill_usage = await _complete_json(refill_system, refill_user)
+        input_tokens = _add_tokens(input_tokens, refill_usage.input_tokens)
+        output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
         _merge_blocks(data, refill, blocks)
         _inject_genre(data, request.genre_tags)
         missing = _find_missing_keys(data)
@@ -251,4 +285,13 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             detail=f"컴파일 결과가 스토리 명세 형식과 맞지 않습니다: {e}",
         )
 
-    return spec_to_response(spec)
+    response = spec_to_response(spec)
+    response.meta = StoryResponseMeta(
+        model=usage.model,
+        prompt_versions={"COMPILE": COMPILE_VERSION},
+        provider=settings.llm_provider,
+        input_token_count=input_tokens,
+        output_token_count=output_tokens,
+        retry_count=attempts,  # 부분 재호출 횟수(0~_MAX_REFILL)
+    )
+    return response
