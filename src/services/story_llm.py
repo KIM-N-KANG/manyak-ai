@@ -1,4 +1,6 @@
 import json
+import logging
+import time
 
 from fastapi import HTTPException, status
 from openai import AsyncOpenAI, OpenAIError
@@ -7,6 +9,8 @@ from src.core.config import settings
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse, StorySpec
 from src.services.prompt import build_compile_prompt, build_refill_prompt
 from src.services.story_compile_render import spec_to_response
+
+logger = logging.getLogger(__name__)
 
 _client = AsyncOpenAI(
     api_key=settings.deepseek_api_key,
@@ -51,17 +55,18 @@ def _strip_code_fence(text: str) -> str:
 
 
 async def _complete_json(
-    system_prompt: str, user_prompt: str, model: str | None = None
+    system_prompt: str, user_prompt: str, model: str | None = None, *, label: str = "compile"
 ) -> dict:
     """LLM을 호출해 JSON 응답을 dict로 파싱한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
     model이 None이면 컴파일용 deepseek_model(pro)로 폴백한다. 기본 인자에 settings 값을
     직접 두면 import 시점에 고정돼 런타임 오버라이드(테스트 등)가 반영되지 않으므로 호출
     시점에 해석한다. 응답 속도가 중요한 경로(스토리라인)는 호출 측에서 flash 모델을 넘겨
-    덮어쓴다(KNK-215).
+    덮어쓴다(KNK-215). label은 진단 로깅에서 호출 종류를 구분하는 용도다(KNK-222).
     """
     resolved_model = model if model is not None else settings.deepseek_model
     try:
+        start = time.monotonic()
         response = await _client.chat.completions.create(
             model=resolved_model,
             messages=[
@@ -71,6 +76,16 @@ async def _complete_json(
             response_format={"type": "json_object"},
             max_tokens=_MAX_TOKENS,
             extra_body=_THINKING_DISABLED,
+        )
+        # 진단: 호출별 소요시간·입출력 토큰·캐시 적중을 남겨 병목(재호출/출력 decode)을 실측한다.
+        usage = response.usage
+        logger.info(
+            "LLM[%s] %.1fs in=%s out=%s cache_hit=%s",
+            label,
+            time.monotonic() - start,
+            getattr(usage, "prompt_tokens", "?"),
+            getattr(usage, "completion_tokens", "?"),
+            getattr(usage, "prompt_cache_hit_tokens", "?"),
         )
         content = response.choices[0].message.content
         if not content:
@@ -102,8 +117,9 @@ async def _complete_json(
 async def generate_storylines(system_prompt: str, user_prompt: str) -> dict:
     # 스토리라인 생성은 응답 속도가 사용자 체감에 직결돼 flash 모델을 쓴다(KNK-215).
     # pro 대비 디코딩 ~2배 빨라 동일 분량 생성 시간이 절반 이하다(31s→12s 실측).
+    # 진단 로깅에서 구분되도록 label="storylines"를 함께 넘긴다(KNK-222).
     return await _complete_json(
-        system_prompt, user_prompt, model=settings.deepseek_chat_model
+        system_prompt, user_prompt, model=settings.deepseek_chat_model, label="storylines"
     )
 
 
@@ -231,24 +247,33 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         request.protagonist_tags,
         request.supporting_tags,
     )
-    data = await _complete_json(system_prompt, user_prompt)
+    data = await _complete_json(system_prompt, user_prompt, label="compile")
     _inject_genre(data, request.genre_tags)
 
     # 빈 필수 필드가 있으면 해당 블록만 다시 채운다(최대 _MAX_REFILL회).
     missing = _find_missing_keys(data)
+    if missing:
+        logger.info("compile 1차 응답 누락 블록: %s", missing)
     attempts = 0
     while missing and attempts < _MAX_REFILL:
         attempts += 1
         blocks = sorted({_block_of(p) for p in missing})
+        logger.info("compile 재호출 #%d 대상 블록=%s", attempts, blocks)
         refill_system, refill_user = build_refill_prompt(
             user_prompt,
             json.dumps(data, ensure_ascii=False),
             blocks,
         )
-        refill = await _complete_json(refill_system, refill_user)
+        refill = await _complete_json(refill_system, refill_user, label=f"refill#{attempts}")
         _merge_blocks(data, refill, blocks)
         _inject_genre(data, request.genre_tags)
         missing = _find_missing_keys(data)
+    logger.info(
+        "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 누락=%s",
+        1 + attempts,
+        attempts,
+        missing or "없음",
+    )
 
     if missing:
         raise HTTPException(
