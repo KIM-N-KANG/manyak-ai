@@ -168,7 +168,7 @@ def test_spec_to_response_renders_nested_markdown() -> None:
 
 # ── compile_story 통합 ──────────────────────────────────────────────────────
 async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_complete(system: str, user: str):
+    async def fake_complete(system: str, user: str, **_kwargs: object):
         # 완전한 결과 → 재호출 없음. (dict, 사용 메타) 튜플 반환.
         return _load("spec_valid.json"), story_llm.LlmUsage("deepseek-test", 100, 200)
 
@@ -193,7 +193,7 @@ async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyP
 async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    async def fake_complete(system: str, user: str):
+    async def fake_complete(system: str, user: str, **_kwargs: object):
         calls.append(user)
         if len(calls) == 1:
             data = _load("spec_valid.json")
@@ -213,7 +213,7 @@ async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPat
 
 
 async def test_compile_story_502_after_max_refill(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_complete(system: str, user: str):
+    async def fake_complete(system: str, user: str, **_kwargs: object):
         data = _load("spec_valid.json")
         data["start"]["prologue"] = ""  # 매번 빈 채 → 재호출로도 못 채움
         return data, story_llm.LlmUsage("m", 1, 1)

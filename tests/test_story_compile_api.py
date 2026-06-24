@@ -29,7 +29,7 @@ async def test_compile_endpoint_returns_nested_contract(
 ) -> None:
     """200 경로: LLM을 가짜로 두고 ERD 4테이블 nested 계약이 그대로 내려오는지 확인."""
 
-    async def fake_complete(system: str, user: str):
+    async def fake_complete(system: str, user: str, **_kwargs: object):
         return _spec_valid(), story_llm.LlmUsage("deepseek-test", 100, 200)
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
@@ -59,7 +59,7 @@ async def test_compile_endpoint_502_on_llm_error(
 ) -> None:
     """LLM 연동 오류는 502로 전파되는지 확인."""
 
-    async def boom(system: str, user: str) -> dict:
+    async def boom(system: str, user: str, **_kwargs: object) -> dict:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="LLM 오류")
 
     monkeypatch.setattr(story_llm, "_complete_json", boom)
