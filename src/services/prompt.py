@@ -1,8 +1,14 @@
 from pathlib import Path
 
+from src.services.prompt_meta import read_version
+
 _PROMPT_DIR = Path(__file__).parent.parent.parent / "prompt" / "story"
-_STORY_TEMPLATE_PATH = _PROMPT_DIR / "STORY-PROMPT-TEMPLATE.md"
-_COMPILE_TEMPLATE_PATH = _PROMPT_DIR / "STORY-COMPILE-TEMPLATE.md"
+_STORYLINES_TEMPLATE_PATH = _PROMPT_DIR / "STORYLINES-TEMPLATE.md"
+_COMPILE_TEMPLATE_PATH = _PROMPT_DIR / "COMPILE-TEMPLATE.md"
+
+# 버전은 파일명이 아니라 frontmatter가 SSOT다(KNK-228). 로깅용으로 노출한다(KNK-243).
+STORYLINES_VERSION = read_version(_STORYLINES_TEMPLATE_PATH)
+COMPILE_VERSION = read_version(_COMPILE_TEMPLATE_PATH)
 
 
 def _load_template(path: Path) -> tuple[str, str]:
@@ -16,7 +22,7 @@ def _load_template(path: Path) -> tuple[str, str]:
         raise RuntimeError(f"프롬프트 템플릿 로드 또는 파싱 실패: {path.name}: {e}")
 
 
-_STORY_SYSTEM, _STORY_USER = _load_template(_STORY_TEMPLATE_PATH)
+_STORY_SYSTEM, _STORY_USER = _load_template(_STORYLINES_TEMPLATE_PATH)
 _COMPILE_SYSTEM, _COMPILE_USER = _load_template(_COMPILE_TEMPLATE_PATH)
 
 

@@ -12,8 +12,10 @@ import re
 from pathlib import Path
 
 from src.schemas.chat_turn import ChatHistoryItem, ChatStartSettings, ChatTurnRequest
+from src.services.prompt_meta import read_version
 
 _CHAT_DIR = Path(__file__).parent.parent.parent / "prompt" / "chat"
+_LAYER_NAMES = ("SAFETY", "CORE", "STORY", "CHARACTER", "USER", "MEMORY")
 
 
 def _body_only(text: str) -> str:
@@ -28,15 +30,19 @@ def _phi_core(body: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _layer_path(name: str) -> Path:
+    return _CHAT_DIR / f"{name}-TEMPLATE.md"
+
+
 def _load_layer(name: str) -> str:
-    return _body_only((_CHAT_DIR / f"{name}-PROMPT.md").read_text(encoding="utf-8"))
+    return _body_only(_layer_path(name).read_text(encoding="utf-8"))
 
 
 # 레이어 본문은 정적이라 모듈 로드 시 1회만 읽어 캐시한다(매 턴 재치환은 .replace로 충분).
-_LAYERS = {
-    n: _load_layer(n)
-    for n in ("SAFETY", "CORE", "STORY", "CHARACTER", "USER", "MEMORY")
-}
+_LAYERS = {n: _load_layer(n) for n in _LAYER_NAMES}
+
+# 레이어 버전은 frontmatter가 SSOT다(KNK-228). 로깅용으로 레이어별 버전을 노출한다(KNK-243).
+LAYER_VERSIONS = {n: read_version(_layer_path(n)) for n in _LAYER_NAMES}
 
 # [시스템 앞] 배치 순서(명세 4.1) — MEMORY는 Depth 전담이라 제외.
 _SYSTEM_FRONT = ("SAFETY", "CORE", "STORY", "CHARACTER", "USER")
