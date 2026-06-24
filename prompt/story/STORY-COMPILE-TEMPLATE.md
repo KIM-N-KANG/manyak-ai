@@ -48,7 +48,11 @@
 
 반드시 아래 JSON 구조만 반환한다. 설명, 머리말, 코드 펜스를 절대 포함하지 않는다.
 - 모든 값은 한국어로 쓴다. 중국어·일본어를 비롯한 외국어는 단 한 글자도 섞지 않는다.
-- 여러 문장으로 이루어진 서술형 값(`world_setting`, `plot_setting`의 `premise`·`conflict`, `rule_setting`, `tone_setting`, `character_setting` 각 항목의 `personality`·`motivation`·`attitude_to_user`, `user_role_setting`의 `background`·`personality`, `start.prologue`·`start_situation` 등)은 문장마다 빈 줄 하나(이중 개행 `\n\n`)로 구분한다. 한 문장짜리 짧은 값(`name`, `length_ratio` 등)은 그대로 둔다.
+- 여러 문장으로 이루어진 서술형 값(`world_setting`, `plot_setting`의 `premise`·`conflict`, `rule_setting`, `tone_setting`, `character_setting` 각 항목의 `personality`·`motivation`·`attitude_to_user`, `user_role_setting`의 `background`·`personality`, `start.prologue`·`start_situation` 등)은 **각 문장이 끝날 때마다 이중 개행(`\n\n`)하여 한 문장씩 출력하고, 문장 사이에 빈 줄을 하나 둔다.** 즉 `문장1.\n\n문장2.\n\n문장3.` 형태로 쓴다. 한 문장짜리 짧은 값(`name`, `length_ratio` 등)은 그대로 둔다.
+
+### 출력 직전 자기 점검 (점검만 하고, JSON 외에는 출력하지 않는다)
+
+- 서술형 값이 한 문장마다 이중 개행(`\n\n`)으로 구분되어, 문장 사이에 빈 줄이 하나씩 있는가?
 
 {
   "meta": { "title": "...", "one_line_intro": "...", "description": "...", "genre": "..." },
