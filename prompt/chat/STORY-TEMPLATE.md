@@ -1,4 +1,6 @@
 ---
+version: 3
+updated: 2026-06-24
 layer: STORY
 name: 시나리오 및 세계관 설계
 priority: 4

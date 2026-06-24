@@ -1,4 +1,6 @@
 ---
+version: 2
+updated: 2026-06-24
 layer: CORE
 name: 공통 작동 시스템
 priority: 2
