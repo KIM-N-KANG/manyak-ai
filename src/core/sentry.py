@@ -4,9 +4,10 @@ DSN이 비어 있으면 init이 no-op이라 로컬·CI는 영향이 없다(분�
 프롬프트·채팅·LLM 생성 원문은 Sentry에 싣지 않는다(AN-4-10) — send_default_pii=False와
 before_send로 request 데이터를 떼고, 캡처 인자에도 원문을 넣지 않는다.
 
-manyak-ai가 자체적으로 아는 값만 싣는다: feature·provider·model·error_code(tag),
-prompt_versions·retry_count·latency_ms(context). request_id 등 상관관계 식별자는
-백엔드가 AI로 전달하지 않으므로(KNK-88 트리상 미계획) 이번 범위가 아니다.
+manyak-ai가 자체적으로 아는 값(feature·provider·model·error_code tag, prompt_versions·
+retry_count·latency_ms context)만 여기서 싣는다. 백엔드가 헤더로 넘긴 요청 상관관계 식별자
+(request_id·session_id·anonymous_id_hash)는 RequestContextMiddleware가 요청별 Sentry
+isolation scope에 직접 부착한다(KNK-266) — 미처리 500 캡처까지 커버되도록.
 
 prompt_versions는 단일 문자열이 아니라 dict로 싣는다 — chat은 6레이어 다중 키라
 단일 스칼라로 담을 수 없어 백엔드도 JSONB로 적재한다(KNK-246). 그 계약과 표현을 맞춘다.
@@ -69,6 +70,7 @@ def _before_send(event: dict, hint: dict) -> dict:
     """AN-4-10: 프롬프트·채팅·생성 원문이 새지 않게 request 데이터를 떼고 보낸다.
 
     send_default_pii=False와 함께 이중 안전장치다(우리는 캡처 인자에도 원문을 넣지 않는다).
+    요청 상관관계 식별자는 RequestContextMiddleware가 isolation scope에 부착한다(KNK-266).
     """
     event.pop("request", None)
     return event
