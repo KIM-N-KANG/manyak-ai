@@ -187,6 +187,8 @@ async def test_stream_error_captures(monkeypatch) -> None:
     monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda *a, **k: calls.append(k))
 
     events = [e async for e in stream_chat_turn([])]
-    assert any(e["event"] == "error" for e in events)
+    err_event = next(e for e in events if e["event"] == "error")
+    assert err_event["code"] == "LLM_ERROR"
+    assert "boom" not in err_event["message"]  # provider 원문(str(e)) 미노출 — AN-4-10
     assert len(calls) == 1
     assert calls[0]["feature"] == "chat_response"

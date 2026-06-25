@@ -156,4 +156,9 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
             model=settings.deepseek_chat_model,
             prompt_versions=LAYER_VERSIONS,
         )
-        yield {"event": EVENT_ERROR, "code": "LLM_ERROR", "message": str(e)}
+        # 내부 상세(str(e))는 Sentry·로그로만 남기고 클라이언트엔 정제 메시지를 보낸다(AN-4-10).
+        yield {
+            "event": EVENT_ERROR,
+            "code": "LLM_ERROR",
+            "message": "채팅 연동 중 오류가 발생했습니다.",
+        }
