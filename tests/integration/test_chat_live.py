@@ -10,6 +10,7 @@ from src.schemas.chat_turn import (
 )
 from src.services.chat_assembler import assemble
 from src.services.chat_llm import stream_chat_turn
+from src.services.chat_next_actions import generate_next_actions
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +46,8 @@ def _request() -> ChatTurnRequest:
 
 
 async def test_chat_turn_live() -> None:
-    events = [e async for e in stream_chat_turn(assemble(_request()))]
+    req = _request()
+    events = [e async for e in stream_chat_turn(assemble(req))]
 
     types = [e["event"] for e in events]
     assert "error" not in types, [e for e in events if e["event"] == "error"]
@@ -57,10 +59,12 @@ async def test_chat_turn_live() -> None:
     # 본문을 실제로 흘렸고 비어 있지 않다
     assert tokens.strip()
     assert completed["ai_output"].strip()
-    # B안: 선택지 마커는 token으로 흘리지 않는다
+    # 본문 호출은 선택지를 만들지 않는다 — 마커도, choices 키도 섞이지 않는다(별도 호출 전담).
     assert "[다음 행동]" not in tokens
-    # 본문(ai_output)에도 선택지 마커가 섞이지 않는다
     assert "[다음 행동]" not in completed["ai_output"]
-    # LLM이 CORE 출력 봉투(다음 행동 3개)를 지켜 choices가 파싱된다
-    assert len(completed["choices"]) == 3
-    assert all(c.strip() for c in completed["choices"])
+    assert "choices" not in completed
+
+    # 분리된 2번째 호출이 항상 정확히 3개를 보장한다(엔드포인트와 동일 흐름).
+    next_actions = await generate_next_actions(req, completed["ai_output"])
+    assert len(next_actions.choices) == 3
+    assert all(c.strip() for c in next_actions.choices)
