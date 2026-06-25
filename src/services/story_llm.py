@@ -7,12 +7,33 @@ from fastapi import HTTPException, status
 from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
+from src.core.sentry import (
+    ERROR_INVALID_AI_RESPONSE,
+    ERROR_PROVIDER_BAD_REQUEST,
+    ERROR_PROVIDER_RATE_LIMITED,
+    ERROR_PROVIDER_TIMEOUT,
+    ERROR_PROVIDER_UNAVAILABLE,
+    ERROR_SCHEMA_VALIDATION_FAILED,
+    FEATURE_STORY_COMPLETION,
+    FEATURE_STORYLINE_GENERATION,
+    capture_ai_exception,
+    classify_error_code,
+)
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse, StorySpec
-from src.services.prompt import COMPILE_VERSION, build_compile_prompt, build_refill_prompt
+from src.services.prompt import (
+    COMPILE_VERSION,
+    STORYLINES_VERSION,
+    build_compile_prompt,
+    build_refill_prompt,
+)
 from src.services.story_compile_render import spec_to_response
 
 logger = logging.getLogger(__name__)
+
+
+class _InvalidAiResponse(Exception):
+    """LLM이 빈 응답·비객체 JSON을 반환 — invalid_ai_response로 분류한다."""
 
 
 @dataclass
@@ -46,6 +67,15 @@ _MAX_TOKENS = 6144
 # 빈 필수 필드를 채우기 위한 부분 재호출 최대 횟수. 초과하면 502로 막는다.
 _MAX_REFILL = 2
 
+# 502 detail은 사용자 노출용 메시지만 담는다(AN-4-7) — provider 원문은 Sentry로만 보낸다(AN-4-10).
+_DETAIL_BY_CODE = {
+    ERROR_PROVIDER_TIMEOUT: "LLM 응답 시간이 초과되었습니다.",
+    ERROR_PROVIDER_RATE_LIMITED: "LLM 요청이 일시적으로 제한되었습니다.",
+    ERROR_PROVIDER_BAD_REQUEST: "LLM 요청이 거부되었습니다.",
+    ERROR_PROVIDER_UNAVAILABLE: "LLM 연동 중 오류가 발생했습니다.",
+    ERROR_INVALID_AI_RESPONSE: "LLM이 올바른 형식의 응답을 반환하지 않았습니다.",
+}
+
 # prompt_settings 하위에 속하는 재호출 블록명. 병합 시 prompt_settings 안에 덮어쓴다.
 _PROMPT_SETTINGS_BLOCKS = {
     "world_setting",
@@ -73,7 +103,13 @@ def _strip_code_fence(text: str) -> str:
 
 
 async def _complete_json(
-    system_prompt: str, user_prompt: str, model: str | None = None, *, label: str = "compile"
+    system_prompt: str,
+    user_prompt: str,
+    model: str | None = None,
+    *,
+    label: str = "compile",
+    feature: str = FEATURE_STORY_COMPLETION,
+    prompt_versions: dict | None = None,
 ) -> tuple[dict, LlmUsage]:
     """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
@@ -86,8 +122,8 @@ async def _complete_json(
     response.usage(없으면 None). 이 한 곳이 메타의 출처라 모델을 바꿔도 따로 손댈 게 없다.
     """
     resolved_model = model if model is not None else settings.deepseek_model
+    start = time.monotonic()
     try:
-        start = time.monotonic()
         response = await _client.chat.completions.create(
             model=resolved_model,
             messages=[
@@ -110,18 +146,12 @@ async def _complete_json(
         )
         content = response.choices[0].message.content
         if not content:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="LLM이 빈 응답을 반환했습니다.",
-            )
+            raise _InvalidAiResponse("LLM이 빈 응답을 반환했습니다.")
         parsed = json.loads(_strip_code_fence(content))
         if not isinstance(parsed, dict):
             # json_object를 무시하고 배열·스칼라를 반환한 경우. dict 가정이 깨지면
-            # 호출부(compile_story 등)에서 AttributeError로 500이 나므로 여기서 502로 막는다.
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="LLM이 JSON 객체를 반환하지 않았습니다.",
-            )
+            # 호출부(compile_story 등)에서 AttributeError로 500이 나므로 여기서 막는다.
+            raise _InvalidAiResponse("LLM이 JSON 객체를 반환하지 않았습니다.")
         usage = LlmUsage(
             model=response.model or resolved_model,
             # 토큰 필드 누락 시에도 'null 폴백' 계약을 지키도록 getattr로 방어한다.
@@ -129,16 +159,26 @@ async def _complete_json(
             output_tokens=getattr(response.usage, "completion_tokens", None),
         )
         return parsed, usage
-    except OpenAIError as e:
+    except (OpenAIError, json.JSONDecodeError, _InvalidAiResponse) as exc:
+        # 실패를 한 곳에서 모아 Sentry에 보고하고(AN-4) error_code별 502로 바꾼다. 502 detail에는
+        # provider 원문(str(e))을 싣지 않는다 — 내부 상세는 Sentry로만 보낸다(AN-4-7·4-10).
+        error_code = (
+            ERROR_INVALID_AI_RESPONSE
+            if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse))
+            else classify_error_code(exc)
+        )
+        capture_ai_exception(
+            exc,
+            feature=feature,
+            error_code=error_code,
+            model=resolved_model,
+            prompt_versions=prompt_versions,
+            latency_ms=int((time.monotonic() - start) * 1000),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"LLM 플랫폼 연동 중 오류가 발생했습니다: {str(e)}",
-        )
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="LLM이 올바른 JSON 형식을 반환하지 않았습니다.",
-        )
+            detail=_DETAIL_BY_CODE.get(error_code, "LLM 처리 중 오류가 발생했습니다."),
+        ) from exc
 
 
 async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dict, LlmUsage]:
@@ -148,7 +188,12 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
     label="storylines"로 진단 로깅을 구분한다(KNK-222).
     """
     return await _complete_json(
-        system_prompt, user_prompt, model=settings.deepseek_chat_model, label="storylines"
+        system_prompt,
+        user_prompt,
+        model=settings.deepseek_chat_model,
+        label="storylines",
+        feature=FEATURE_STORYLINE_GENERATION,
+        prompt_versions={"STORYLINES": STORYLINES_VERSION},
     )
 
 
@@ -276,7 +321,13 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         request.protagonist_tags,
         request.supporting_tags,
     )
-    data, usage = await _complete_json(system_prompt, user_prompt, label="compile")
+    data, usage = await _complete_json(
+        system_prompt,
+        user_prompt,
+        label="compile",
+        feature=FEATURE_STORY_COMPLETION,
+        prompt_versions={"COMPILE": COMPILE_VERSION},
+    )
     _inject_genre(data, request.genre_tags)
 
     # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
@@ -297,7 +348,11 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             blocks,
         )
         refill, refill_usage = await _complete_json(
-            refill_system, refill_user, label=f"refill#{attempts}"
+            refill_system,
+            refill_user,
+            label=f"refill#{attempts}",
+            feature=FEATURE_STORY_COMPLETION,
+            prompt_versions={"COMPILE": COMPILE_VERSION},
         )
         input_tokens = _add_tokens(input_tokens, refill_usage.input_tokens)
         output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
@@ -312,18 +367,35 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     )
 
     if missing:
+        exc = _InvalidAiResponse(f"재호출 후에도 필수 필드 누락: {missing}")
+        capture_ai_exception(
+            exc,
+            feature=FEATURE_STORY_COMPLETION,
+            error_code=ERROR_INVALID_AI_RESPONSE,
+            model=usage.model,
+            prompt_versions={"COMPILE": COMPILE_VERSION},
+            retry_count=attempts,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"재호출 후에도 컴파일 결과에 필수 필드가 비어 있습니다: {missing}",
-        )
+            detail="재호출 후에도 컴파일 결과에 필수 필드가 비어 있습니다.",
+        ) from exc
 
     try:
         spec = StorySpec(**data)
     except (TypeError, ValueError) as e:
+        capture_ai_exception(
+            e,
+            feature=FEATURE_STORY_COMPLETION,
+            error_code=ERROR_SCHEMA_VALIDATION_FAILED,
+            model=usage.model,
+            prompt_versions={"COMPILE": COMPILE_VERSION},
+            retry_count=attempts,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"컴파일 결과가 스토리 명세 형식과 맞지 않습니다: {e}",
-        )
+            detail="컴파일 결과가 스토리 명세 형식과 맞지 않습니다.",
+        ) from e
 
     response = spec_to_response(spec)
     response.meta = StoryResponseMeta(

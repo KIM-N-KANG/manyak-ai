@@ -19,5 +19,11 @@ class Settings(BaseSettings):
     # config가 유일한 출처다 — 공급자 교체 시 여기만 바꾸면 로그가 정확해진다(KNK-243).
     llm_provider: str = "deepseek"
 
+    # Sentry 오류 수집 (KNK-262). DSN이 비면 비활성(no-op) — 로컬·CI는 끈다.
+    # environment·표본율은 server(SENTRY_ENVIRONMENT/SENTRY_TRACES_SAMPLE_RATE) 규약을 미러링한다.
+    sentry_dsn: str = ""
+    sentry_environment: str = "local"
+    sentry_traces_sample_rate: float = 0.0
+
 
 settings = Settings()

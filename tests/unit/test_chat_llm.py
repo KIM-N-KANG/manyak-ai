@@ -162,3 +162,33 @@ async def test_stream_captures_model_and_usage(monkeypatch) -> None:
     assert completed["model"] == "deepseek-v4-flash"
     assert completed["input_tokens"] == 11
     assert completed["output_tokens"] == 22
+
+
+# ── Sentry 캡처 경계(KNK-262) — 성공은 조용, 실패만 보고 ──────────────────────
+async def test_stream_success_does_not_capture(mock_stream, monkeypatch) -> None:
+    """정상 스트림(completed)에서는 Sentry capture를 호출하지 않는다."""
+    calls: list = []
+    monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda *a, **k: calls.append(1))
+    mock_stream(["*지문*\n레이: 안녕.\n[다음 행동]\n1. 가\n2. 나\n3. 다"])
+    events = [e async for e in stream_chat_turn([])]
+    assert any(e["event"] == "completed" for e in events)
+    assert calls == []  # 성공 경로 — 미호출
+
+
+async def test_stream_error_captures(monkeypatch) -> None:
+    """스트림 중 OpenAIError가 나면 error 이벤트와 함께 chat_response feature로 캡처한다."""
+    from openai import OpenAIError
+
+    async def _create(**kwargs):
+        raise OpenAIError("boom")
+
+    monkeypatch.setattr(chat_llm._client.chat.completions, "create", _create)
+    calls: list = []
+    monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda *a, **k: calls.append(k))
+
+    events = [e async for e in stream_chat_turn([])]
+    err_event = next(e for e in events if e["event"] == "error")
+    assert err_event["code"] == "LLM_ERROR"
+    assert "boom" not in err_event["message"]  # provider 원문(str(e)) 미노출 — AN-4-10
+    assert len(calls) == 1
+    assert calls[0]["feature"] == "chat_response"

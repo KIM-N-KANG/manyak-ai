@@ -223,3 +223,37 @@ async def test_compile_story_502_after_max_refill(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(HTTPException) as exc:
         await story_llm.compile_story(_request())
     assert exc.value.status_code == 502
+
+
+# ── Sentry 캡처 경계(KNK-262) — 성공은 조용, 실패만 보고 ──────────────────────
+async def test_compile_story_success_does_not_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정상 컴파일에서는 Sentry capture를 호출하지 않는다."""
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _load("spec_valid.json"), story_llm.LlmUsage("deepseek-test", 100, 200)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    calls: list = []
+    monkeypatch.setattr(story_llm, "capture_ai_exception", lambda *a, **k: calls.append(1))
+
+    res = await story_llm.compile_story(_request())
+    assert res.stories.title  # 성공
+    assert calls == []  # 성공 경로 — 미호출
+
+
+async def test_compile_story_schema_failure_captures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """StorySpec 파싱 실패(인물 6명 > 상한 5)는 schema_validation_failed로 캡처한다."""
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        # 빈 필수키는 없어 재호출 없이 통과하지만, 인물 6명이라 StorySpec 파싱에서 거부된다.
+        return _load("spec_chars_6.json"), story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    calls: list = []
+    monkeypatch.setattr(story_llm, "capture_ai_exception", lambda *a, **k: calls.append(k))
+
+    with pytest.raises(HTTPException) as exc:
+        await story_llm.compile_story(_request())
+    assert exc.value.status_code == 502
+    assert len(calls) == 1
+    assert calls[0]["error_code"] == "schema_validation_failed"

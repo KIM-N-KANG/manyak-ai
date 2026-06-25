@@ -17,7 +17,9 @@ from collections.abc import AsyncIterator
 from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
+from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
 from src.schemas.chat_turn import EVENT_COMPLETED, EVENT_ERROR, EVENT_TOKEN
+from src.services.chat_assembler import LAYER_VERSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -147,4 +149,16 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
         }
     except OpenAIError as e:
         logger.exception("채팅 LLM 스트리밍 실패")  # 스택트레이스 포함 서버 로그
-        yield {"event": EVENT_ERROR, "code": "LLM_ERROR", "message": str(e)}
+        # SSE는 HTTP 200이라 미들웨어가 못 잡는다 — 여기서 직접 Sentry로 보고한다(AN-4).
+        capture_ai_exception(
+            e,
+            feature=FEATURE_CHAT_RESPONSE,
+            model=settings.deepseek_chat_model,
+            prompt_versions=LAYER_VERSIONS,
+        )
+        # 내부 상세(str(e))는 Sentry·로그로만 남기고 클라이언트엔 정제 메시지를 보낸다(AN-4-10).
+        yield {
+            "event": EVENT_ERROR,
+            "code": "LLM_ERROR",
+            "message": "채팅 연동 중 오류가 발생했습니다.",
+        }
