@@ -113,7 +113,8 @@ jobs:
           push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
           tags: ${{ steps.image-tags.outputs.tags }}
 
-  # main 푸시(ECR 갱신) 후 → SSM Run Command 로 EC2에 AI 배포 + 내부 헬스 스모크
+  # main 푸시(ECR 갱신) 후 → 전용 SSM 문서(manyak-prod-ai-deploy)로 EC2에 AI 배포
+  # (문서가 내부에서 deploy.sh + `up -d --wait ai` 로 health 게이트까지 수행)
   deploy:
     name: Deploy AI to EC2 (prod)
     needs: docker
@@ -166,24 +167,20 @@ jobs:
           echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
           echo "대상 인스턴스: $INSTANCE_ID"
 
-      - name: Deploy via SSM + EC2 내부 헬스 스모크
+      - name: Deploy via SSM (전용 문서 manyak-prod-ai-deploy)
         if: steps.gate.outputs.skip != 'true'
         run: |
           # 이 워크플로가 빌드·푸시한 정확한 이미지(short-sha)를 배포 — :latest 의 동시 push 모호성·추적성 문제 회피
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA::7}"
           echo "배포 이미지: $IMAGE"
-          # AI 는 ALB 외부 노출이 없어 공개 URL 스모크가 불가하다. 따라서 SSM 한 번으로
-          # ① deploy.sh 로 ai 컨테이너 교체 후 ② EC2 내부에서 localhost:8000 헬스를 직접 확인한다.
-          # '&&' 로 묶어 deploy.sh 실패 시 헬스 단계로 넘어가지 않게 하고, 헬스 실패 시 SSM 도 실패로 전파한다.
-          # 헬스(②)의 $(seq)/$i 는 EC2 에서 실행돼야 하므로 작은따옴표로 리터럴 보존한다.
-          # shellcheck disable=SC2016  # 의도적: 러너가 아닌 EC2 에서 확장되도록 단일따옴표 유지
-          HEALTH='for i in $(seq 1 24); do curl -fsS http://localhost:8000/api/v1/health >/dev/null && exit 0; sleep 5; done; exit 1'
-          DEPLOY_CMD="AI_IMAGE_OVERRIDE=$IMAGE bash /opt/manyak/deploy.sh && $HEALTH"
+          # 전용 SSM 문서(manyak-prod-ai-deploy)가 내부에서 AI_IMAGE_OVERRIDE 로 deploy.sh 를 실행하고
+          # `docker compose up -d --wait ai` 로 ai healthcheck(/api/v1/health status==ok) 통과까지 대기한다.
+          # 따라서 send-command 성공 = 배포 + ai healthy. (전용 역할이라 임의 셸 불가 → 별도 헬스 스모크 스텝 없음)
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ steps.ec2.outputs.instance_id }}" \
-            --document-name "AWS-RunShellScript" \
+            --document-name "manyak-prod-ai-deploy" \
             --comment "manyak-ai deploy ${GITHUB_SHA::7}" \
-            --parameters commands="$DEPLOY_CMD" \
+            --parameters ImageUri="$IMAGE" \
             --query "Command.CommandId" --output text)
           echo "SSM CommandId: $CMD_ID"
           # terminal 상태까지 폴링 (기본 `wait command-executed` 의 100s 한계로 InProgress 를 실패로 오판하지 않도록)
@@ -193,9 +190,9 @@ jobs:
               --command-id "$CMD_ID" --instance-id "${{ steps.ec2.outputs.instance_id }}" \
               --query "Status" --output text 2>/dev/null || echo "Pending")
             case "$STATUS" in
-              Success) echo "✅ SSM Success (배포 + AI 내부 헬스 OK)"; break ;;
+              Success) echo "✅ SSM Success (배포 + ai healthcheck 통과)"; break ;;
               Failed|Cancelled|TimedOut|Undeliverable|Terminated)
-                echo "::error::SSM $STATUS — 배포 또는 AI 헬스 실패"
+                echo "::error::SSM $STATUS — 배포 또는 ai health 실패"
                 aws ssm get-command-invocation --command-id "$CMD_ID" \
                   --instance-id "${{ steps.ec2.outputs.instance_id }}" \
                   --query "StandardErrorContent" --output text || true
