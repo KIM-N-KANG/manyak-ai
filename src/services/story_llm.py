@@ -64,6 +64,11 @@ _THINKING_DISABLED = {"thinking": {"type": "disabled"}}
 # 출력이 무한정 길어지지 않도록 상한. 컴파일 명세 JSON(인물 최대 5명)도 충분히 담긴다.
 _MAX_TOKENS = 6144
 
+# 생성 온도. 스토리라인 블라인드 독자 평가에서 0.75가 0.5보다 읽기 품질(감정 밀도·창의성)
+# 우세이면서 파싱 성공률·속도는 동급이고, 기본값 1.0보다 분량 폭주·파싱 실패 꼬리위험이
+# 낮았다(KNK-269 검증). 스토리라인·컴파일에 공통 적용한다.
+_TEMPERATURE = 0.75
+
 # 빈 필수 필드를 채우기 위한 부분 재호출 최대 횟수. 초과하면 502로 막는다.
 _MAX_REFILL = 2
 
@@ -131,6 +136,7 @@ async def _complete_json(
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            temperature=_TEMPERATURE,
             max_tokens=_MAX_TOKENS,
             extra_body=_THINKING_DISABLED,
         )
