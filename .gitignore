@@ -23,3 +23,16 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+*.log.err
+
+# Claude local settings
+.claude/settings.local.json
+
+# Claude skills (로컬 심볼릭 링크 — 하네스/개인 스킬은 레포 밖에서 관리)
+.claude/skills
+
+# 로컬 프롬프트 미리보기/실험 스크립트
+scripts/

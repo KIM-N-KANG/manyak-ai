@@ -1,3 +1,8 @@
+---
+version: 1
+updated: 2026-06-24
+---
+
 # AI 캐릭터 챗 서비스의 시스템 프롬프트 레이어 설계 해설
 
 > Prompts · Context Template · Prompt Manager 세 문서에서 읽어낸 설계 철학
