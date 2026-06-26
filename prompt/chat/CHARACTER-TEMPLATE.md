@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 1
 updated: 2026-06-24
 layer: CHARACTER
 name: 등장인물 정의
