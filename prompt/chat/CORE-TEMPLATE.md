@@ -1,5 +1,5 @@
 ---
-version: 3
+version: 2
 updated: 2026-06-26
 layer: CORE
 name: 공통 작동 시스템

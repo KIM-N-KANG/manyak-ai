@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 2
 updated: 2026-06-26
 layer: STORY
 name: 시나리오 및 세계관 설계
