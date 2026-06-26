@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 FEATURE_STORYLINE_GENERATION = "storyline_generation"
 FEATURE_STORY_COMPLETION = "story_completion"
 FEATURE_CHAT_RESPONSE = "chat_response"
+# 선택지 생성(2번째 호출)의 AI측 오류 그룹용 태그. 백엔드에는 별도 ai_call_log가 아니라
+# chat_response meta에 합산돼 적재되므로, 이 값은 AI 서비스 Sentry 그룹핑 전용이다.
+FEATURE_CHAT_NEXT_ACTIONS = "chat_next_actions"
 
 # AN-4-7 실패 코드.
 ERROR_PROVIDER_TIMEOUT = "provider_timeout"

@@ -1,31 +1,7 @@
 import pytest
 
 from src.services import chat_llm
-from src.services.chat_llm import (
-    _parse_choices,
-    _split_output,
-    _strip_speaker_bold,
-    stream_chat_turn,
-)
-
-
-# ── 출력 분리(B안 파싱) — 동기 ───────────────────────────────────────────────
-def test_split_output_with_marker() -> None:
-    full = "*레이가 다가선다.*\n레이: 안녕.\n[다음 행동]\n1. 인사한다\n2. 검을 뽑는다\n3. 돌아선다"
-    body, choices = _split_output(full)
-    assert body == "*레이가 다가선다.*\n레이: 안녕."
-    assert "[다음 행동]" not in body
-    assert choices == ["인사한다", "검을 뽑는다", "돌아선다"]
-
-
-def test_split_output_no_marker() -> None:
-    body, choices = _split_output("선택지 없는 본문만")
-    assert body == "선택지 없는 본문만"
-    assert choices == []
-
-
-def test_parse_choices_paren_and_dot() -> None:
-    assert _parse_choices("\n1) 가\n2. 나\n3) 다") == ["가", "나", "다"]
+from src.services.chat_llm import _strip_speaker_bold, stream_chat_turn
 
 
 # ── 화자 볼드 라벨 정규화(KNK-194) — 동기 ────────────────────────────────────
@@ -48,7 +24,7 @@ def test_strip_speaker_bold_multiline() -> None:
     assert _strip_speaker_bold(text) == expected
 
 
-# ── 스트리밍(B안) — async, LLM mock ─────────────────────────────────────────
+# ── 스트리밍(본문 전용, 선택지 없음) — async, LLM mock ────────────────────────
 class _FakeDelta:
     def __init__(self, content: str) -> None:
         self.content = content
@@ -82,31 +58,18 @@ def mock_stream(monkeypatch):
     return _set
 
 
-async def test_stream_splits_body_and_choices(mock_stream) -> None:
-    # 마커가 토큰 경계에 걸치도록 쪼갬("[다음" + " 행동]")
-    mock_stream(["*지문*\n레이: 말한다.\n", "[다음", " 행동]\n1. 가\n2. 나\n3. 다"])
+async def test_stream_streams_all_tokens(mock_stream) -> None:
+    # 본문은 마커 처리 없이 받은 델타를 그대로 흘린다. 선택지는 이 호출이 만들지 않는다.
+    mock_stream(["*지문*\n레이: 말한다.\n", "이어지는 본문."])
     events = [e async for e in stream_chat_turn([])]
 
     tokens = "".join(e["text"] for e in events if e["event"] == "token")
     completed = next(e for e in events if e["event"] == "completed")
 
-    # B안: 선택지(마커 이후)는 token으로 흘리지 않는다
-    assert "[다음 행동]" not in tokens
-    assert "1. 가" not in tokens
-    # 본문은 흘렸고, 선택지는 completed에만
-    assert "레이: 말한다." in tokens
-    assert "[다음 행동]" not in completed["ai_output"]
-    assert completed["choices"] == ["가", "나", "다"]
-
-
-async def test_stream_no_marker_flushes_body(mock_stream) -> None:
-    mock_stream(["선택지 없는 ", "응답"])
-    events = [e async for e in stream_chat_turn([])]
-    tokens = "".join(e["text"] for e in events if e["event"] == "token")
-    completed = next(e for e in events if e["event"] == "completed")
-    assert tokens == "선택지 없는 응답"
-    assert completed["ai_output"] == "선택지 없는 응답"
-    assert completed["choices"] == []
+    assert tokens == "*지문*\n레이: 말한다.\n이어지는 본문."
+    assert completed["ai_output"] == "*지문*\n레이: 말한다.\n이어지는 본문."
+    # 본문 호출은 더 이상 choices를 만들지 않는다(선택지는 별도 호출 담당).
+    assert "choices" not in completed
 
 
 async def test_stream_skips_empty_choices_chunk(mock_stream) -> None:
@@ -121,12 +84,11 @@ async def test_stream_skips_empty_choices_chunk(mock_stream) -> None:
 
 async def test_stream_strips_speaker_bold_in_completed(mock_stream) -> None:
     # 화자 라벨 볼드는 completed의 ai_output에서 제거된다(저장·표시값 정규화).
-    mock_stream(["*등불이 흔들린다.*\n**설하:** 늦었군요.\n[다음 행동]\n1. 가\n2. 나\n3. 다"])
+    mock_stream(["*등불이 흔들린다.*\n**설하:** 늦었군요."])
     events = [e async for e in stream_chat_turn([])]
     completed = next(e for e in events if e["event"] == "completed")
     assert "**" not in completed["ai_output"]
     assert "설하: 늦었군요." in completed["ai_output"]
-    assert completed["choices"] == ["가", "나", "다"]
 
 
 # ── 로깅 메타 재료 수집(KNK-243) — model·usage ───────────────────────────────
@@ -169,7 +131,7 @@ async def test_stream_success_does_not_capture(mock_stream, monkeypatch) -> None
     """정상 스트림(completed)에서는 Sentry capture를 호출하지 않는다."""
     calls: list = []
     monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda *a, **k: calls.append(1))
-    mock_stream(["*지문*\n레이: 안녕.\n[다음 행동]\n1. 가\n2. 나\n3. 다"])
+    mock_stream(["*지문*\n레이: 안녕."])
     events = [e async for e in stream_chat_turn([])]
     assert any(e["event"] == "completed" for e in events)
     assert calls == []  # 성공 경로 — 미호출

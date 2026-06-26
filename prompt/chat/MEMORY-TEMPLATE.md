@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 1
 updated: 2026-06-24
 layer: MEMORY
 name: 동적 상태 관리

@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 1
 updated: 2026-06-24
 layer: USER
 name: 사용자 설정 (주인공 = 1인칭 플레이어)

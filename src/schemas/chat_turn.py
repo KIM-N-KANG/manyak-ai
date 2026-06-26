@@ -118,14 +118,14 @@ class TokenData(BaseModel):
 class CompletedData(BaseModel):
     """event: completed — 한 턴 응답 완료.
 
-    AI가 LLM 통짜 출력(상황·대사 + `[다음 행동]` 3개)을 갈라 두 필드로 나눠 담는다.
+    엔드포인트가 본문 호출(상황·대사)과, 본문과 분리된 선택지 호출(다음 행동 3개)의 결과를 합쳐 두 필드로 담는다.
 
     - aiOutput: 본문(상황 묘사 + 인물 대사)만. **선택지는 제외**한다. 백엔드가
       chatId·turnId를 더해 이 값만 DB(history)에 저장한다 — 선택지는 '제안된
       가능성'이라 실제 진행만 담는 History에 남기지 않는다(실제 진행은 사용자가 고른
       다음 user 입력이다).
-    - choices: 다음 행동 선택지 3개(CORE 봉투가 보장). UI 버튼용이며 History에는
-      들어가지 않는다.
+    - choices: 다음 행동 선택지 3개(본문과 분리된 별도 호출이 코드로 정확히 3개 보장). UI
+      버튼용이며 History에는 들어가지 않는다.
     """
 
     # aiOutput은 manyak-server SSE 와이어 계약 키(camelCase, server ChatService가 SSOT)라
