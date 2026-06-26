@@ -1,5 +1,5 @@
 ---
-version: 3
+version: 2
 updated: 2026-06-26
 ---
 
