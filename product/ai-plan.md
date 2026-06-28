@@ -23,19 +23,19 @@ ai-spec의 각 기능·결정이 manyak-ai 안에서 어디에 구현됐는지. 
 
 | ai-spec | 구현 코드 (manyak-ai) | 하위 spec |
 |---|---|---|
-| **§3.1 스토리라인** | `src/api/v1/story.py` · `services/story_llm.py` · `services/prompt.py` · `schemas/story.py` · `prompt/story/STORYLINES-TEMPLATE.md` | `spec/story/1` |
-| **§3.1 컴파일** | `story.py` · `story_llm.py`(`compile_story`) · `story_compile_render.py` · `schemas/story_compile.py` · `prompt/story/COMPILE-TEMPLATE.md` | `spec/story/2` |
-| **§3.2 채팅 턴** | `api/v1/chat.py` · `services/chat_assembler.py` · `chat_llm.py` · `chat_next_actions.py` · `schemas/chat_turn.py` · `prompt/chat/*-TEMPLATE.md` | `spec/chat/1~4` |
-| **§6 컨텍스트 주입(6레이어)** | `chat_assembler.py`(`assemble`) · `prompt/chat/` | `spec/chat/2·3` |
-| **§7 API 계약·메타** | `api/v1/` · `schemas/response_meta.py` · `schemas/*` | — |
-| **§8 D1 stateless** | `schemas/chat_turn.py`(session_id 없음) · `chat_assembler.py`(순수 함수) | `spec/chat/4` |
-| **§8 D2 하이브리드 컴파일** | `story_compile_render.py`(세분→통글) · `story_llm.py` | `spec/story/2` |
-| **§8 D3·D4 본문·선택지 분리 / 3개 보장** | `chat.py` · `chat_next_actions.py` | — |
-| **§8 D5 genre 주입** | `story_llm.py`(`_inject_genre`) | — |
-| **§8 D6 화자 라벨 정규화** | `chat_llm.py`(`_strip_speaker_bold`) | — |
-| **§8 D7 비추론 호출** | `story_llm.py` · `chat_llm.py`(`_THINKING_DISABLED`) | — |
-| **§8 D8 프롬프트 버전** | `services/prompt_meta.py`(`read_version`) | — |
-| **§8 D9 Sentry·상관관계** | `core/sentry.py` · `middleware.py` · `request_context.py` | — |
+| **§3.1 스토리라인** | `src/api/v1/story.py` · `src/services/story_llm.py` · `src/services/prompt.py` · `src/schemas/story.py` · `prompt/story/STORYLINES-TEMPLATE.md` | `spec/story/1` |
+| **§3.1 컴파일** | `src/api/v1/story.py` · `src/services/story_llm.py`(`compile_story`) · `src/services/story_compile_render.py` · `src/schemas/story_compile.py` · `prompt/story/COMPILE-TEMPLATE.md` | `spec/story/2` |
+| **§3.2 채팅 턴** | `src/api/v1/chat.py` · `src/services/chat_assembler.py` · `src/services/chat_llm.py` · `src/services/chat_next_actions.py` · `src/schemas/chat_turn.py` · `prompt/chat/*-TEMPLATE.md` | `spec/chat/1~4` |
+| **§6 컨텍스트 주입(6레이어)** | `src/services/chat_assembler.py`(`assemble`) · `prompt/chat/` | `spec/chat/2·3` |
+| **§7 API 계약·메타** | `src/api/v1/` · `src/schemas/response_meta.py` · `src/schemas/*` | — |
+| **§8 D1 stateless** | `src/schemas/chat_turn.py`(session_id 없음) · `src/services/chat_assembler.py`(순수 함수) | `spec/chat/4` |
+| **§8 D2 하이브리드 컴파일** | `src/services/story_compile_render.py`(세분→통글) · `src/services/story_llm.py` | `spec/story/2` |
+| **§8 D3·D4 본문·선택지 분리 / 3개 보장** | `src/api/v1/chat.py` · `src/services/chat_next_actions.py` | — |
+| **§8 D5 genre 주입** | `src/services/story_llm.py`(`_inject_genre`) | — |
+| **§8 D6 화자 라벨 정규화** | `src/services/chat_llm.py`(`_strip_speaker_bold`) | — |
+| **§8 D7 비추론 호출** | `src/services/story_llm.py` · `src/services/chat_llm.py`(`_THINKING_DISABLED`) | — |
+| **§8 D8 프롬프트 버전** | `src/services/prompt_meta.py`(`read_version`) | — |
+| **§8 D9 Sentry·상관관계** | `src/core/sentry.py` · `src/core/middleware.py` · `src/core/request_context.py` | — |
 
 ## 3. 앞으로의 구현 (계획)
 
