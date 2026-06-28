@@ -1,7 +1,7 @@
 ---
 version: 1
 updated: 2026-06-28
-status: draft
+status: active
 ---
 
 # ai-plan — 구현 현황·계획 정본

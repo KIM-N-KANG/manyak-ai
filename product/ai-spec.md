@@ -1,7 +1,7 @@
 ---
 version: 1
 updated: 2026-06-28
-status: draft
+status: active
 ---
 
 # ai-spec — AI 설계 정본 (SSOT)
@@ -130,7 +130,7 @@ status: draft
   → ⑤ ai: 통글 4필드로 변환 → ⑥ be: DB 영속
 ```
 
-- 빈 필드가 있으면 **ai가 코드로 부분 재호출**한다(최대 2회). 그래서 compile 응답은 재호출만큼 길어질 수 있다 — fe/be는 타임아웃을 넉넉히 잡아야 한다(§7에서 수치 확정).
+- 빈 필드가 있으면 **ai가 코드로 부분 재호출**한다(최대 2회). 그래서 compile 응답은 재호출만큼 길어질 수 있다 — fe/be는 타임아웃을 넉넉히 잡아야 한다(권장 하한은 §7.3).
 
 ### 5.3 누가 무엇을 정하는가 (LLM vs 코드)
 
@@ -203,7 +203,8 @@ AI가 한 턴을 응답하려면 be가 **재료를 빠짐없이** 실어야 한�
                       "user_role_setting": "통글", "rule_setting": "통글" },
   "story_start_settings": { "name": "...", "start_situation": "...", "prologue": "..." },
   "story_suggested_inputs": ["...", "...", "..."],
-  "meta": { "prompt_versions": {"COMPILE": 0}, "retry_count": 0, "...": "나머지는 ①과 동일" }
+  "meta": { "model": "...", "prompt_versions": {"COMPILE": 0}, "provider": "deepseek",
+            "input_token_count": 0, "output_token_count": 0, "retry_count": 0 }
 }
 ```
 
@@ -213,7 +214,7 @@ AI가 한 턴을 응답하려면 be가 **재료를 빠짐없이** 실어야 한�
 **③ 채팅 턴 — `POST /api/v1/chat/turns` (SSE)**
 
 ```json
-// 요청 — role은 대문자, summary는 빈 문자열 허용
+// 요청 — role은 대문자. summary는 필수 문자열(요약 생성 로직 미구현이라 현재 항상 빈 문자열, null·생략 불가)
 {
   "genre": "...",
   "story_settings": { "world_setting": "...", "character_setting": "...",
@@ -221,7 +222,7 @@ AI가 한 턴을 응답하려면 be가 **재료를 빠짐없이** 실어야 한�
   "start_settings": { "name": "...", "prologue": "...", "start_situation": "..." },
   "history": [ { "role": "USER|ASSISTANT", "content": "..." } ],
   "user_input": "...",
-  "summary": ""
+  "summary": ""   // 필수 문자열 — null·필드 생략 불가
 }
 ```
 
@@ -248,9 +249,10 @@ event: error      data: { "code": "...", "message": "..." }
 
 - **제작 흐름**: 태그 → `storylines`(3편) → 사용자 1편 선택 → `compile`(명세) → be가 DB 영속.
 - **플레이 흐름**: 매 턴 be가 재료 전부 전송(§6.1) → `token` 스트림 → `completed`(본문·선택지 3·메타).
+- **타임아웃(권장 하한)**: `compile`은 최악의 경우 LLM을 3회 직렬 호출(본호출 + 부분 재호출 2회)하므로 30초+가 걸릴 수 있다 → 클라이언트·서버 타임아웃 **≥ 60초** 권장. `storylines`는 단일 호출이라 **≥ 30초**, `chat`은 SSE 스트림이라 끊김 없는 연결 유지 기준으로 잡는다. (구체 수치는 운영 환경·모델 속도에 맞춰 조정.)
 - **에러**:
   - `storylines`·`compile`: 호출 실패·빈 응답·파싱·스키마 실패 → **HTTP 502**(본문엔 사용자용 메시지만, 원문은 Sentry).
-  - `chat`: 본문 스트림 실패 → **`error` 이벤트**(SSE는 HTTP 200이라 502가 아니다). 선택지 호출이 통째로 실패해도 폴백으로 3개를 채워 **턴 자체는 완료**된다.
+  - `chat`: 본문 스트림 실패 → **`error` 이벤트**(SSE는 HTTP 200이라 502가 아니다). 선택지 호출이 통째로 실패해도 폴백으로 3개를 채워 **턴 자체는 완료**된다 — 폴백은 비어있지 않은 고정 중립 지문 3개(`*잠시 멈춰 주변을 살핀다*`·`*한 걸음 물러서며 거리를 둔다*`·`*상대의 반응을 기다리며 침묵한다*`; 정본은 `chat_next_actions.py`)라 빈 버튼은 가지 않는다.
 - **상관관계**: be가 `X-Manyak-Request-Id`·`-Session-Id`·`-Anonymous-Id-Hash` 헤더를 실으면 AI가 Sentry scope에 연결한다(`unknown`이면 무시).
 
 ## 8. 설계 결정 (SSOT)
