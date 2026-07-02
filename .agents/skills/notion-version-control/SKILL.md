@@ -42,7 +42,7 @@ prompt/spec-version-control
 │   ├── STORY     → Story Prompt Versions (DB)
 │   ├── CHARACTER → Character Prompt Versions (DB)
 │   ├── USER      → User Prompt Versions (DB)
-│   └── MEMORY    → Memory Prompt Versions (DB)
+│   ├── MEMORY    → Memory Prompt Versions (DB)
 │   └── (NEXT-ACTIONS 전용 DB는 아직 없음 — 아래 매핑표 주석 참고)
 │
 ├── story-spec
