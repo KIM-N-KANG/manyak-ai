@@ -8,19 +8,5 @@
       "Bash(gh api *)",
       "Bash(claude plugin *)"
     ]
-  },
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Bash|PowerShell",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "jq -e '(.tool_input.command // \"\") | test(\"(^|[;&|\\n]) *git +commit\")' >/dev/null 2>&1 && jq -n --arg msg '【운영 루프】 방금 커밋이 감지됐습니다. 이 커밋이 기능·버그·설계 변경이면 product/ 정본 3종을 운영 루프에 따라 갱신했는지 확인하세요. ① ai-spec: 설계 변경 반영(fe/be 접점 §7 영향 명시) ② ai-plan: 현 구현 맵·계획 ③ ai-ops: §2 패치노트(티켓·증상·원인·해결)·§4 PR 이력. 단순 문서·설정 변경이면 생략 가능. 상세는 product/ai-ops.md 1. 운영 루프.' '{hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:$msg}}' || true",
-            "statusMessage": "운영 루프: 커밋 후 product/ 갱신 확인"
-          }
-        ]
-      }
-    ]
   }
 }
