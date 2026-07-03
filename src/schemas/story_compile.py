@@ -10,7 +10,7 @@ class StoryCompileRequest(BaseModel):
     """
 
     selected_storyline: str
-    extra_info: str = ""
+    additional_info: str = ""
     genre_tags: list[str]
     protagonist_tags: list[str]
     supporting_tags: list[str]

@@ -42,7 +42,7 @@ def build_storylines_prompt(
 
 def build_compile_prompt(
     selected_storyline: str,
-    extra_info: str,
+    additional_info: str,
     genre_tags: list[str],
     protagonist_tags: list[str],
     supporting_tags: list[str],
@@ -51,7 +51,7 @@ def build_compile_prompt(
     user_text = (
         _COMPILE_USER
         .replace("{{선택_스토리라인}}", selected_storyline)
-        .replace("{{추가정보}}", extra_info or "(없음)")
+        .replace("{{추가정보}}", additional_info or "(없음)")
         .replace("{{장르_태그}}", ", ".join(genre_tags))
         .replace("{{주인공_특징_태그}}", ", ".join(protagonist_tags))
         .replace("{{주변_인물_태그}}", ", ".join(supporting_tags))

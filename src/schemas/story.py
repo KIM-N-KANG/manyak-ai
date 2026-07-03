@@ -11,7 +11,7 @@ class StorylinesRequest(BaseModel):
 
 class StoryItem(BaseModel):
     id: int
-    story: str
+    storyline: str
     recommended_infos: list[str]
 
 

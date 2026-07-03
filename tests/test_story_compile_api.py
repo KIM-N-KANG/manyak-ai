@@ -17,7 +17,7 @@ def _spec_valid() -> dict:
 # 정상 요청 본문 — 백엔드가 보내는 희소 입력 형태.
 _REQUEST = {
     "selected_storyline": "역병과 반란으로 무너진 왕국에서 견습 기사가 선왕의 의문사를 좇는다.",
-    "extra_info": "주인공은 복수보다 진실을 택한다.",
+    "additional_info": "주인공은 복수보다 진실을 택한다.",
     "genre_tags": ["다크 판타지"],
     "protagonist_tags": ["신중한"],
     "supporting_tags": ["충직한", "거친"],
