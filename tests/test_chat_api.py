@@ -3,7 +3,7 @@ import json
 import pytest
 
 from src.api.v1 import chat as chat_module
-from src.services.chat_next_actions import ChoicesResult
+from src.services.chat_choices import ChoicesResult
 
 
 def _payload() -> dict:

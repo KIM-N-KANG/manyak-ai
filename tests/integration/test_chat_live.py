@@ -10,7 +10,7 @@ from src.schemas.chat_turn import (
 )
 from src.services.chat_assembler import assemble
 from src.services.chat_llm import stream_chat_turn
-from src.services.chat_next_actions import generate_choices
+from src.services.chat_choices import generate_choices
 
 
 @pytest.fixture(autouse=True)

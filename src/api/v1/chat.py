@@ -31,7 +31,7 @@ from src.schemas.chat_turn import (
 from src.schemas.response_meta import ChatResponseMeta
 from src.services.chat_assembler import LAYER_VERSIONS, assemble
 from src.services.chat_llm import stream_chat_turn
-from src.services.chat_next_actions import NEXT_ACTIONS_VERSION, generate_choices
+from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
 
 router = APIRouter()
 

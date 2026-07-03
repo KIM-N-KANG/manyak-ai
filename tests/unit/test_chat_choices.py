@@ -10,14 +10,14 @@ import pytest
 from openai import OpenAIError
 
 from src.schemas.chat_turn import ChatStartSettings, ChatStorySettings, ChatTurnRequest
-from src.services import chat_next_actions
-from src.services.chat_next_actions import _FALLBACK, generate_choices
+from src.services import chat_choices
+from src.services.chat_choices import _FALLBACK, generate_choices
 
 
 @pytest.fixture(autouse=True)
 def _silence_sentry(monkeypatch):
     # 실패 경로가 Sentry를 부르지 않도록 noop으로 막는다(단위 테스트 격리).
-    monkeypatch.setattr(chat_next_actions, "capture_ai_exception", lambda *a, **k: None)
+    monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda *a, **k: None)
 
 
 def _request() -> ChatTurnRequest:
@@ -74,7 +74,7 @@ def _mock_calls(monkeypatch, items: list):
             raise item
         return _Resp(item, usage=_Usage(5, 7))
 
-    monkeypatch.setattr(chat_next_actions._client.chat.completions, "create", _create)
+    monkeypatch.setattr(chat_choices._client.chat.completions, "create", _create)
     return state
 
 

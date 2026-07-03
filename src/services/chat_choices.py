@@ -10,7 +10,7 @@
 호출이 통째로 실패해도(타임아웃·파싱오류) 흡수해 폴백으로 3개를 채운다 — 선택지 때문에
 턴이 실패하지 않는다.
 
-NEXT-ACTIONS-TEMPLATE.md는 6레이어 조립에 들어가지 않는 독립 프롬프트다(STORYLINES/
+CHOICES-TEMPLATE.md는 6레이어 조립에 들어가지 않는 독립 프롬프트다(STORYLINES/
 COMPILE 템플릿과 같은 위상).
 """
 
@@ -29,7 +29,7 @@ from src.services.prompt_meta import read_version
 
 logger = logging.getLogger(__name__)
 
-_TEMPLATE_PATH = Path(__file__).parent.parent.parent / "prompt" / "chat" / "NEXT-ACTIONS-TEMPLATE.md"
+_TEMPLATE_PATH = Path(__file__).parent.parent.parent / "prompt" / "chat" / "CHOICES-TEMPLATE.md"
 
 # 버전은 frontmatter가 SSOT(KNK-228). 적재 키는 백엔드 ai_call_logs 연속성을 위해
 # NEXT_ACTIONS를 유지한다(§0-1 적재 이벤트·§0-4 버전 키 예시). 상수명도 키에 맞춰 둔다.

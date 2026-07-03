@@ -2,7 +2,7 @@
 
 `assemble()`가 만든 messages를 Upstage/DeepSeek(OpenAI 호환) `stream=True`로 호출하고,
 토큰을 실시간으로 흘린다. 본문은 상황 묘사 + 인물 대사만 만든다 — **다음 행동 선택지는
-이 호출이 만들지 않으며**, 본문 스트림이 끝난 뒤 별도 호출(`chat_next_actions`)이 전담한다
+이 호출이 만들지 않으며**, 본문 스트림이 끝난 뒤 별도 호출(`chat_choices`)이 전담한다
 (그래서 `[다음 행동]` 마커 파싱·버퍼링이 사라졌다).
 
 이벤트(dict)를 async generator로 낸다. SSE 와이어 변환·선택지 합치기는 엔드포인트(chat.py)가 맡는다.
