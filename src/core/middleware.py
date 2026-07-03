@@ -2,7 +2,7 @@
 
 요청 진입 시 X-Manyak-* 상관관계 헤더를 읽어 요청별 Sentry isolation scope에 직접 싣는다
 (백엔드 RequestCorrelationFilter + SentryMdcEventProcessor 대응). request_id는 tag,
-session_id·anonymous_id_hash는 identity context로 — 백엔드 키명과 일치한다.
+session_id·device_id_hash는 identity context로 — 백엔드 키명과 일치한다.
 
 isolation scope를 쓰는 이유(설계): sentry-sdk 2.x는 요청마다 isolation scope를 만들고, 그
 scope는 Starlette ServerErrorMiddleware(미처리 500을 캡처하는 최외곽)보다 바깥에서 살아 있다.
@@ -21,10 +21,10 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.core.request_context import (
-    HEADER_ANONYMOUS_ID_HASH,
+    HEADER_DEVICE_ID_HASH,
     HEADER_REQUEST_ID,
     HEADER_SESSION_ID,
-    KEY_ANONYMOUS_ID_HASH,
+    KEY_DEVICE_ID_HASH,
     KEY_REQUEST_ID,
     KEY_SESSION_ID,
     clean_identifier,
@@ -46,7 +46,7 @@ class RequestContextMiddleware:
         headers = Headers(scope=scope)  # 대소문자 무시 조회
         request_id = clean_identifier(headers.get(HEADER_REQUEST_ID))
         session_id = clean_identifier(headers.get(HEADER_SESSION_ID))
-        anonymous_id_hash = clean_identifier(headers.get(HEADER_ANONYMOUS_ID_HASH))
+        device_id_hash = clean_identifier(headers.get(HEADER_DEVICE_ID_HASH))
 
         # 요청별 isolation scope에 직접 부착 — 명시 캡처·SSE·미처리 500 자동 캡처가 모두 읽는다.
         sentry_scope = sentry_sdk.get_isolation_scope()
@@ -55,8 +55,8 @@ class RequestContextMiddleware:
         identity: dict[str, str] = {}
         if session_id:
             identity[KEY_SESSION_ID] = session_id
-        if anonymous_id_hash:
-            identity[KEY_ANONYMOUS_ID_HASH] = anonymous_id_hash
+        if device_id_hash:
+            identity[KEY_DEVICE_ID_HASH] = device_id_hash
         if identity:
             sentry_scope.set_context("identity", identity)
 

@@ -1,13 +1,13 @@
 ---
-version: 2
-updated: 2026-06-26
+version: 3
+updated: 2026-07-03
 layer: STORY
 name: 시나리오 및 세계관 설계
 priority: 4
 placement: STORY-core = 시스템 프롬프트 앞 + PHI (상시) / STORY-lore = World Info 트리거(MVP 제외)
 slots: [장르, world_setting, start_setting, rule_setting]
 slot_source: >-
-  세션 초기화(A-2) 때 story_settings 통글 4필드에서 통째 삽입. world_setting(세계관+전제+갈등)·
+  런타임 조립(B) 때 매 턴 story_settings 통글 4필드에서 통째 삽입. world_setting(세계관+전제+갈등)·
   rule_setting(전개규칙+문체톤+분량배분)은 각 통글을 그대로 꽂고, 장르 슬롯만 stories.genre에서 직접 치환.
   start_setting은 story_start_settings(name+prologue+start_situation)를 통글로 엮어 매 턴 삽입한다
   (이 플레이의 출발점·전개 방향 전제). 장르와 함께 story_settings 외부 소스인 예외 슬롯이다.

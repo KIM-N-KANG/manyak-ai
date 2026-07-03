@@ -10,14 +10,14 @@ import pytest
 from openai import OpenAIError
 
 from src.schemas.chat_turn import ChatStartSettings, ChatStorySettings, ChatTurnRequest
-from src.services import chat_next_actions
-from src.services.chat_next_actions import _FALLBACK, generate_next_actions
+from src.services import chat_choices
+from src.services.chat_choices import _FALLBACK, generate_choices
 
 
 @pytest.fixture(autouse=True)
 def _silence_sentry(monkeypatch):
     # 실패 경로가 Sentry를 부르지 않도록 noop으로 막는다(단위 테스트 격리).
-    monkeypatch.setattr(chat_next_actions, "capture_ai_exception", lambda *a, **k: None)
+    monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda *a, **k: None)
 
 
 def _request() -> ChatTurnRequest:
@@ -74,13 +74,13 @@ def _mock_calls(monkeypatch, items: list):
             raise item
         return _Resp(item, usage=_Usage(5, 7))
 
-    monkeypatch.setattr(chat_next_actions._client.chat.completions, "create", _create)
+    monkeypatch.setattr(chat_choices._client.chat.completions, "create", _create)
     return state
 
 
 async def test_first_call_gives_three(monkeypatch) -> None:
     _mock_calls(monkeypatch, ['{"choices": ["맞선다", "피한다", "살핀다"]}'])
-    res = await generate_next_actions(_request(), "*레이가 다가선다.*")
+    res = await generate_choices(_request(), "*레이가 다가선다.*")
     assert res.choices == ["맞선다", "피한다", "살핀다"]
     assert res.retry_count == 0
     assert res.input_tokens == 5 and res.output_tokens == 7
@@ -92,7 +92,7 @@ async def test_accumulates_across_refill(monkeypatch) -> None:
         monkeypatch,
         ['{"choices": ["맞선다", "피한다"]}', '{"choices": ["설득한다"]}'],
     )
-    res = await generate_next_actions(_request(), "*장면*")
+    res = await generate_choices(_request(), "*장면*")
     assert res.choices == ["맞선다", "피한다", "설득한다"]
     assert res.retry_count == 1
     assert state["i"] == 2  # 첫 호출 + 재호출 1회
@@ -102,7 +102,7 @@ async def test_accumulates_across_refill(monkeypatch) -> None:
 async def test_pads_with_fallback_when_short(monkeypatch) -> None:
     # 매번 같은 1개만 줘서 누적이 안 늘면, 재호출 2회 후 폴백으로 채워 정확히 3개.
     _mock_calls(monkeypatch, ['{"choices": ["맞선다"]}'])
-    res = await generate_next_actions(_request(), "*장면*")
+    res = await generate_choices(_request(), "*장면*")
     assert len(res.choices) == 3
     assert res.choices[0] == "맞선다"
     assert res.choices[1] in _FALLBACK and res.choices[2] in _FALLBACK
@@ -112,7 +112,7 @@ async def test_pads_with_fallback_when_short(monkeypatch) -> None:
 async def test_total_failure_absorbed_to_fallback(monkeypatch) -> None:
     # 호출이 매번 터져도 턴은 안 깨지고, 폴백 3개로 정확히 채운다.
     _mock_calls(monkeypatch, [OpenAIError("boom")])
-    res = await generate_next_actions(_request(), "*장면*")
+    res = await generate_choices(_request(), "*장면*")
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2
     assert res.input_tokens is None and res.output_tokens is None  # 성공한 호출 없음
@@ -120,7 +120,7 @@ async def test_total_failure_absorbed_to_fallback(monkeypatch) -> None:
 
 async def test_truncates_when_too_many(monkeypatch) -> None:
     _mock_calls(monkeypatch, ['{"choices": ["a", "b", "c", "d", "e"]}'])
-    res = await generate_next_actions(_request(), "*장면*")
+    res = await generate_choices(_request(), "*장면*")
     assert res.choices == ["a", "b", "c"]  # 앞 3개만
     assert res.retry_count == 0
 
@@ -128,7 +128,7 @@ async def test_truncates_when_too_many(monkeypatch) -> None:
 async def test_dedups_within_response(monkeypatch) -> None:
     # 한 응답 안의 중복은 제거하고 서로 다른 3개를 남긴다.
     _mock_calls(monkeypatch, ['{"choices": ["a", "a", "b", "c"]}'])
-    res = await generate_next_actions(_request(), "*장면*")
+    res = await generate_choices(_request(), "*장면*")
     assert res.choices == ["a", "b", "c"]
     assert res.retry_count == 0
 
@@ -136,6 +136,6 @@ async def test_dedups_within_response(monkeypatch) -> None:
 async def test_bad_json_then_fallback(monkeypatch) -> None:
     # json이 깨져도 흡수하고 폴백으로 3개를 보장한다.
     _mock_calls(monkeypatch, ["not json at all"])
-    res = await generate_next_actions(_request(), "*장면*")
+    res = await generate_choices(_request(), "*장면*")
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2

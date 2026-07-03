@@ -91,7 +91,7 @@ class ChatTurnRequest(BaseModel):
     start_settings: ChatStartSettings
     history: list[ChatHistoryItem] = Field(default_factory=list)
     user_input: str
-    # MEMORY(대화 요약) — 채팅별로 하나씩 존재하는 메모리 TEXT(특정 채팅 수마다 압축·최신화).
+    # MEMORY(대화 요약) — 채팅별로 하나씩 존재하는 요약 문자열(특정 채팅 수마다 압축·최신화).
     # 메모리 참조는 채팅 기능의 일부이므로 매 턴 받아 조립기가 Depth(`[현재 상태]`)에 그대로
     # 넣는다(빈 문자열이면 빈 칸 그대로). 메모리를 요약·기록(생성)하는 로직은 별개 기능(Phase 4)
     # 이라, 그전까지 백엔드는 빈 문자열을 보낸다.

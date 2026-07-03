@@ -1,6 +1,6 @@
 ---
-version: 1
-updated: 2026-06-26
+version: 2
+updated: 2026-07-03
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -67,7 +67,7 @@ updated: 2026-06-26
 | 자리표시자 | 치환 대상 |
 |---|---|
 | `{{선택_스토리라인}}` | selected_storyline 문자열 |
-| `{{추가정보}}` | extra_info 문자열 (비어 있으면 `(없음)`) |
+| `{{추가정보}}` | additional_info 문자열 (비어 있으면 `(없음)`) |
 | `{{장르_태그}}` | genre_tags 배열 → 쉼표 구분 문자열 |
 | `{{주인공_특징_태그}}` | protagonist_tags 배열 → 쉼표 구분 문자열 |
 | `{{주변_인물_태그}}` | supporting_tags 배열 → 쉼표 구분 문자열 |
@@ -128,7 +128,7 @@ POST /api/v1/story/compile
 ```json
 {
   "selected_storyline": "선택한 스토리라인 본문",
-  "extra_info": "주인공 호칭·선호 등 추가정보(선택)",
+  "additional_info": "주인공 호칭·선호 등 추가정보(선택)",
   "genre_tags":       ["무협", "회귀"],
   "protagonist_tags": ["냉혹한", "치밀한"],
   "supporting_tags":  ["배신자", "스승"]
@@ -138,7 +138,7 @@ POST /api/v1/story/compile
 | 필드 | 타입 | 제약 |
 |---|---|---|
 | selected_storyline | string | 필수 |
-| extra_info | string | 선택(기본값 빈 문자열) |
+| additional_info | string | 선택(기본값 빈 문자열) |
 | genre_tags | string[] | 필수 |
 | protagonist_tags | string[] | 필수 |
 | supporting_tags | string[] | 필수 |

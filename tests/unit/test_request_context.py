@@ -44,7 +44,7 @@ async def test_middleware_sets_isolation_scope_from_headers(client, monkeypatch)
         headers={
             "X-Manyak-Request-Id": "req_abc",
             "X-Manyak-Session-Id": "sess_1",
-            "X-Manyak-Anonymous-Id-Hash": "anon_hash_1",
+            "X-Manyak-Device-Id-Hash": "device_hash_1",
         },
     )
     assert resp.status_code == 200
@@ -52,7 +52,7 @@ async def test_middleware_sets_isolation_scope_from_headers(client, monkeypatch)
     assert fake.tags["request_id"] == "req_abc"
     assert fake.contexts["identity"] == {
         "session_id": "sess_1",
-        "anonymous_id_hash": "anon_hash_1",
+        "device_id_hash": "device_hash_1",
     }
 
 
@@ -89,7 +89,7 @@ async def test_middleware_sets_scope_even_on_unhandled_500(monkeypatch) -> None:
     async def _boom(*_a, **_k):
         raise RuntimeError("의도된 미처리 오류")
 
-    monkeypatch.setattr(story_module, "generate_storylines", _boom)
+    monkeypatch.setattr(story_module.story_llm, "generate_storylines", _boom)
 
     async with AsyncClient(
         transport=ASGITransport(app=app, raise_app_exceptions=False),
