@@ -43,7 +43,7 @@ prompt/spec-version-control
 │   ├── CHARACTER → Character Prompt Versions (DB)
 │   ├── USER      → User Prompt Versions (DB)
 │   ├── MEMORY    → Memory Prompt Versions (DB)
-│   └── (NEXT-ACTIONS 전용 DB는 아직 없음 — 아래 매핑표 주석 참고)
+│   └── (CHOICES 전용 DB는 아직 없음 — 아래 매핑표 주석 참고)
 │
 ├── story-spec
 │   └── Story Spec Versions (DB)
@@ -73,7 +73,7 @@ prompt/spec-version-control
 | `prompt/chat/CHARACTER-TEMPLATE.md` | chat/CHARACTER | Character Prompt Versions | `CHARACTER-v{N}` |
 | `prompt/chat/USER-TEMPLATE.md` | chat/USER | User Prompt Versions | `USER-v{N}` |
 | `prompt/chat/MEMORY-TEMPLATE.md` | chat/MEMORY | Memory Prompt Versions | `MEMORY-v{N}` |
-| `prompt/chat/NEXT-ACTIONS-TEMPLATE.md` | chat/NEXT-ACTIONS | (미생성 — 첫 저장 시 신설) | `NEXT-ACTIONS-v{N}` |
+| `prompt/chat/CHOICES-TEMPLATE.md` | chat/CHOICES | (미생성 — 첫 저장 시 신설) | `CHOICES-v{N}` |
 | `spec/story/1-STORYLINES.md` | story-spec | Story Spec Versions | `1-STORYLINES-v{N}` |
 | `spec/story/2-COMPILE.md` | story-spec | Story Spec Versions | `2-COMPILE-v{N}` |
 | `spec/chat/1-PROMPT-LAYER.md` | chat-spec | Chat Spec Versions | `1-PROMPT-LAYER-v{N}` |
@@ -81,9 +81,9 @@ prompt/spec-version-control
 | `spec/chat/3-CONTEXT-ARCHITECTURE.md` | chat-spec | Chat Spec Versions | `3-CONTEXT-ARCHITECTURE-v{N}` |
 | `spec/chat/4-SERVICE-IMPLEMENTATION.md` | chat-spec | Chat Spec Versions | `4-SERVICE-IMPLEMENTATION-v{N}` |
 
-> **NEXT-ACTIONS (신규 프롬프트).** `prompt/chat/NEXT-ACTIONS-TEMPLATE.md`는 아직 Notion에
-> 전용 데이터베이스가 없다. 이 파일을 처음 버전 저장할 때 `chat` 페이지 하위에
-> `Next Actions Prompt Versions` DB(공통 스키마)를 신설한 뒤 진행한다.
+> **CHOICES (신규 프롬프트).** `prompt/chat/CHOICES-TEMPLATE.md`(구 `NEXT-ACTIONS-TEMPLATE.md`)는
+> 아직 Notion에 전용 데이터베이스가 없다. 이 파일을 처음 버전 저장할 때 `chat` 페이지 하위에
+> `Choices Prompt Versions` DB(공통 스키마)를 신설한 뒤 진행한다.
 > `spec/story` 파일명은 과거 `1-BACKGROUND`·`2-RESULT-TEST`에서 현재 `1-STORYLINES`·`2-COMPILE`로
 > 바뀌었다. `Story Spec Versions`에 남아 있는 옛 `1-BACKGROUND` 항목은 현재 파일과 무관하며,
 > 현재 파일은 위 Name으로 새로 저장한다.
