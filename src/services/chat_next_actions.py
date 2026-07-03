@@ -23,7 +23,7 @@ from pathlib import Path
 from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
-from src.core.sentry import FEATURE_CHAT_NEXT_ACTIONS, capture_ai_exception
+from src.core.sentry import FEATURE_CHOICE_GENERATION, capture_ai_exception
 from src.schemas.chat_turn import ChatTurnRequest
 from src.services.prompt_meta import read_version
 
@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_PATH = Path(__file__).parent.parent.parent / "prompt" / "chat" / "NEXT-ACTIONS-TEMPLATE.md"
 
-# 버전은 frontmatter가 SSOT(KNK-228). 로깅 메타(prompt_versions)에 NEXT_ACTIONS 키로 실린다.
+# 버전은 frontmatter가 SSOT(KNK-228). 적재 키는 백엔드 ai_call_logs 연속성을 위해
+# NEXT_ACTIONS를 유지한다(§0-1 적재 이벤트·§0-4 버전 키 예시). 상수명도 키에 맞춰 둔다.
 NEXT_ACTIONS_VERSION = read_version(_TEMPLATE_PATH)
 
 # 정확히 3개 — 와이어 계약(choices)·기존 UI가 3개를 기대한다.
@@ -73,7 +74,7 @@ _SYSTEM, _USER_TEMPLATE = _load_template(_TEMPLATE_PATH)
 
 
 @dataclass
-class NextActionsResult:
+class ChoicesResult:
     """선택지 생성 결과(로깅 메타 합산용). choices는 항상 정확히 3개다."""
 
     choices: list[str]
@@ -180,7 +181,7 @@ async def _call(system: str, user: str) -> tuple[list, str, int | None, int | No
     )
 
 
-async def generate_next_actions(req: ChatTurnRequest, ai_output: str) -> NextActionsResult:
+async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResult:
     """방금 장면(ai_output)을 이어 다음 행동 선택지를 만든다 — **항상 정확히 3개 보장**.
 
     첫 호출 → (부족하면) 누적 재호출(최대 _MAX_REFILL회, 기존 제외·모자란 개수만) →
@@ -207,7 +208,7 @@ async def generate_next_actions(req: ChatTurnRequest, ai_output: str) -> NextAct
             logger.warning("선택지 호출 실패(시도 %d): %s", attempt, e)
             capture_ai_exception(
                 e,
-                feature=FEATURE_CHAT_NEXT_ACTIONS,
+                feature=FEATURE_CHOICE_GENERATION,
                 model=settings.deepseek_chat_model,
                 prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
             )
@@ -229,7 +230,7 @@ async def generate_next_actions(req: ChatTurnRequest, ai_output: str) -> NextAct
                 collected.append(f)
                 seen.add(f)
 
-    return NextActionsResult(
+    return ChoicesResult(
         choices=collected[:_CHOICES_COUNT],  # 초과분은 잘라 정확히 3개
         input_tokens=input_tokens,
         output_tokens=output_tokens,

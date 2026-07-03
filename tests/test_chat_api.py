@@ -3,7 +3,7 @@ import json
 import pytest
 
 from src.api.v1 import chat as chat_module
-from src.services.chat_next_actions import NextActionsResult
+from src.services.chat_next_actions import ChoicesResult
 
 
 def _payload() -> dict:
@@ -42,13 +42,13 @@ def mock_events(monkeypatch):
 
 @pytest.fixture
 def mock_next_actions(monkeypatch):
-    """선택지 호출(generate_next_actions)을 고정 결과로 바꾼다(선택지 LLM 회피)."""
+    """선택지 호출(generate_choices)을 고정 결과로 바꾼다(선택지 LLM 회피)."""
 
-    def _set(result: NextActionsResult) -> None:
+    def _set(result: ChoicesResult) -> None:
         async def _fake(req, ai_output):
             return result
 
-        monkeypatch.setattr(chat_module, "generate_next_actions", _fake)
+        monkeypatch.setattr(chat_module, "generate_choices", _fake)
 
     return _set
 
@@ -71,7 +71,7 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events, mock_next_
         ]
     )
     mock_next_actions(
-        NextActionsResult(
+        ChoicesResult(
             choices=["가", "나", "다"],
             input_tokens=None,
             output_tokens=None,
@@ -116,7 +116,7 @@ async def test_chat_turn_merges_tokens_and_retry(client, mock_events, mock_next_
           "input_tokens": 100, "output_tokens": 40}]
     )
     mock_next_actions(
-        NextActionsResult(
+        ChoicesResult(
             choices=["가", "나", "다"], input_tokens=30, output_tokens=12,
             retry_count=2, model="deepseek-v4-flash",
         )

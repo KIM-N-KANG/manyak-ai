@@ -1,6 +1,6 @@
 ---
-version: 2
-updated: 2026-06-26
+version: 3
+updated: 2026-07-03
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -455,7 +455,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 - **② 실제 상태(summary)는 AI가 보관하지 않는다.** AI는 무상태이므로, 매 턴 백엔드가 보낸 `summary`를 받아 Depth에 삽입할 뿐이다(빈 문자열이면 빈 칸). 채팅별 summary의 영속은 백엔드 DB가 소유한다.
 - **MEMORY는 History의 파생 요약**이다. ([1-PROMPT-LAYER.md:204]) **요약 생성은 백엔드가 수행하는 별개 기능(Phase 4)**이며, AI는 그 결과(summary)를 **참조만** 한다 — 참조(매 턴, 지금)와 생성(Phase 4, 백엔드)을 섞지 않는다.
 - **③ History 원본의 영속 저장도 백엔드 DB가 소유**한다. AI 서버는 History도 summary도 보관하지 않으며 매 턴 둘 다 request로 받는다(채팅 이어가기는 백엔드 DB의 History·summary 복원으로 이뤄진다).
-- 이름 충돌 주의: 메모리 요약을 `MEMORY.md`로 부르지 않고 **"세션 상태(summary)"**로 부른다.
+- 이름 충돌 주의: 메모리 요약을 `MEMORY.md`로 부르지 않고 **"요약(summary)"**으로 부른다("세션 상태"는 session 예약어와 충돌 — 용어집 §0-3-3·§0-5).
 
 ### 5.1 MEMORY 상태 스키마
 

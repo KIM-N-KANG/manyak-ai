@@ -22,22 +22,22 @@ def _load_template(path: Path) -> tuple[str, str]:
         raise RuntimeError(f"프롬프트 템플릿 로드 또는 파싱 실패: {path.name}: {e}")
 
 
-_STORY_SYSTEM, _STORY_USER = _load_template(_STORYLINES_TEMPLATE_PATH)
+_STORYLINES_SYSTEM, _STORYLINES_USER = _load_template(_STORYLINES_TEMPLATE_PATH)
 _COMPILE_SYSTEM, _COMPILE_USER = _load_template(_COMPILE_TEMPLATE_PATH)
 
 
-def build_story_prompt(
+def build_storylines_prompt(
     genre_tags: list[str],
     protagonist_tags: list[str],
     supporting_tags: list[str],
 ) -> tuple[str, str]:
     user_text = (
-        _STORY_USER
+        _STORYLINES_USER
         .replace("{{장르_태그}}", ", ".join(genre_tags))
         .replace("{{주인공_특징_태그}}", ", ".join(protagonist_tags))
         .replace("{{주변_인물_태그}}", ", ".join(supporting_tags))
     )
-    return _STORY_SYSTEM, user_text
+    return _STORYLINES_SYSTEM, user_text
 
 
 def build_compile_prompt(
