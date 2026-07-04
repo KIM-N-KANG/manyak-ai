@@ -64,9 +64,13 @@ manyak-ai 구현이 바뀌면 이 문서도 따라 바뀌어야 하는데, 사�
 
 ### 1단계: 드리프트 감지
 
-스펙 메타 표에서 기준 코드 SHA를 읽고, manyak-ai에서 그 이후의 변경을 수집한다.
+스펙 메타 표에서 기준 코드 SHA를 읽고, 그 이후의 변경을 수집한다. 아래 `git`
+명령은 모두 **manyak-ai 레포지토리 루트에서** 실행한다 — 이 스킬은 두 레포를 오가므로
+(감지는 manyak-ai, 문서 수정은 knk-harness) 작업 디렉터리가 knk-harness에 있으면
+잘못된 결과가 나온다.
 
 ```bash
+# manyak-ai 레포지토리 루트에서 실행
 git fetch origin
 git log <기준SHA>..origin/dev --oneline -- src/ prompt/ spec/ Dockerfile pyproject.toml .github/workflows/ .env.example
 ```
@@ -125,8 +129,9 @@ git log <기준SHA>..origin/dev --oneline -- src/ prompt/ spec/ Dockerfile pypro
 확인받은 수정을 반영한다. 3층 서술 순서(계약 표는 구현 층에만), §5-2 단일
 서술(타 섹션은 ID 참조), 0-glossary 용어, 기존 문체(존댓말)를 유지한다.
 
-마지막으로 메타 표를 갱신한다 — 기준 코드 SHA(동기화한 `dev` SHA), 작성일,
-버전(내용 변경 시 +0.1).
+마지막으로 메타 표를 갱신한다 — 기준 코드 SHA, 작성일, 버전(내용 변경 시 +0.1).
+동기화한 `dev` SHA는 manyak-ai 레포지토리 루트에서 `git rev-parse --short=12 origin/dev`로
+획득한다(메타 표는 12자리 short SHA 표기다 — `git log` 출력을 눈으로 옮기지 않는다).
 
 ### 6단계: PR 안내
 
