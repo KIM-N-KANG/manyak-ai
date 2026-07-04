@@ -133,13 +133,20 @@ git log <기준SHA>..origin/dev --oneline -- src/ prompt/ spec/ Dockerfile pypro
 동기화한 `dev` SHA는 manyak-ai 레포지토리 루트에서 `git rev-parse --short=12 origin/dev`로
 획득한다(메타 표는 12자리 short SHA 표기다 — `git log` 출력을 눈으로 옮기지 않는다).
 
-### 6단계: PR 안내
+### 6단계: 커밋·PR (하네스 공용 스킬 사용)
 
-knk-harness는 별도 레포다. 커밋·PR은 사용자 확인 게이트를 거친다:
+knk-harness는 별도 레포다. 문서 갱신을 반영하는 커밋·PR은 팀 공용 스킬로 진행하며,
+각 단계는 사용자 확인 게이트를 거친다. 공용 스킬(`create-branch`·`create-commit`·
+`create-pr`)은 **호출만 하고 수정하지 않는다.**
 
-1. knk-harness에서 `dev` 최신화(pull) 선행
-2. `docs/KNK-xxx-...` 브랜치 분기(티켓 키는 해당 작업의 Jira 티켓)
-3. 커밋 후 Draft PR — 본문에 동기화 요약(변경 단위 → 층위 → 수정 섹션) 포함
+1. knk-harness에서 `dev` 최신화(pull)를 선행한 뒤 `docs/KNK-xxx-...` 브랜치를
+   분기한다(묵은 dev에서 갈라지지 않게 분기 전 pull이 필수다).
+2. `create-commit` 스킬로 커밋한다 — 커밋 키는 이 동기화 작업의 Jira **서브태스크**
+   키를 쓴다. 브랜치·PR 제목은 부모 키를 따른다(`pr-title-follows-branch` 컨벤션).
+3. `create-pr` 스킬로 Draft PR을 올린다 — 브랜치 push는 이 스킬이 함께 수행한다.
+   PR 본문에 동기화 요약(변경 단위 → 층위 → 수정 섹션)을 넣는다.
+
+파일은 LF 줄바꿈으로 저장한다(knk-harness 문서 규약).
 
 ## 오류 처리
 
@@ -159,6 +166,7 @@ knk-harness는 별도 레포다. 커밋·PR은 사용자 확인 게이트를 거
 - 층위 판단을 건너뛰고 구현 표부터 고치지 않는다.
 - 변경과 무관한 섹션을 재작성하지 않는다.
 - 간극 표(A*)의 항목을 근거 없이 지우지 않는다 — 해소된 간극은 해소 근거(커밋·PR)와 함께 정리한다.
+- 커밋·PR을 직접 만들지 않는다 — `create-commit`·`create-pr` 공용 스킬로 진행하고, 그 스킬을 수정하지 않는다.
 
 ## 완료 보고
 
