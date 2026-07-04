@@ -23,6 +23,7 @@
 - 작업 주기는 스킬로 표준화돼 있습니다: `create-branch` → `create-commit` → `create-pr`.
 - `dev`에 직접 커밋·머지하지 않습니다. 항상 브랜치를 파서 PR로 머지합니다.
 - 브랜치는 최신 `dev`에서 분기합니다(분기 전 `git pull` 선행).
+- 구현 변경이 `dev`에 머지되면 `sync-ai-spec` 스킬로 knk-harness의 AI 서버 스펙(`docs/product-specs/5-ai-server.md`)을 동기화합니다.
 
 ### 프롬프트·명세 변경
 - `prompt/`·`spec/` 파일은 frontmatter의 `version`·`updated`로 버전을 관리합니다.
