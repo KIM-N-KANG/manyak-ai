@@ -6,7 +6,7 @@ before_send로 request 데이터를 떼고, 캡처 인자에도 원문을 넣지
 
 manyak-ai가 자체적으로 아는 값(feature·provider·model·error_code tag, prompt_versions·
 retry_count·latency_ms context)만 여기서 싣는다. 백엔드가 헤더로 넘긴 요청 상관관계 식별자
-(request_id·session_id·anonymous_id_hash)는 RequestContextMiddleware가 요청별 Sentry
+(request_id·session_id·device_id_hash)는 RequestContextMiddleware가 요청별 Sentry
 isolation scope에 직접 부착한다(KNK-266) — 미처리 500 캡처까지 커버되도록.
 
 prompt_versions는 단일 문자열이 아니라 dict로 싣는다 — chat은 6레이어 다중 키라
@@ -35,7 +35,8 @@ FEATURE_STORY_COMPLETION = "story_completion"
 FEATURE_CHAT_RESPONSE = "chat_response"
 # 선택지 생성(2번째 호출)의 AI측 오류 그룹용 태그. 백엔드에는 별도 ai_call_log가 아니라
 # chat_response meta에 합산돼 적재되므로, 이 값은 AI 서비스 Sentry 그룹핑 전용이다.
-FEATURE_CHAT_NEXT_ACTIONS = "chat_next_actions"
+# 값은 server AiCallFeature.CHOICE_GENERATION("choice_generation", KNK-365)과 맞춘다.
+FEATURE_CHOICE_GENERATION = "choice_generation"
 
 # AN-4-7 실패 코드.
 ERROR_PROVIDER_TIMEOUT = "provider_timeout"

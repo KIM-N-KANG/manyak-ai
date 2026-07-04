@@ -322,7 +322,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     """
     system_prompt, user_prompt = build_compile_prompt(
         request.selected_storyline,
-        request.extra_info,
+        request.additional_info,
         request.genre_tags,
         request.protagonist_tags,
         request.supporting_tags,

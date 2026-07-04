@@ -24,7 +24,7 @@ def _load(name: str) -> dict:
 def _request() -> StoryCompileRequest:
     return StoryCompileRequest(
         selected_storyline="x",
-        extra_info="",
+        additional_info="",
         genre_tags=["다크 판타지", "느와르"],
         protagonist_tags=["신중한"],
         supporting_tags=["거친"],
@@ -82,7 +82,7 @@ def test_build_compile_prompt_substitutes_all_slots() -> None:
     assert "충직한, 거친" in user
 
 
-def test_build_compile_prompt_empty_extra_info() -> None:
+def test_build_compile_prompt_empty_additional_info() -> None:
     _, user = build_compile_prompt("라인", "", ["판타지"], ["용감한"], ["거친"])
     assert "{{" not in user
     assert "(없음)" in user

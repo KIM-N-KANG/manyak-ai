@@ -10,12 +10,12 @@ _REQUEST = {
     "supporting_tags": ["다정한", "정파"],
 }
 
-# storylines 출력 스키마({"stories":[{id, story, recommended_infos}]})를 흉내 낸 가짜 결과.
+# storylines 출력 스키마({"stories":[{id, storyline, recommended_infos}]})를 흉내 낸 가짜 결과.
 _FAKE = {
     "stories": [
-        {"id": 1, "story": "스토리 1", "recommended_infos": ["가", "나", "다"]},
-        {"id": 2, "story": "스토리 2", "recommended_infos": ["가", "나", "다"]},
-        {"id": 3, "story": "스토리 3", "recommended_infos": ["가", "나", "다"]},
+        {"id": 1, "storyline": "스토리 1", "recommended_infos": ["가", "나", "다"]},
+        {"id": 2, "storyline": "스토리 2", "recommended_infos": ["가", "나", "다"]},
+        {"id": 3, "storyline": "스토리 3", "recommended_infos": ["가", "나", "다"]},
     ]
 }
 

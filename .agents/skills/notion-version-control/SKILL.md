@@ -1,14 +1,14 @@
 ---
 name: notion-version-control
 description: |
-  마냑(Manyak) 프로젝트의 story·chat 프롬프트(prompt/)와 명세(reference/) 파일 변경을
+  마냑(Manyak) 프로젝트의 story·chat 프롬프트(prompt/)와 명세(spec/) 파일 변경을
   감지해 Notion "AI·SW MAESTRO" 워크스페이스 "prompt/spec-version-control" 하위
   파일별 전용 데이터베이스에 버전 스냅샷을 저장하는 스킬.
 
   다음 상황에서 반드시 사용하라:
   - "버전 저장", "노션에 저장", "프롬프트 버전 관리", "spec 버전 컨트롤" 등의 요청
   - "prompt 변경됐는데 노션에 올려줘", "이번 프롬프트 변경 기록해줘" 등의 요청
-  - prompt/ 또는 reference/ 파일을 수정한 후 변경 이력을 남기고 싶을 때
+  - prompt/ 또는 spec/ 파일을 수정한 후 변경 이력을 남기고 싶을 때
   - story 또는 chat 명세·프롬프트의 변경 내역을 추적하고 싶을 때
   - Notion 버전 히스토리, 명세 백업, 프롬프트 이력 관련 모든 요청
 ---
@@ -34,7 +34,7 @@ prompt/spec-version-control
 │  (https://app.notion.com/p/37dc7821f72c8039ad1fc9c42cd5750a)
 │
 ├── story
-│   └── Story Prompt Versions (DB)
+│   └── Story Prompt Versions (DB)   ← STORYLINES / COMPILE 프롬프트를 Name prefix로 구분
 │
 ├── chat
 │   ├── SAFETY    → Safety Prompt Versions (DB)
@@ -42,7 +42,8 @@ prompt/spec-version-control
 │   ├── STORY     → Story Prompt Versions (DB)
 │   ├── CHARACTER → Character Prompt Versions (DB)
 │   ├── USER      → User Prompt Versions (DB)
-│   └── MEMORY    → Memory Prompt Versions (DB)
+│   ├── MEMORY    → Memory Prompt Versions (DB)
+│   └── (CHOICES 전용 DB는 아직 없음 — 아래 매핑표 주석 참고)
 │
 ├── story-spec
 │   └── Story Spec Versions (DB)
@@ -64,19 +65,28 @@ prompt/spec-version-control
 
 | 파일 경로 | Notion 위치 | 데이터베이스 | Name 형식 |
 |-----------|------------|-------------|----------|
-| `prompt/story/STORY-PROMPT-TEMPLATE.md` | story | Story Prompt Versions | `STORY-PROMPT-TEMPLATE-v{N}` |
-| `prompt/chat/SAFETY-PROMPT.md` | chat/SAFETY | Safety Prompt Versions | `SAFETY-v{N}` |
-| `prompt/chat/CORE-PROMPT.md` | chat/CORE | Core Prompt Versions | `CORE-v{N}` |
-| `prompt/chat/STORY-PROMPT.md` | chat/STORY | Story Prompt Versions | `STORY-v{N}` |
-| `prompt/chat/CHARACTER-PROMPT.md` | chat/CHARACTER | Character Prompt Versions | `CHARACTER-v{N}` |
-| `prompt/chat/USER-PROMPT.md` | chat/USER | User Prompt Versions | `USER-v{N}` |
-| `prompt/chat/MEMORY-PROMPT.md` | chat/MEMORY | Memory Prompt Versions | `MEMORY-v{N}` |
-| `reference/story/1-BACKGROUND.md` | story-spec | Story Spec Versions | `1-BACKGROUND-v{N}` |
-| `reference/story/2-RESULT-TEST.md` | story-spec | Story Spec Versions | `2-RESULT-TEST-v{N}` |
-| `reference/chat/1-PROMPT-LAYER.md` | chat-spec | Chat Spec Versions | `1-PROMPT-LAYER-v{N}` |
-| `reference/chat/2-LAYER-PLACEMENT.md` | chat-spec | Chat Spec Versions | `2-LAYER-PLACEMENT-v{N}` |
-| `reference/chat/3-CONTEXT-ARCHITECTURE.md` | chat-spec | Chat Spec Versions | `3-CONTEXT-ARCHITECTURE-v{N}` |
-| `reference/chat/4-SERVICE-IMPLEMENTATION.md` | chat-spec | Chat Spec Versions | `4-SERVICE-IMPLEMENTATION-v{N}` |
+| `prompt/story/STORYLINES-TEMPLATE.md` | story | Story Prompt Versions | `STORYLINES-TEMPLATE-v{N}` |
+| `prompt/story/COMPILE-TEMPLATE.md` | story | Story Prompt Versions | `COMPILE-TEMPLATE-v{N}` |
+| `prompt/chat/SAFETY-TEMPLATE.md` | chat/SAFETY | Safety Prompt Versions | `SAFETY-v{N}` |
+| `prompt/chat/CORE-TEMPLATE.md` | chat/CORE | Core Prompt Versions | `CORE-v{N}` |
+| `prompt/chat/STORY-TEMPLATE.md` | chat/STORY | Story Prompt Versions | `STORY-v{N}` |
+| `prompt/chat/CHARACTER-TEMPLATE.md` | chat/CHARACTER | Character Prompt Versions | `CHARACTER-v{N}` |
+| `prompt/chat/USER-TEMPLATE.md` | chat/USER | User Prompt Versions | `USER-v{N}` |
+| `prompt/chat/MEMORY-TEMPLATE.md` | chat/MEMORY | Memory Prompt Versions | `MEMORY-v{N}` |
+| `prompt/chat/CHOICES-TEMPLATE.md` | chat/CHOICES | (미생성 — 첫 저장 시 신설) | `CHOICES-v{N}` |
+| `spec/story/1-STORYLINES.md` | story-spec | Story Spec Versions | `1-STORYLINES-v{N}` |
+| `spec/story/2-COMPILE.md` | story-spec | Story Spec Versions | `2-COMPILE-v{N}` |
+| `spec/chat/1-PROMPT-LAYER.md` | chat-spec | Chat Spec Versions | `1-PROMPT-LAYER-v{N}` |
+| `spec/chat/2-LAYER-PLACEMENT.md` | chat-spec | Chat Spec Versions | `2-LAYER-PLACEMENT-v{N}` |
+| `spec/chat/3-CONTEXT-ARCHITECTURE.md` | chat-spec | Chat Spec Versions | `3-CONTEXT-ARCHITECTURE-v{N}` |
+| `spec/chat/4-SERVICE-IMPLEMENTATION.md` | chat-spec | Chat Spec Versions | `4-SERVICE-IMPLEMENTATION-v{N}` |
+
+> **CHOICES (신규 프롬프트).** `prompt/chat/CHOICES-TEMPLATE.md`(구 `NEXT-ACTIONS-TEMPLATE.md`)는
+> 아직 Notion에 전용 데이터베이스가 없다. 이 파일을 처음 버전 저장할 때 `chat` 페이지 하위에
+> `Choices Prompt Versions` DB(공통 스키마)를 신설한 뒤 진행한다.
+> `spec/story` 파일명은 과거 `1-BACKGROUND`·`2-RESULT-TEST`에서 현재 `1-STORYLINES`·`2-COMPILE`로
+> 바뀌었다. `Story Spec Versions`에 남아 있는 옛 `1-BACKGROUND` 항목은 현재 파일과 무관하며,
+> 현재 파일은 위 Name으로 새로 저장한다.
 
 ---
 
@@ -108,10 +118,10 @@ git으로 대상 파일의 변경 여부를 확인한다.
 
 ```bash
 # 미커밋 변경(staged + unstaged) 파일 목록
-git status --porcelain -- prompt/ reference/
+git status --porcelain -- prompt/ spec/
 
 # 최근 커밋 이후 변경 파일 목록
-git diff HEAD -- prompt/ reference/ --name-only
+git diff HEAD -- prompt/ spec/ --name-only
 ```
 
 **변경 파일이 없으면** 사용자에게 알리고 종료한다:
@@ -138,8 +148,8 @@ git diff HEAD -- prompt/ reference/ --name-only
 저장할 파일 목록과 버전 번호를 보여주고 한 줄 설명을 요청한다:
 
 > "다음 파일을 저장합니다:
-> - `SAFETY-PROMPT.md` → SAFETY-v{N}
-> - `CORE-PROMPT.md` → CORE-v{N}
+> - `SAFETY-TEMPLATE.md` → SAFETY-v{N}
+> - `CORE-TEMPLATE.md` → CORE-v{N}
 >
 > 변경 내용을 간단히 설명해주세요.  
 > 예: '다양성 규칙 강화', 'MEMORY 경계 수정', 'few-shot 예시 교체'  

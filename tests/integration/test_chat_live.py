@@ -10,7 +10,7 @@ from src.schemas.chat_turn import (
 )
 from src.services.chat_assembler import assemble
 from src.services.chat_llm import stream_chat_turn
-from src.services.chat_next_actions import generate_next_actions
+from src.services.chat_choices import generate_choices
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +65,6 @@ async def test_chat_turn_live() -> None:
     assert "choices" not in completed
 
     # 분리된 2번째 호출이 항상 정확히 3개를 보장한다(엔드포인트와 동일 흐름).
-    next_actions = await generate_next_actions(req, completed["ai_output"])
+    next_actions = await generate_choices(req, completed["ai_output"])
     assert len(next_actions.choices) == 3
     assert all(c.strip() for c in next_actions.choices)
