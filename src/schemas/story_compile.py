@@ -4,6 +4,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.schemas.response_meta import StoryResponseMeta
 
+# 엔딩 유형 — 내부 세분(Ending)과 응답 계약(StoryEndingOut)이 공유하는 계약값.
+EndingType = Literal["HAPPY", "NORMAL", "BAD"]
+
 
 class StoryCompileRequest(BaseModel):
     """스토리 컴파일(시점 A-1) 입력 — 희소 입력.
@@ -86,7 +89,7 @@ class MainEvent(BaseModel):
 class Ending(BaseModel):
     """엔딩 정의(정본 3필드). 본문이 아니라 도달 시 생성될 에필로그의 유형·조건·연출 방향."""
 
-    ending_type: Literal["HAPPY", "NORMAL", "BAD"]
+    ending_type: EndingType
     ending_requirement: str
     ending_epilogue: str
 
@@ -155,7 +158,7 @@ class StoryMainEventOut(BaseModel):
 class StoryEndingOut(BaseModel):
     """엔딩(story_endings 테이블) — 정본 3필드. 백엔드가 칸별로 저장한다."""
 
-    ending_type: str
+    ending_type: EndingType
     ending_requirement: str
     ending_epilogue: str
 
@@ -167,6 +170,6 @@ class StoryCompileResponse(BaseModel):
     story_settings: StorySettingsOut
     story_start_settings: StoryStartSettingsOut
     story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
-    story_main_events: list[StoryMainEventOut]  # 주요 사건 3~5개(KNK-417)
-    story_endings: list[StoryEndingOut]  # 엔딩 3종 HAPPY/NORMAL/BAD(KNK-417)
+    story_main_events: list[StoryMainEventOut] = Field(min_length=3, max_length=5)  # 주요 사건 3~5개(KNK-417)
+    story_endings: list[StoryEndingOut] = Field(min_length=3, max_length=3)  # 엔딩 3종 HAPPY/NORMAL/BAD(KNK-417)
     meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). compile_story가 항상 채운다.
