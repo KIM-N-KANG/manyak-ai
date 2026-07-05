@@ -144,11 +144,29 @@ class StoryStartSettingsOut(BaseModel):
     prologue: str
 
 
+class StoryMainEventOut(BaseModel):
+    """주요 사건(story_main_events 테이블) — 항목별 이산 필드로 전달(통글 아님). 배열 순서=명목 순서(비강제)."""
+
+    name: str
+    description: str
+    key_sentence: str
+
+
+class StoryEndingOut(BaseModel):
+    """엔딩(story_endings 테이블) — 정본 3필드. 백엔드가 칸별로 저장한다."""
+
+    ending_type: str
+    ending_requirement: str
+    ending_epilogue: str
+
+
 class StoryCompileResponse(BaseModel):
-    """컴파일 API output — ERD 4테이블에 1:1 대응하는 nested 계약본."""
+    """컴파일 API output — ERD 테이블에 1:1 대응하는 nested 계약본."""
 
     stories: StoriesOut
     story_settings: StorySettingsOut
     story_start_settings: StoryStartSettingsOut
     story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+    story_main_events: list[StoryMainEventOut]  # 주요 사건 3~5개(KNK-417)
+    story_endings: list[StoryEndingOut]  # 엔딩 3종 HAPPY/NORMAL/BAD(KNK-417)
     meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). compile_story가 항상 채운다.
