@@ -1,6 +1,6 @@
 ---
-version: 2
-updated: 2026-07-03
+version: 3
+updated: 2026-07-05
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -26,7 +26,7 @@ updated: 2026-07-03
 | 항목 | 스토리라인 생성 | 컴파일 |
 |---|---|---|
 | 입력 | 태그 3종 | 선택 스토리라인 + 추가정보 + 태그 3종 |
-| 출력 | 이야기 3편 + 추천정보 | 스토리 명세 1건(4테이블) |
+| 출력 | 이야기 3편 + 추천정보 | 스토리 명세 1건(4테이블 + 주요 사건·엔딩) |
 | 모델 | `deepseek-v4-flash` | `deepseek-v4-pro` |
 | 호출 | 단일 호출 | 본호출 + 빈 블록 부분 재호출(최대 2회) |
 
@@ -55,6 +55,8 @@ updated: 2026-07-03
 **[5]~[6] 빈 필드 검증·부분 재호출이 필요한 이유**: 스토리 명세는 채팅 플레이에 그대로 쓰이므로 필수 슬롯이 비면 안 됩니다. 그런데 Pydantic 검증은 빈 문자열(`""`)을 통과시키고, 파싱이 먼저 실패하면 다시 채울 기회가 사라집니다. 따라서 파싱 전 dict 단계에서 빈 필수 필드를 직접 찾아, 비어 있는 블록만 다시 채우는 부분 재호출로 메웁니다.
 
 **[8] 통글 마크다운으로 변환하는 이유**: 백엔드의 ERD 4테이블 중 `story_settings`는 사람이 읽기 좋고 채팅 AI가 바로 슬롯에 끼울 수 있는 통글 마크다운으로 저장합니다. 검증에 유리한 세분 구조와 저장·활용에 유리한 통글 구조가 다르므로, 서버가 마지막에 세분 명세를 통글로 재조립합니다.
+
+**엔딩·주요 사건(KNK-417)**: 컴파일은 세계관·인물과 함께 주요 사건 3~5개와 엔딩 3종(HAPPY·NORMAL·BAD)을 **한 번의 호출로** 생성합니다. 사건은 이야기의 갈림길이고, 엔딩은 그 사건들의 조합·해결 방식에 뿌리내려 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 결말 상태를 빈틈없이 덮습니다(상호배타+총망라). 이 둘은 `story_settings`처럼 통글로 뭉치지 않고 항목별 이산 필드 그대로 백엔드에 전달됩니다(→ 5-1).
 
 ---
 
@@ -91,8 +93,9 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 - 비어 있는 필드가 있으면, 그 필드가 속한 **블록만** 다시 채우도록 부분 재호출합니다. 재호출 프롬프트에는 직전 생성 결과를 맥락으로 주고, 빈 블록만 채워 그 블록만 최상위 키로 갖는 JSON을 돌려받습니다. 잘 나온 다른 블록은 보존하기 위해 응답에 포함하지 않게 합니다.
 - 재호출은 **최대 2회**까지 반복합니다. 2회 후에도 빈 필수 필드가 남으면 502로 막습니다(→ 4-6).
 - 검증에서 제외하는 예외 필드: `meta.genre`(서버가 입력 태그로 덮어씀), `user_role_setting.preference`(선택 입력이라 비어 있어도 됨).
+- 엔딩 타입은 대소문자 흔들림(`happy`→`HAPPY`)을 대문자로 정규화한 뒤 검증합니다. 타입 분포(HAPPY·NORMAL·BAD 각 1개)가 어긋나면(잘못된 값·중복·누락) 다른 빈 블록과 동일하게 `endings` 블록을 부분 재호출로 다시 채웁니다 — 분포 위반이 파싱 단계까지 가면 재호출 없이 502가 되기 때문입니다.
 
-필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 5개 필드, user_role_setting의 preference 제외 4개 필드), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음).
+필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 5개 필드, user_role_setting의 preference 제외 4개 필드), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음), `main_events`(3~5개이며 각 항목의 name·description·key_sentence가 비어 있지 않음), `endings`(정확히 3개이며 각 항목의 ending_type·ending_requirement·ending_epilogue가 비어 있지 않고 타입이 HAPPY·NORMAL·BAD 각 1개).
 
 ### 4-5. 세분 → 통글 변환
 
@@ -166,6 +169,14 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
     "prologue": "..."
   },
   "story_suggested_inputs": ["...", "...", "..."],
+  "story_main_events": [
+    { "name": "...", "description": "...", "key_sentence": "..." }
+  ],
+  "story_endings": [
+    { "ending_type": "HAPPY",  "ending_requirement": "...", "ending_epilogue": "..." },
+    { "ending_type": "NORMAL", "ending_requirement": "...", "ending_epilogue": "..." },
+    { "ending_type": "BAD",    "ending_requirement": "...", "ending_epilogue": "..." }
+  ],
   "meta": {
     "model": "deepseek-v4-pro",
     "prompt_versions": { "COMPILE": 3 },
@@ -184,8 +195,12 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
 | story_settings | object | 채팅 AI 프롬프트 재료(`story_settings` 테이블). 4필드 모두 통글 마크다운 |
 | story_start_settings | object | 시작 설정(`story_start_settings` 테이블). name·start_situation·prologue |
 | story_suggested_inputs | string[] | 첫 입력 추천 문구. 정확히 3개 |
+| story_main_events | object[] | 주요 사건 3~5개(`story_main_events` 테이블). 각 항목 name·description·key_sentence. 배열 순서=명목 순서(비강제) |
+| story_endings | object[] | 엔딩 3종(`story_endings` 테이블). 각 항목 ending_type(HAPPY·NORMAL·BAD 각 1개)·ending_requirement·ending_epilogue |
 | meta | object | 응답 로깅 메타(`ai_call_logs` 적재용, KNK-243) |
 | meta.retry_count | number | 부분 재호출 횟수(0~2) |
+
+**백엔드 저장 안내(KNK-417)**: `story_endings`는 엔딩 3필드(ending_type·ending_requirement·ending_epilogue)를 담을 칸으로, `story_main_events`는 **새 테이블**(name·description·key_sentence + 배열 순서를 담을 순서 칸)로 저장합니다. 두 목록은 통글로 뭉치지 않고 항목별 이산 필드 그대로 내려가므로 칸별로 저장하면 됩니다. 사건의 배열 순서는 명목 순서일 뿐 전개를 강제하지 않습니다(건너뛰기 허용).
 
 `meta`의 나머지 필드(model·prompt_versions·provider·input_token_count·output_token_count)는 스토리라인과 동일합니다. 토큰 수는 본호출과 재호출을 **합산**하며, model은 본호출 응답값을 씁니다.
 
@@ -208,7 +223,15 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
     "user_role_setting": { "name": "...", "role": "...", "background": "...", "personality": "...", "preference": "" }
   },
   "start": { "name": "...", "prologue": "...", "start_situation": "..." },
-  "suggested_inputs": ["...", "...", "..."]
+  "suggested_inputs": ["...", "...", "..."],
+  "main_events": [
+    { "name": "...", "description": "...", "key_sentence": "..." }
+  ],
+  "endings": [
+    { "ending_type": "HAPPY",  "ending_requirement": "...", "ending_epilogue": "..." },
+    { "ending_type": "NORMAL", "ending_requirement": "...", "ending_epilogue": "..." },
+    { "ending_type": "BAD",    "ending_requirement": "...", "ending_epilogue": "..." }
+  ]
 }
 ```
 
@@ -224,6 +247,8 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | | user_role_setting | 주인공 프로필. name·role·background·personality·preference(선택) |
 | start | name·prologue·start_situation | 시작 설정 이름·도입 나레이션·첫 장면 |
 | suggested_inputs | string[] | 첫 입력 추천 문구 3개 |
+| main_events | object[] | 주요 사건 3~5개. 각 name·description·key_sentence. 이야기의 갈림길이자 엔딩을 가르는 축 |
+| endings | object[] | 엔딩 3종(HAPPY·NORMAL·BAD 각 1개). 각 ending_type·ending_requirement·ending_epilogue |
 
 ### 5-3. 세분 → 통글 변환 규칙
 
@@ -235,6 +260,8 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | story_settings | story_settings(통글 4필드) | prompt_settings 7필드를 4통글로 재구성 |
 | story_start_settings | story_start_settings | start |
 | story_suggested_inputs | story_suggested_inputs | suggested_inputs |
+| story_main_events | story_main_events | main_events(항목별 그대로, 통글 아님) |
+| story_endings | story_endings | endings(항목별 그대로, 통글 아님) |
 
 `story_settings` 4개 통글 필드의 구성과 마크다운 구조는 다음과 같습니다.
 
@@ -266,6 +293,8 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 - `length_ratio`: 묘사와 대사의 비중을 `묘사 N : 대사 M` 형식으로 적는다.
 - `character_setting`: 이야기에 실제로 등장하는 주요 인물 **최대 5명만** 카드화하고, 그 이상은 `world_setting` 배경으로 흡수한다. 인물마다 말투·성격이 서로 구분되게 한다.
 - `suggested_inputs`: 첫 입력 추천 문구 최대 3개. 행동 묘사는 `*...*`로 감쌀 수 있다.
+- `main_events`: 주요 사건 3~5개(name·description·key_sentence). 이야기의 갈림길로 짜되 기본 순서만 두고 건너뛰기를 허용한다. `key_sentence`는 "사용자가 ~한다" 사용자 시점의 유도 문장으로, 사용자가 자연스럽게 떠올려 입력할 만하게 직관적으로 쓴다.
+- `endings`: 엔딩 3종(HAPPY·NORMAL·BAD 각 1개). 사건들의 조합·해결에 뿌리내리게 하되, 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 나눠 결말 상태를 빈틈없이 덮는다(상호배타+총망라, NORMAL이 중간대 흡수). `ending_requirement`엔 최소 턴·목적·거친 사건을, `ending_epilogue`엔 완성 글이 아니라 방향을 담되 "사용자의 행적을 반드시 반영해 그 행동이 세계를 바꾼 결과로 마무리하라"는 지시를 포함한다.
 
 **가독성**: 모든 서술형 값은 채팅 플레이에 그대로 노출되므로, 어려운 한자어·번역체를 피하고 쉬운 말·자연스러운 어순으로 쓴다. 한 명사 앞에 관형어를 3개 이상 쌓지 않는다. 여러 문장으로 이루어진 값은 문장마다 이중 개행(`\n\n`)으로 한 문장씩 출력한다.
 
@@ -286,6 +315,9 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | genre 주입 | 노출 genre가 LLM 출력이 아니라 입력 태그로 채워졌는지 확인 |
 | 통글 변환 | story_settings 4필드가 약속된 마크다운 헤더 구조로 조립됐는지 확인 |
 | 부분 재호출 | 빈 블록이 있을 때 그 블록만 다시 채우고, 2회 후에도 누락이면 502인지 확인 |
+| 주요 사건 | story_main_events가 3~5개이고 각 항목 name·description·key_sentence가 채워졌는지 확인 |
+| 엔딩 | story_endings가 정확히 3개(HAPPY·NORMAL·BAD 각 1개)이고 각 3필드가 채워졌는지 확인 |
+| 엔딩 정규화·분포 | ending_type 대소문자 정규화 후 분포 위반 시 재호출로 구제, 2회 후에도 어긋나면 502인지 확인 |
 | 응답 메타 | `meta`에 model·prompt_versions·provider·토큰 수·retry_count가 실리는지 확인 |
 | 에러 처리 | 호출 실패·파싱 실패·스키마 검증 실패 시 502 반환 |
 
