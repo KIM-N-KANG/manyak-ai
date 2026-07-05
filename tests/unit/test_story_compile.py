@@ -257,3 +257,117 @@ async def test_compile_story_schema_failure_captures(monkeypatch: pytest.MonkeyP
     assert exc.value.status_code == 502
     assert len(calls) == 1
     assert calls[0]["error_code"] == "schema_validation_failed"
+
+
+# ── 엔딩·주요 사건 (KNK-417) ─────────────────────────────────────────────────
+def test_spec_to_response_passes_events_and_endings() -> None:
+    # 엔딩·사건이 응답에 항목별 이산 필드로 실려야 한다(회귀 방지).
+    spec = StorySpec(**_load("spec_valid.json"))
+    res = spec_to_response(spec)
+    assert 3 <= len(res.story_main_events) <= 5
+    ev = res.story_main_events[0]
+    assert ev.name and ev.description and ev.key_sentence
+    assert sorted(e.ending_type for e in res.story_endings) == ["BAD", "HAPPY", "NORMAL"]
+    end = res.story_endings[0]
+    assert end.ending_requirement and end.ending_epilogue
+
+
+def test_one_ending_per_type_rejected() -> None:
+    # 엔딩 타입 분포 위반(HAPPY 2 + BAD)은 StorySpec 파싱에서 거부돼야 한다.
+    data = _load("spec_valid.json")
+    for e, t in zip(data["endings"], ["HAPPY", "HAPPY", "BAD"]):
+        e["ending_type"] = t
+    with pytest.raises(ValidationError):
+        StorySpec(**data)
+
+
+def test_events_out_of_range_rejected() -> None:
+    # 사건은 3~5개. 2개(하한 위반)·6개(상한 위반) 모두 거부.
+    for n in (2, 6):
+        data = _load("spec_valid.json")
+        base = data["main_events"][0]
+        data["main_events"] = [dict(base, name=f"사건{i}") for i in range(n)]
+        with pytest.raises(ValidationError):
+            StorySpec(**data)
+
+
+def test_find_missing_keys_detects_event_ending_issues() -> None:
+    # 사건 개수 하한 위반
+    data = _load("spec_valid.json")
+    data["main_events"] = data["main_events"][:2]
+    assert "main_events" in story_llm._find_missing_keys(data)
+    # 사건 항목의 빈 필드
+    data = _load("spec_valid.json")
+    data["main_events"][0]["key_sentence"] = ""
+    assert "main_events[0].key_sentence" in story_llm._find_missing_keys(data)
+    # 엔딩 항목의 빈 필드
+    data = _load("spec_valid.json")
+    data["endings"][1]["ending_epilogue"] = "   "
+    assert "endings[1].ending_epilogue" in story_llm._find_missing_keys(data)
+    # 엔딩 타입 분포 위반은 재호출 대상(endings 블록)으로 잡혀야 한다
+    data = _load("spec_valid.json")
+    for e, t in zip(data["endings"], ["HAPPY", "HAPPY", "BAD"]):
+        e["ending_type"] = t
+    assert "endings" in story_llm._find_missing_keys(data)
+
+
+def test_find_missing_keys_clean_with_events_and_endings() -> None:
+    # 정상 spec은 엔딩·사건 때문에 오탐이 나지 않아야 한다.
+    assert story_llm._find_missing_keys(_load("spec_valid.json")) == []
+
+
+def test_normalize_ending_types_uppercases() -> None:
+    # 대소문자 흔들림(happy)은 정규화로 흡수하되 분포는 유지.
+    data = _load("spec_valid.json")
+    for e, t in zip(data["endings"], ["happy", "Normal", "bAd"]):
+        e["ending_type"] = t
+    story_llm._normalize_ending_types(data)
+    assert [e["ending_type"] for e in data["endings"]] == ["HAPPY", "NORMAL", "BAD"]
+
+
+def test_block_of_maps_event_ending_paths() -> None:
+    assert story_llm._block_of("main_events[0].key_sentence") == "main_events"
+    assert story_llm._block_of("endings") == "endings"
+    assert story_llm._block_of("endings[2].ending_type") == "endings"
+
+
+async def test_compile_story_refills_bad_ending_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 첫 응답이 분포 위반(HAPPY 2 + BAD)이면 endings만 재호출로 구제해야 한다.
+    calls: list[str] = []
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        calls.append(user)
+        if len(calls) == 1:
+            data = _load("spec_valid.json")
+            for e, t in zip(data["endings"], ["HAPPY", "HAPPY", "BAD"]):
+                e["ending_type"] = t
+            return data, story_llm.LlmUsage("m", 100, 200)
+        return {"endings": _load("spec_valid.json")["endings"]}, story_llm.LlmUsage("m", 10, 20)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert len(calls) == 2  # 최초 1 + 분포 위반 재호출 1
+    assert sorted(e.ending_type for e in res.story_endings) == ["BAD", "HAPPY", "NORMAL"]
+
+
+async def test_compile_story_normalizes_lowercase_ending_type_without_refill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 소문자 ending_type은 정규화로 흡수돼 재호출 없이 통과해야 한다.
+    calls: list[str] = []
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        calls.append(user)
+        data = _load("spec_valid.json")
+        for e, t in zip(data["endings"], ["happy", "normal", "bad"]):
+            e["ending_type"] = t
+        return data, story_llm.LlmUsage("m", 100, 200)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert len(calls) == 1  # 재호출 없음
+    assert sorted(e.ending_type for e in res.story_endings) == ["BAD", "HAPPY", "NORMAL"]

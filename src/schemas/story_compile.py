@@ -1,6 +1,11 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
 
 from src.schemas.response_meta import StoryResponseMeta
+
+# 엔딩 유형 — 내부 세분(Ending)과 응답 계약(StoryEndingOut)이 공유하는 계약값.
+EndingType = Literal["HAPPY", "NORMAL", "BAD"]
 
 
 class StoryCompileRequest(BaseModel):
@@ -73,6 +78,22 @@ class Start(BaseModel):
     start_situation: str
 
 
+class MainEvent(BaseModel):
+    """주요 사건 — 이야기의 갈림길. key_sentence는 사용자 입력이 이 사건과 연결되는지 판단하는 기준."""
+
+    name: str
+    description: str
+    key_sentence: str
+
+
+class Ending(BaseModel):
+    """엔딩 정의(정본 3필드). 본문이 아니라 도달 시 생성될 에필로그의 유형·조건·연출 방향."""
+
+    ending_type: EndingType
+    ending_requirement: str
+    ending_epilogue: str
+
+
 class StorySpec(BaseModel):
     """스토리 컴파일(시점 A-1)의 영속 산출물 — 스토리 명세 JSON(MVP 확정본).
 
@@ -83,6 +104,17 @@ class StorySpec(BaseModel):
     prompt_settings: PromptSettings
     start: Start
     suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+    # 주요 사건 3~5개와 엔딩 3종(각 1개)을 결속 생성 — 채팅 소비는 후속(KNK-417)
+    main_events: list[MainEvent] = Field(min_length=3, max_length=5)
+    endings: list[Ending] = Field(min_length=3, max_length=3)
+
+    @field_validator("endings")
+    @classmethod
+    def _one_ending_per_type(cls, v: list[Ending]) -> list[Ending]:
+        """엔딩은 HAPPY·NORMAL·BAD 각 정확히 1개여야 한다(중복·누락 금지)."""
+        if sorted(e.ending_type for e in v) != ["BAD", "HAPPY", "NORMAL"]:
+            raise ValueError("endings must contain exactly one each of HAPPY, NORMAL, BAD")
+        return v
 
 
 # ── 컴파일 API output (백엔드 계약) ─────────────────────────────────────────
@@ -115,11 +147,29 @@ class StoryStartSettingsOut(BaseModel):
     prologue: str
 
 
+class StoryMainEventOut(BaseModel):
+    """주요 사건(story_main_events 테이블) — 항목별 이산 필드로 전달(통글 아님). 배열 순서=명목 순서(비강제)."""
+
+    name: str
+    description: str
+    key_sentence: str
+
+
+class StoryEndingOut(BaseModel):
+    """엔딩(story_endings 테이블) — 정본 3필드. 백엔드가 칸별로 저장한다."""
+
+    ending_type: EndingType
+    ending_requirement: str
+    ending_epilogue: str
+
+
 class StoryCompileResponse(BaseModel):
-    """컴파일 API output — ERD 4테이블에 1:1 대응하는 nested 계약본."""
+    """컴파일 API output — ERD 테이블에 1:1 대응하는 nested 계약본."""
 
     stories: StoriesOut
     story_settings: StorySettingsOut
     story_start_settings: StoryStartSettingsOut
     story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+    story_main_events: list[StoryMainEventOut] = Field(min_length=3, max_length=5)  # 주요 사건 3~5개(KNK-417)
+    story_endings: list[StoryEndingOut] = Field(min_length=3, max_length=3)  # 엔딩 3종 HAPPY/NORMAL/BAD(KNK-417)
     meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). compile_story가 항상 채운다.

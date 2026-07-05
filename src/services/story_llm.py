@@ -276,6 +276,32 @@ def _find_missing_keys(data: dict) -> list[str]:
             if _is_empty(s):
                 missing.append(f"suggested_inputs[{i}]")
 
+    events = data.get("main_events")
+    if not isinstance(events, list) or not (3 <= len(events) <= 5):  # 3~5개 필수
+        missing.append("main_events")
+    else:
+        for i, raw in enumerate(events):
+            ev = _as_dict(raw)
+            for k in ("name", "description", "key_sentence"):
+                if _is_empty(ev.get(k)):
+                    missing.append(f"main_events[{i}].{k}")
+
+    endings = data.get("endings")
+    if not isinstance(endings, list) or len(endings) != 3:  # 정확히 3개 필수
+        missing.append("endings")
+    else:
+        for i, raw in enumerate(endings):
+            en = _as_dict(raw)
+            for k in ("ending_type", "ending_requirement", "ending_epilogue"):
+                if _is_empty(en.get(k)):
+                    missing.append(f"endings[{i}].{k}")
+        # 타입은 HAPPY·NORMAL·BAD 각 1개여야 한다. 분포·유효성이 어긋나면(잘못된 값·중복·누락)
+        # 빈 필드와 똑같이 재호출로 흘려 구제한다 — StorySpec 파싱까지 가면 재호출 없이 502가 되므로.
+        # (대소문자 흔들림은 _normalize_ending_types가 미리 흡수하므로 여기선 upper로 비교만.)
+        types = sorted(str(_as_dict(e).get("ending_type", "")).strip().upper() for e in endings)
+        if types != ["BAD", "HAPPY", "NORMAL"]:
+            missing.append("endings")
+
     return missing
 
 
@@ -287,6 +313,10 @@ def _block_of(path: str) -> str:
         return "start"
     if path.startswith("suggested_inputs"):
         return "suggested_inputs"
+    if path.startswith("main_events"):
+        return "main_events"
+    if path.startswith("endings"):
+        return "endings"
     if path.startswith("prompt_settings."):
         rest = path[len("prompt_settings."):]
         return rest.split(".")[0].split("[")[0]
@@ -304,7 +334,7 @@ def _merge_blocks(data: dict, refill: dict, blocks: list[str]) -> None:
             if not isinstance(data.get("prompt_settings"), dict):
                 data["prompt_settings"] = {}
             data["prompt_settings"][b] = refill[b]
-        else:  # meta / start / suggested_inputs (top-level)
+        else:  # meta / start / suggested_inputs / main_events / endings (top-level)
             data[b] = refill[b]
 
 
@@ -312,6 +342,17 @@ def _inject_genre(data: dict, genre_tags: list[str]) -> None:
     """genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 덮어쓴다(3.3·3.4)."""
     if isinstance(data.get("meta"), dict):
         data["meta"]["genre"] = ", ".join(genre_tags)
+
+
+def _normalize_ending_types(data: dict) -> None:
+    """엔딩 ending_type의 대소문자 흔들림을 흡수한다(happy→HAPPY). 값 자체가 잘못됐거나
+    분포가 어긋나면 _find_missing_keys가 재호출로 흘리고, 여기선 순수 대소문자만 보정해
+    'happy'처럼 사소한 흔들림이 불필요한 재호출·502로 번지지 않게 한다."""
+    endings = data.get("endings")
+    if isinstance(endings, list):
+        for e in endings:
+            if isinstance(e, dict) and isinstance(e.get("ending_type"), str):
+                e["ending_type"] = e["ending_type"].strip().upper()
 
 
 async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
@@ -335,6 +376,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         prompt_versions={"COMPILE": COMPILE_VERSION},
     )
     _inject_genre(data, request.genre_tags)
+    _normalize_ending_types(data)
 
     # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
     input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
@@ -364,6 +406,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
         _merge_blocks(data, refill, blocks)
         _inject_genre(data, request.genre_tags)
+        _normalize_ending_types(data)
         missing = _find_missing_keys(data)
     logger.info(
         "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 누락=%s",
