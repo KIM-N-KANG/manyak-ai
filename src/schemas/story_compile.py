@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
 
 from src.schemas.response_meta import StoryResponseMeta
 
@@ -73,6 +75,22 @@ class Start(BaseModel):
     start_situation: str
 
 
+class MainEvent(BaseModel):
+    """주요 사건 — 이야기의 갈림길. key_sentence는 사용자 입력이 이 사건과 연결되는지 판단하는 기준."""
+
+    name: str
+    description: str
+    key_sentence: str
+
+
+class Ending(BaseModel):
+    """엔딩 정의(정본 3필드). 본문이 아니라 도달 시 생성될 에필로그의 유형·조건·연출 방향."""
+
+    ending_type: Literal["HAPPY", "NORMAL", "BAD"]
+    ending_requirement: str
+    ending_epilogue: str
+
+
 class StorySpec(BaseModel):
     """스토리 컴파일(시점 A-1)의 영속 산출물 — 스토리 명세 JSON(MVP 확정본).
 
@@ -83,6 +101,17 @@ class StorySpec(BaseModel):
     prompt_settings: PromptSettings
     start: Start
     suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+    # 주요 사건 3~5개와 엔딩 3종(각 1개)을 결속 생성 — 채팅 소비는 후속(KNK-417)
+    main_events: list[MainEvent] = Field(min_length=3, max_length=5)
+    endings: list[Ending] = Field(min_length=3, max_length=3)
+
+    @field_validator("endings")
+    @classmethod
+    def _one_ending_per_type(cls, v: list[Ending]) -> list[Ending]:
+        """엔딩은 HAPPY·NORMAL·BAD 각 정확히 1개여야 한다(중복·누락 금지)."""
+        if sorted(e.ending_type for e in v) != ["BAD", "HAPPY", "NORMAL"]:
+            raise ValueError("endings must contain exactly one each of HAPPY, NORMAL, BAD")
+        return v
 
 
 # ── 컴파일 API output (백엔드 계약) ─────────────────────────────────────────
