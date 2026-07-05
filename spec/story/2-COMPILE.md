@@ -179,7 +179,7 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
   ],
   "meta": {
     "model": "deepseek-v4-pro",
-    "prompt_versions": { "COMPILE": 3 },
+    "prompt_versions": { "COMPILE": 4 },
     "provider": "deepseek",
     "input_token_count": 3500,
     "output_token_count": 2200,
