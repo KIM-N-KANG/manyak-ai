@@ -91,19 +91,22 @@
   ],
   "endings": [
     {
-      "ending_type": "HAPPY",
-      "ending_requirement": "최소 15턴 이상 진행하고 진실을 밝혀 거짓 왕을 정통 절차로 폐위해 질서를 온전히 세웠을 때.",
-      "ending_epilogue": "사용자가 실제로 밟은 선택들을 되짚어, 그 행동이 왕국을 어떻게 되살렸는지 보여준다."
+      "name": "질서를 바로 세우다",
+      "min_turns": 15,
+      "achievement_condition": "진실을 밝혀 거짓 왕을 정통 절차로 폐위해 질서를 온전히 세웠을 때.",
+      "epilogue": "사용자가 실제로 밟은 선택들을 되짚어, 그 행동이 왕국을 어떻게 되살렸는지 보여준다."
     },
     {
-      "ending_type": "NORMAL",
-      "ending_requirement": "거짓 왕을 끌어내렸으나 온전한 성취에는 못 미친 그 사이 모든 경우.",
-      "ending_epilogue": "무언가를 잃은 기사의 뒷모습으로, 사용자의 실제 행적을 반영해 씁쓸한 여운을 남긴다."
+      "name": "무언가를 잃은 대관",
+      "min_turns": 15,
+      "achievement_condition": "거짓 왕을 끌어내렸으나 온전한 성취에는 못 미친 그 사이 모든 경우.",
+      "epilogue": "무언가를 잃은 기사의 뒷모습으로, 사용자의 실제 행적을 반영해 씁쓸한 여운을 남긴다."
     },
     {
-      "ending_type": "BAD",
-      "ending_requirement": "이용당하거나 반란에 휩쓸려 이야기가 파멸로 매듭지어질 때.",
-      "ending_epilogue": "폐허에 홀로 선 주인공을 그리며, 사용자의 선택이 무엇을 파국으로 이끌었는지 되짚는다."
+      "name": "잿더미의 왕좌",
+      "min_turns": 10,
+      "achievement_condition": "이용당하거나 반란에 휩쓸려 이야기가 파멸로 매듭지어질 때.",
+      "epilogue": "폐허에 홀로 선 주인공을 그리며, 사용자의 선택이 무엇을 파국으로 이끌었는지 되짚는다."
     }
   ]
 }

@@ -20,7 +20,7 @@ from src.core.sentry import (
     classify_error_code,
 )
 from src.schemas.response_meta import StoryResponseMeta
-from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse, StorySpec
+from src.schemas.story_compile import Ending, StoryCompileRequest, StoryCompileResponse, StorySpec
 from src.services.prompt import (
     COMPILE_VERSION,
     STORYLINES_VERSION,
@@ -225,6 +225,25 @@ def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _is_valid_min_turns(value: object) -> bool:
+    """min_turns가 하한(1) 이상 정수로 해석되는지 — Ending(ge=1) 강제와 맞춰,
+    0·음수·비정수를 재호출 대상으로 잡아 502 대신 폴백으로 흐르게 한다(KNK-465)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value >= 1
+    if isinstance(value, float):
+        return value.is_integer() and value >= 1
+    if isinstance(value, str):
+        # int()로 직접 해석한다 — isdigit()은 '²'·'①' 등 int()가 못 바꾸는 유니코드 숫자에도
+        # True를 줘서, 검사 도중 ValueError가 새어 나가면 폴백이 아니라 500이 된다(Gemini 리뷰).
+        try:
+            return int(value.strip()) >= 1
+        except ValueError:
+            return False
+    return False
+
+
 def _find_missing_keys(data: dict) -> list[str]:
     """비어 있는 필수 필드의 경로 목록을 반환한다(빈 목록이면 통과).
 
@@ -287,20 +306,18 @@ def _find_missing_keys(data: dict) -> list[str]:
                     missing.append(f"main_events[{i}].{k}")
 
     endings = data.get("endings")
-    if not isinstance(endings, list) or len(endings) != 3:  # 정확히 3개 필수
+    # 엔딩은 정상 3개를 목표로 재호출을 유도한다. 3개가 아니거나 빈 필드·하한 미달(0·음수)·비정수 min_turns면 누락.
+    # (재호출 후에도 못 채우면 compile_story가 502가 아니라 빈 배열로 폴백한다 — KNK-465.)
+    if not isinstance(endings, list) or len(endings) != 3:
         missing.append("endings")
     else:
         for i, raw in enumerate(endings):
             en = _as_dict(raw)
-            for k in ("ending_type", "ending_requirement", "ending_epilogue"):
+            for k in ("name", "achievement_condition", "epilogue"):
                 if _is_empty(en.get(k)):
                     missing.append(f"endings[{i}].{k}")
-        # 타입은 HAPPY·NORMAL·BAD 각 1개여야 한다. 분포·유효성이 어긋나면(잘못된 값·중복·누락)
-        # 빈 필드와 똑같이 재호출로 흘려 구제한다 — StorySpec 파싱까지 가면 재호출 없이 502가 되므로.
-        # (대소문자 흔들림은 _normalize_ending_types가 미리 흡수하므로 여기선 upper로 비교만.)
-        types = sorted(str(_as_dict(e).get("ending_type", "")).strip().upper() for e in endings)
-        if types != ["BAD", "HAPPY", "NORMAL"]:
-            missing.append("endings")
+            if not _is_valid_min_turns(en.get("min_turns")):
+                missing.append(f"endings[{i}].min_turns")
 
     return missing
 
@@ -344,15 +361,21 @@ def _inject_genre(data: dict, genre_tags: list[str]) -> None:
         data["meta"]["genre"] = ", ".join(genre_tags)
 
 
-def _normalize_ending_types(data: dict) -> None:
-    """엔딩 ending_type의 대소문자 흔들림을 흡수한다(happy→HAPPY). 값 자체가 잘못됐거나
-    분포가 어긋나면 _find_missing_keys가 재호출로 흘리고, 여기선 순수 대소문자만 보정해
-    'happy'처럼 사소한 흔들림이 불필요한 재호출·502로 번지지 않게 한다."""
+def _endings_incomplete(data: dict) -> bool:
+    """엔딩이 '파싱 가능한 정확히 3개'가 아니면 True(폴백 대상).
+
+    _find_missing_keys는 재호출 유도용 얕은 검사라, 타입 오류(min_turns 비정수 등)까지
+    한 번에 걸러 502를 막으려면 실제 Ending 파싱을 시도해 최종 판정한다(KNK-465).
+    """
     endings = data.get("endings")
-    if isinstance(endings, list):
-        for e in endings:
-            if isinstance(e, dict) and isinstance(e.get("ending_type"), str):
-                e["ending_type"] = e["ending_type"].strip().upper()
+    if not isinstance(endings, list) or len(endings) != 3:
+        return True
+    try:
+        for raw in endings:
+            Ending(**_as_dict(raw))
+    except (TypeError, ValueError):
+        return True
+    return False
 
 
 async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
@@ -376,7 +399,6 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         prompt_versions={"COMPILE": COMPILE_VERSION},
     )
     _inject_genre(data, request.genre_tags)
-    _normalize_ending_types(data)
 
     # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
     input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
@@ -406,7 +428,6 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
         _merge_blocks(data, refill, blocks)
         _inject_genre(data, request.genre_tags)
-        _normalize_ending_types(data)
         missing = _find_missing_keys(data)
     logger.info(
         "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 누락=%s",
@@ -414,6 +435,15 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         attempts,
         missing or "없음",
     )
+
+    # 엔딩은 soft 블록(KNK-465): 엔딩 사유로는 502를 내지 않는다. 최종 판정은 _endings_incomplete가
+    # 단독으로 하므로, missing에서 endings 경로를 항상 걷어내고(그래야 _find_missing_keys의 얕은 검사가
+    # Pydantic 강제와 어긋나도 엉뚱한 502가 나지 않는다), 파싱 가능한 3개가 아니면 빈 배열로 폴백해 200을
+    # 반환한다 — 스토리 본체·주요 사건은 살린다(선택지 폴백과 같은 원칙).
+    missing = [p for p in missing if _block_of(p) != "endings"]
+    if _endings_incomplete(data):
+        logger.info("compile 엔딩 폴백: 재호출 후에도 엔딩 미완성 → 빈 배열([])로 반환")
+        data["endings"] = []
 
     if missing:
         exc = _InvalidAiResponse(f"재호출 후에도 필수 필드 누락: {missing}")

@@ -267,18 +267,38 @@ def test_spec_to_response_passes_events_and_endings() -> None:
     assert 3 <= len(res.story_main_events) <= 5
     ev = res.story_main_events[0]
     assert ev.name and ev.description and ev.key_sentence
-    assert sorted(e.ending_type for e in res.story_endings) == ["BAD", "HAPPY", "NORMAL"]
+    assert len(res.story_endings) == 3
     end = res.story_endings[0]
-    assert end.ending_requirement and end.ending_epilogue
+    assert end.name and end.achievement_condition and end.epilogue
+    assert isinstance(end.min_turns, int)
 
 
-def test_one_ending_per_type_rejected() -> None:
-    # 엔딩 타입 분포 위반(HAPPY 2 + BAD)은 StorySpec 파싱에서 거부돼야 한다.
+def test_endings_wrong_count_rejected() -> None:
+    # 엔딩은 0개(폴백) 또는 정확히 3개. 2개·4개는 거부.
+    for n in (2, 4):
+        data = _load("spec_valid.json")
+        base = data["endings"][0]
+        data["endings"] = [dict(base, name=f"엔딩{i}") for i in range(n)]
+        with pytest.raises(ValidationError):
+            StorySpec(**data)
+
+
+def test_zero_endings_allowed() -> None:
+    # 빈 배열(폴백)은 계약상 허용된다 — StorySpec 파싱·응답 변환 모두 통과.
     data = _load("spec_valid.json")
-    for e, t in zip(data["endings"], ["HAPPY", "HAPPY", "BAD"]):
-        e["ending_type"] = t
-    with pytest.raises(ValidationError):
-        StorySpec(**data)
+    data["endings"] = []
+    spec = StorySpec(**data)
+    assert spec.endings == []
+    assert spec_to_response(spec).story_endings == []
+
+
+def test_min_turns_lower_bound_rejected() -> None:
+    # min_turns는 1 이상(ge=1). 0·음수는 "최소 턴 문턱"이 무의미해져 거부.
+    for bad in (0, -1):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = bad
+        with pytest.raises(ValidationError):
+            StorySpec(**data)
 
 
 def test_events_out_of_range_rejected() -> None:
@@ -302,12 +322,26 @@ def test_find_missing_keys_detects_event_ending_issues() -> None:
     assert "main_events[0].key_sentence" in story_llm._find_missing_keys(data)
     # 엔딩 항목의 빈 필드
     data = _load("spec_valid.json")
-    data["endings"][1]["ending_epilogue"] = "   "
-    assert "endings[1].ending_epilogue" in story_llm._find_missing_keys(data)
-    # 엔딩 타입 분포 위반은 재호출 대상(endings 블록)으로 잡혀야 한다
+    data["endings"][1]["epilogue"] = "   "
+    assert "endings[1].epilogue" in story_llm._find_missing_keys(data)
+    # 엔딩 min_turns 비정수는 재호출 대상으로 잡힌다
     data = _load("spec_valid.json")
-    for e, t in zip(data["endings"], ["HAPPY", "HAPPY", "BAD"]):
-        e["ending_type"] = t
+    data["endings"][0]["min_turns"] = "열다섯"
+    assert "endings[0].min_turns" in story_llm._find_missing_keys(data)
+    # 엔딩 min_turns 하한 미달(0·음수)도 재호출 대상으로 잡힌다(ge=1 강제와 정합)
+    data = _load("spec_valid.json")
+    data["endings"][0]["min_turns"] = 0
+    assert "endings[0].min_turns" in story_llm._find_missing_keys(data)
+    data = _load("spec_valid.json")
+    data["endings"][1]["min_turns"] = -3
+    assert "endings[1].min_turns" in story_llm._find_missing_keys(data)
+    # int()가 못 바꾸는 유니코드 숫자('²')는 예외 없이 재호출 대상으로 잡힌다(500 방지 — Gemini 리뷰)
+    data = _load("spec_valid.json")
+    data["endings"][0]["min_turns"] = "²"  # 위첨자 2: isdigit()=True지만 int()는 ValueError
+    assert "endings[0].min_turns" in story_llm._find_missing_keys(data)
+    # 엔딩 개수 위반(2개)도 endings 블록으로 잡힌다
+    data = _load("spec_valid.json")
+    data["endings"] = data["endings"][:2]
     assert "endings" in story_llm._find_missing_keys(data)
 
 
@@ -316,58 +350,126 @@ def test_find_missing_keys_clean_with_events_and_endings() -> None:
     assert story_llm._find_missing_keys(_load("spec_valid.json")) == []
 
 
-def test_normalize_ending_types_uppercases() -> None:
-    # 대소문자 흔들림(happy)은 정규화로 흡수하되 분포는 유지.
-    data = _load("spec_valid.json")
-    for e, t in zip(data["endings"], ["happy", "Normal", "bAd"]):
-        e["ending_type"] = t
-    story_llm._normalize_ending_types(data)
-    assert [e["ending_type"] for e in data["endings"]] == ["HAPPY", "NORMAL", "BAD"]
-
-
 def test_block_of_maps_event_ending_paths() -> None:
     assert story_llm._block_of("main_events[0].key_sentence") == "main_events"
     assert story_llm._block_of("endings") == "endings"
-    assert story_llm._block_of("endings[2].ending_type") == "endings"
+    assert story_llm._block_of("endings[2].min_turns") == "endings"
 
 
-async def test_compile_story_refills_bad_ending_distribution(
+async def test_compile_story_falls_back_to_empty_endings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # 첫 응답이 분포 위반(HAPPY 2 + BAD)이면 endings만 재호출로 구제해야 한다.
-    calls: list[str] = []
-
+    # 재호출 후에도 엔딩이 온전한 3개가 아니면 502가 아니라 빈 배열로 폴백해 200으로 반환한다.
     async def fake_complete(system: str, user: str, **_kwargs: object):
-        calls.append(user)
-        if len(calls) == 1:
-            data = _load("spec_valid.json")
-            for e, t in zip(data["endings"], ["HAPPY", "HAPPY", "BAD"]):
-                e["ending_type"] = t
-            return data, story_llm.LlmUsage("m", 100, 200)
-        return {"endings": _load("spec_valid.json")["endings"]}, story_llm.LlmUsage("m", 10, 20)
+        data = _load("spec_valid.json")
+        data["endings"] = data["endings"][:2]  # 매번 2개 → 재호출로도 3개 못 채움
+        return data, story_llm.LlmUsage("m", 1, 1)
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
     res = await story_llm.compile_story(_request())
-    assert len(calls) == 2  # 최초 1 + 분포 위반 재호출 1
-    assert sorted(e.ending_type for e in res.story_endings) == ["BAD", "HAPPY", "NORMAL"]
+    assert isinstance(res, StoryCompileResponse)
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음
 
 
-async def test_compile_story_normalizes_lowercase_ending_type_without_refill(
+async def test_compile_story_keeps_valid_endings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # 소문자 ending_type은 정규화로 흡수돼 재호출 없이 통과해야 한다.
-    calls: list[str] = []
-
+    # 정상 엔딩 3개는 재호출·폴백 없이 그대로 응답에 실린다.
     async def fake_complete(system: str, user: str, **_kwargs: object):
-        calls.append(user)
+        return _load("spec_valid.json"), story_llm.LlmUsage("m", 100, 200)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert len(res.story_endings) == 3
+    assert res.story_endings[0].name
+    assert res.meta.retry_count == 0
+
+
+async def test_compile_story_502_when_endings_incomplete_and_other_field_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 엔딩이 미완성이어도, 엔딩 외 필수 필드가 비면 여전히 502여야 한다
+    # (엔딩 폴백이 진짜 실패를 가리지 않는지 — 마스킹 방지).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
         data = _load("spec_valid.json")
-        for e, t in zip(data["endings"], ["happy", "normal", "bad"]):
-            e["ending_type"] = t
+        data["endings"] = data["endings"][:2]  # 엔딩 미완성
+        data["start"]["prologue"] = ""  # 엔딩 외 필수 누락
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    with pytest.raises(HTTPException) as exc:
+        await story_llm.compile_story(_request())
+    assert exc.value.status_code == 502
+
+
+async def test_compile_story_keeps_numeric_string_min_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # min_turns가 숫자 문자열("15")이면 재호출·폴백 없이 정수로 실려야 한다(_is_valid_min_turns↔Pydantic 일치).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        for e in data["endings"]:
+            e["min_turns"] = "15"
         return data, story_llm.LlmUsage("m", 100, 200)
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
     res = await story_llm.compile_story(_request())
-    assert len(calls) == 1  # 재호출 없음
-    assert sorted(e.ending_type for e in res.story_endings) == ["BAD", "HAPPY", "NORMAL"]
+    assert res.meta.retry_count == 0  # 재호출 없음
+    assert len(res.story_endings) == 3
+    assert res.story_endings[0].min_turns == 15  # 정수로 강제
+
+
+async def test_compile_story_falls_back_when_min_turns_uncoercible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 정수로 못 바꾸는 min_turns가 재호출로도 안 고쳐지면 엔딩만 빈 배열로 폴백해 200을 반환한다
+    # (_endings_incomplete의 파싱 실패 분기 커버).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = "열다섯"  # 매번 비정수
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음
+
+
+async def test_compile_story_falls_back_when_min_turns_below_lower_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 하한 미달(0) min_turns가 재호출로도 안 고쳐지면 502가 아니라 엔딩만 빈 배열로 폴백한다
+    # (ge=1 강제가 502를 유발하지 않고 폴백으로 흐르는지 — 얕은 검사↔Pydantic 정합).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = 0  # 매번 하한 미달
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음
+
+
+async def test_compile_story_falls_back_on_unicode_digit_min_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # int()가 못 바꾸는 유니코드 숫자('²') min_turns는 500이 아니라 엔딩만 빈 배열로 폴백한다
+    # (isdigit()의 헐거움이 ValueError를 흘려 500이 나던 회귀 방지 — Gemini 리뷰).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = "²"  # 위첨자 2
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())  # 500 없이 정상 반환
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음

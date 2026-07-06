@@ -1,6 +1,6 @@
 ---
-version: 3
-updated: 2026-07-05
+version: 4
+updated: 2026-07-06
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -56,7 +56,7 @@ updated: 2026-07-05
 
 **[8] 통글 마크다운으로 변환하는 이유**: 백엔드의 ERD 4테이블 중 `story_settings`는 사람이 읽기 좋고 채팅 AI가 바로 슬롯에 끼울 수 있는 통글 마크다운으로 저장합니다. 검증에 유리한 세분 구조와 저장·활용에 유리한 통글 구조가 다르므로, 서버가 마지막에 세분 명세를 통글로 재조립합니다.
 
-**엔딩·주요 사건(KNK-417)**: 컴파일은 세계관·인물과 함께 주요 사건 3~5개와 엔딩 3종(HAPPY·NORMAL·BAD)을 **한 번의 호출로** 생성합니다. 사건은 이야기의 갈림길이고, 엔딩은 그 사건들의 조합·해결 방식에 뿌리내려 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 결말 상태를 빈틈없이 덮습니다(상호배타+총망라). 이 둘은 `story_settings`처럼 통글로 뭉치지 않고 항목별 이산 필드 그대로 백엔드에 전달됩니다(→ 5-1).
+**엔딩·주요 사건(KNK-417, KNK-465 이름 기반 재작업)**: 컴파일은 세계관·인물과 함께 주요 사건 3~5개와 엔딩 3개를 **한 번의 호출로** 생성합니다. 사건은 이야기의 갈림길이고, 엔딩은 그 사건들의 조합·해결 방식에 뿌리내려 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 결말 상태를 빈틈없이 덮습니다(상호배타+총망라). 성취 유형(해피·노말·배드)은 생성용 **내부 기준일 뿐 출력하지 않고**, 엔딩은 `name`으로 식별합니다. 엔딩은 정상 3개이되 재호출로도 못 채우면 빈 배열로 폴백합니다(→ 4-4). 이 둘은 `story_settings`처럼 통글로 뭉치지 않고 항목별 이산 필드 그대로 백엔드에 전달됩니다(→ 5-1).
 
 ---
 
@@ -93,9 +93,9 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 - 비어 있는 필드가 있으면, 그 필드가 속한 **블록만** 다시 채우도록 부분 재호출합니다. 재호출 프롬프트에는 직전 생성 결과를 맥락으로 주고, 빈 블록만 채워 그 블록만 최상위 키로 갖는 JSON을 돌려받습니다. 잘 나온 다른 블록은 보존하기 위해 응답에 포함하지 않게 합니다.
 - 재호출은 **최대 2회**까지 반복합니다. 2회 후에도 빈 필수 필드가 남으면 502로 막습니다(→ 4-6).
 - 검증에서 제외하는 예외 필드: `meta.genre`(서버가 입력 태그로 덮어씀), `user_role_setting.preference`(선택 입력이라 비어 있어도 됨).
-- 엔딩 타입은 대소문자 흔들림(`happy`→`HAPPY`)을 대문자로 정규화한 뒤 검증합니다. 타입 분포(HAPPY·NORMAL·BAD 각 1개)가 어긋나면(잘못된 값·중복·누락) 다른 빈 블록과 동일하게 `endings` 블록을 부분 재호출로 다시 채웁니다 — 분포 위반이 파싱 단계까지 가면 재호출 없이 502가 되기 때문입니다.
+- 엔딩은 **soft 블록**입니다(KNK-465). 정상 3개를 목표로, 3개가 아니거나 항목 필드(name·achievement_condition·epilogue)가 비었거나 min_turns가 1 이상의 정수가 아니면(0·음수 포함) 다른 빈 블록과 동일하게 `endings` 블록을 부분 재호출로 채웁니다. 다만 재호출 2회 후에도 온전한 3개를 못 채우면 502가 아니라 **빈 배열(`[]`)로 폴백하고 200을 반환**합니다 — 스토리 본체·주요 사건은 살리고 부가물인 엔딩만 비웁니다(선택지 폴백과 같은 원칙). 엔딩은 성취 유형(해피·노말·배드)을 출력하지 않으며 `name`으로 식별합니다.
 
-필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 5개 필드, user_role_setting의 preference 제외 4개 필드), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음), `main_events`(3~5개이며 각 항목의 name·description·key_sentence가 비어 있지 않음), `endings`(정확히 3개이며 각 항목의 ending_type·ending_requirement·ending_epilogue가 비어 있지 않고 타입이 HAPPY·NORMAL·BAD 각 1개).
+필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 5개 필드, user_role_setting의 preference 제외 4개 필드), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음), `main_events`(3~5개이며 각 항목의 name·description·key_sentence가 비어 있지 않음), `endings`(정상 3개이며 각 항목의 name·achievement_condition·epilogue가 비어 있지 않고 min_turns가 1 이상의 정수 — 단 재호출로도 못 채우면 빈 배열로 폴백).
 
 ### 4-5. 세분 → 통글 변환
 
@@ -107,7 +107,8 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 |---|---|
 | LLM API 호출 실패(타임아웃·rate limit·요청 거부·연동 오류) | 게이트웨이 오류(502) 반환 |
 | 빈 응답이거나 유효하지 않은 JSON | 파싱 실패로 간주하고 502 반환 |
-| 재호출 2회 후에도 필수 필드가 빔 | 502 반환 |
+| 재호출 2회 후에도 필수 필드가 빔(엔딩 제외) | 502 반환 |
+| 재호출 2회 후에도 엔딩이 온전한 3개가 아님 | 빈 배열로 폴백하고 200 반환(502 아님) |
 | 세분 명세가 `StorySpec` 스키마와 맞지 않음 | 스키마 검증 실패로 502 반환 |
 
 502 응답 본문에는 사용자에게 보일 안내 메시지만 담고, 공급자 원문 오류는 Sentry로만 보냅니다(KNK-262).
@@ -173,13 +174,13 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
     { "name": "...", "description": "...", "key_sentence": "..." }
   ],
   "story_endings": [
-    { "ending_type": "HAPPY",  "ending_requirement": "...", "ending_epilogue": "..." },
-    { "ending_type": "NORMAL", "ending_requirement": "...", "ending_epilogue": "..." },
-    { "ending_type": "BAD",    "ending_requirement": "...", "ending_epilogue": "..." }
+    { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." },
+    { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." },
+    { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." }
   ],
   "meta": {
     "model": "deepseek-v4-pro",
-    "prompt_versions": { "COMPILE": 4 },
+    "prompt_versions": { "COMPILE": 5 },
     "provider": "deepseek",
     "input_token_count": 3500,
     "output_token_count": 2200,
@@ -196,11 +197,11 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
 | story_start_settings | object | 시작 설정(`story_start_settings` 테이블). name·start_situation·prologue |
 | story_suggested_inputs | string[] | 첫 입력 추천 문구. 정확히 3개 |
 | story_main_events | object[] | 주요 사건 3~5개(`story_main_events` 테이블). 각 항목 name·description·key_sentence. 배열 순서=명목 순서(비강제) |
-| story_endings | object[] | 엔딩 3종(`story_endings` 테이블). 각 항목 ending_type(HAPPY·NORMAL·BAD 각 1개)·ending_requirement·ending_epilogue |
+| story_endings | object[] | 엔딩(`story_endings` 테이블). 정상 3개(폴백 시 0개). 각 항목 name·min_turns(1 이상 정수)·achievement_condition·epilogue. 성취 유형은 미출력, name으로 식별 |
 | meta | object | 응답 로깅 메타(`ai_call_logs` 적재용, KNK-243) |
 | meta.retry_count | number | 부분 재호출 횟수(0~2) |
 
-**백엔드 저장 안내(KNK-417)**: `story_endings`는 엔딩 3필드(ending_type·ending_requirement·ending_epilogue)를 담을 칸으로, `story_main_events`는 **새 테이블**(name·description·key_sentence + 배열 순서를 담을 순서 칸)로 저장합니다. 두 목록은 통글로 뭉치지 않고 항목별 이산 필드 그대로 내려가므로 칸별로 저장하면 됩니다. 사건의 배열 순서는 명목 순서일 뿐 전개를 강제하지 않습니다(건너뛰기 허용).
+**백엔드 저장 안내(KNK-465)**: `story_endings`는 엔딩 4필드(name·min_turns·achievement_condition·epilogue)를 담을 칸으로, `story_main_events`는 name·description·key_sentence + 배열 순서를 담을 순서 칸으로 저장합니다(상위 정본 `5-ai-server.md §5-3-3`과 일치). 엔딩은 정상 3개이되 폴백 시 0개가 올 수 있습니다. 두 목록은 통글로 뭉치지 않고 항목별 이산 필드 그대로 내려가므로 칸별로 저장하면 됩니다. 사건의 배열 순서는 명목 순서일 뿐 전개를 강제하지 않습니다(건너뛰기 허용).
 
 `meta`의 나머지 필드(model·prompt_versions·provider·input_token_count·output_token_count)는 스토리라인과 동일합니다. 토큰 수는 본호출과 재호출을 **합산**하며, model은 본호출 응답값을 씁니다.
 
@@ -228,9 +229,9 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
     { "name": "...", "description": "...", "key_sentence": "..." }
   ],
   "endings": [
-    { "ending_type": "HAPPY",  "ending_requirement": "...", "ending_epilogue": "..." },
-    { "ending_type": "NORMAL", "ending_requirement": "...", "ending_epilogue": "..." },
-    { "ending_type": "BAD",    "ending_requirement": "...", "ending_epilogue": "..." }
+    { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." },
+    { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." },
+    { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." }
   ]
 }
 ```
@@ -248,7 +249,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | start | name·prologue·start_situation | 시작 설정 이름·도입 나레이션·첫 장면 |
 | suggested_inputs | string[] | 첫 입력 추천 문구 3개 |
 | main_events | object[] | 주요 사건 3~5개. 각 name·description·key_sentence. 이야기의 갈림길이자 엔딩을 가르는 축 |
-| endings | object[] | 엔딩 3종(HAPPY·NORMAL·BAD 각 1개). 각 ending_type·ending_requirement·ending_epilogue |
+| endings | object[] | 엔딩 정상 3개(폴백 시 0개). 각 name·min_turns(1 이상 정수)·achievement_condition·epilogue. 성취 유형(해피·노말·배드)은 생성용 내부 기준일 뿐 미출력 |
 
 ### 5-3. 세분 → 통글 변환 규칙
 
@@ -294,7 +295,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 - `character_setting`: 이야기에 실제로 등장하는 주요 인물 **최대 5명만** 카드화하고, 그 이상은 `world_setting` 배경으로 흡수한다. 인물마다 말투·성격이 서로 구분되게 한다.
 - `suggested_inputs`: 첫 입력 추천 문구 최대 3개. 행동 묘사는 `*...*`로 감쌀 수 있다.
 - `main_events`: 주요 사건 3~5개(name·description·key_sentence). 이야기의 갈림길로 짜되 기본 순서만 두고 건너뛰기를 허용한다. `key_sentence`는 "사용자가 ~한다" 사용자 시점의 유도 문장으로, 사용자가 자연스럽게 떠올려 입력할 만하게 직관적으로 쓴다.
-- `endings`: 엔딩 3종(HAPPY·NORMAL·BAD 각 1개). 사건들의 조합·해결에 뿌리내리게 하되, 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 나눠 결말 상태를 빈틈없이 덮는다(상호배타+총망라, NORMAL이 중간대 흡수). `ending_requirement`엔 최소 턴·목적·거친 사건을, `ending_epilogue`엔 완성 글이 아니라 방향을 담되 "사용자의 행적을 반드시 반영해 그 행동이 세계를 바꾼 결과로 마무리하라"는 지시를 포함한다.
+- `endings`: 엔딩 3개. 성취 유형(해피·노말·배드)을 **내부 기준으로만** 삼아 하나씩 만들되 **유형은 출력하지 않고 `name`으로 식별**한다. 사건들의 조합·해결에 뿌리내리게 하되, 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 나눠 결말 상태를 빈틈없이 덮는다(상호배타+총망라, 노말이 중간대 흡수). 조건은 `min_turns`(최소 턴, 정수)와 `achievement_condition`(목적·거친 사건을 한 문장에 담되 특정 사건 경유 비강제)로 나누고, `epilogue`엔 완성 글이 아니라 방향을 담되 "사용자의 행적을 반드시 반영해 그 행동이 세계를 바꾼 결과로 마무리하라"는 지시를 포함한다.
 
 **가독성**: 모든 서술형 값은 채팅 플레이에 그대로 노출되므로, 어려운 한자어·번역체를 피하고 쉬운 말·자연스러운 어순으로 쓴다. 한 명사 앞에 관형어를 3개 이상 쌓지 않는다. 여러 문장으로 이루어진 값은 문장마다 이중 개행(`\n\n`)으로 한 문장씩 출력한다.
 
@@ -316,8 +317,9 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | 통글 변환 | story_settings 4필드가 약속된 마크다운 헤더 구조로 조립됐는지 확인 |
 | 부분 재호출 | 빈 블록이 있을 때 그 블록만 다시 채우고, 2회 후에도 누락이면 502인지 확인 |
 | 주요 사건 | story_main_events가 3~5개이고 각 항목 name·description·key_sentence가 채워졌는지 확인 |
-| 엔딩 | story_endings가 정확히 3개(HAPPY·NORMAL·BAD 각 1개)이고 각 3필드가 채워졌는지 확인 |
-| 엔딩 정규화·분포 | ending_type 대소문자 정규화 후 분포 위반 시 재호출로 구제, 2회 후에도 어긋나면 502인지 확인 |
+| 엔딩 | story_endings가 3개이고 각 항목 name·min_turns·achievement_condition·epilogue가 채워졌는지 확인 |
+| 엔딩 폴백 | 재호출 후에도 온전한 3개를 못 채우면 502가 아니라 빈 배열(`[]`)로 200을 반환하는지 확인 |
+| 엔딩 개수 | endings가 0개(폴백) 또는 3개가 아니면(2·4개 등) StorySpec 파싱에서 거부되는지 확인 |
 | 응답 메타 | `meta`에 model·prompt_versions·provider·토큰 수·retry_count가 실리는지 확인 |
 | 에러 처리 | 호출 실패·파싱 실패·스키마 검증 실패 시 502 반환 |
 

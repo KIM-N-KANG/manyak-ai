@@ -95,9 +95,10 @@ def spec_to_response(spec: StorySpec) -> StoryCompileResponse:
         ],
         story_endings=[
             StoryEndingOut(
-                ending_type=e.ending_type,
-                ending_requirement=e.ending_requirement,
-                ending_epilogue=e.ending_epilogue,
+                name=e.name,
+                min_turns=e.min_turns,
+                achievement_condition=e.achievement_condition,
+                epilogue=e.epilogue,
             )
             for e in spec.endings
         ],
