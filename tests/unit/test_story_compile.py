@@ -335,6 +335,10 @@ def test_find_missing_keys_detects_event_ending_issues() -> None:
     data = _load("spec_valid.json")
     data["endings"][1]["min_turns"] = -3
     assert "endings[1].min_turns" in story_llm._find_missing_keys(data)
+    # int()가 못 바꾸는 유니코드 숫자('²')는 예외 없이 재호출 대상으로 잡힌다(500 방지 — Gemini 리뷰)
+    data = _load("spec_valid.json")
+    data["endings"][0]["min_turns"] = "²"  # 위첨자 2: isdigit()=True지만 int()는 ValueError
+    assert "endings[0].min_turns" in story_llm._find_missing_keys(data)
     # 엔딩 개수 위반(2개)도 endings 블록으로 잡힌다
     data = _load("spec_valid.json")
     data["endings"] = data["endings"][:2]
@@ -450,5 +454,22 @@ async def test_compile_story_falls_back_when_min_turns_below_lower_bound(
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
     res = await story_llm.compile_story(_request())
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음
+
+
+async def test_compile_story_falls_back_on_unicode_digit_min_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # int()가 못 바꾸는 유니코드 숫자('²') min_turns는 500이 아니라 엔딩만 빈 배열로 폴백한다
+    # (isdigit()의 헐거움이 ValueError를 흘려 500이 나던 회귀 방지 — Gemini 리뷰).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = "²"  # 위첨자 2
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())  # 500 없이 정상 반환
     assert res.story_endings == []  # 엔딩만 폴백
     assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음

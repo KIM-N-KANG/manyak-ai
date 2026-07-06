@@ -235,8 +235,12 @@ def _is_valid_min_turns(value: object) -> bool:
     if isinstance(value, float):
         return value.is_integer() and value >= 1
     if isinstance(value, str):
-        s = value.strip()
-        return s.isdigit() and int(s) >= 1  # isdigit은 부호·소수점을 배제 → 음수/실수 문자열은 여기서 탈락
+        # int()로 직접 해석한다 — isdigit()은 '²'·'①' 등 int()가 못 바꾸는 유니코드 숫자에도
+        # True를 줘서, 검사 도중 ValueError가 새어 나가면 폴백이 아니라 500이 된다(Gemini 리뷰).
+        try:
+            return int(value.strip()) >= 1
+        except ValueError:
+            return False
     return False
 
 
