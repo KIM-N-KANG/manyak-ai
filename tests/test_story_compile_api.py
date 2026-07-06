@@ -43,12 +43,13 @@ async def test_compile_endpoint_returns_nested_contract(
     assert body["story_settings"]["world_setting"].startswith("# 세계관")
     assert "## 레이" in body["story_settings"]["character_setting"]
     assert len(body["story_suggested_inputs"]) == 3
-    # KNK-417: 엔딩·주요 사건이 응답 계약에 실린다(항목별 이산 필드)
+    # KNK-417/465: 엔딩·주요 사건이 응답 계약에 실린다(엔딩은 이름 기반)
     assert 3 <= len(body["story_main_events"]) <= 5
     assert body["story_main_events"][0]["key_sentence"]
-    assert sorted(e["ending_type"] for e in body["story_endings"]) == ["BAD", "HAPPY", "NORMAL"]
-    assert body["story_endings"][0]["ending_requirement"]
-    assert body["story_endings"][0]["ending_epilogue"]
+    assert len(body["story_endings"]) == 3
+    end = body["story_endings"][0]
+    assert end["name"] and end["achievement_condition"] and end["epilogue"]
+    assert isinstance(end["min_turns"], int)
     # 로깅 메타(KNK-243): story는 snake_case 와이어
     meta = body["meta"]
     assert meta["model"] == "deepseek-test"
