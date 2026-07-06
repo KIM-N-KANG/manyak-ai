@@ -1,11 +1,6 @@
-from typing import Literal
-
 from pydantic import BaseModel, Field, field_validator
 
 from src.schemas.response_meta import StoryResponseMeta
-
-# 엔딩 유형 — 내부 세분(Ending)과 응답 계약(StoryEndingOut)이 공유하는 계약값.
-EndingType = Literal["HAPPY", "NORMAL", "BAD"]
 
 
 class StoryCompileRequest(BaseModel):
@@ -87,11 +82,15 @@ class MainEvent(BaseModel):
 
 
 class Ending(BaseModel):
-    """엔딩 정의(정본 3필드). 본문이 아니라 도달 시 생성될 에필로그의 유형·조건·연출 방향."""
+    """엔딩 정의. 본문이 아니라 도달 시 생성될 에필로그의 이름·최소 턴·달성 조건·연출 방향.
 
-    ending_type: EndingType
-    ending_requirement: str
-    ending_epilogue: str
+    유형(해피/노말/배드)은 생성용 내부 기준일 뿐 계약엔 없고, 엔딩은 name으로 식별한다(KNK-465).
+    """
+
+    name: str
+    min_turns: int = Field(ge=1)  # 최소 턴 문턱 — 0·음수면 첫 턴 도달이 가능해져 계약 위반(KNK-465)
+    achievement_condition: str
+    epilogue: str
 
 
 class StorySpec(BaseModel):
@@ -104,16 +103,16 @@ class StorySpec(BaseModel):
     prompt_settings: PromptSettings
     start: Start
     suggested_inputs: list[str] = Field(min_length=3, max_length=3)
-    # 주요 사건 3~5개와 엔딩 3종(각 1개)을 결속 생성 — 채팅 소비는 후속(KNK-417)
+    # 주요 사건 3~5개를 결속 생성. 엔딩은 정상 3개이되, 재호출 후에도 못 채우면 빈 배열 폴백(KNK-465).
     main_events: list[MainEvent] = Field(min_length=3, max_length=5)
-    endings: list[Ending] = Field(min_length=3, max_length=3)
+    endings: list[Ending] = Field(default_factory=list)
 
     @field_validator("endings")
     @classmethod
-    def _one_ending_per_type(cls, v: list[Ending]) -> list[Ending]:
-        """엔딩은 HAPPY·NORMAL·BAD 각 정확히 1개여야 한다(중복·누락 금지)."""
-        if sorted(e.ending_type for e in v) != ["BAD", "HAPPY", "NORMAL"]:
-            raise ValueError("endings must contain exactly one each of HAPPY, NORMAL, BAD")
+    def _zero_or_three(cls, v: list[Ending]) -> list[Ending]:
+        """엔딩은 0개(폴백) 또는 정확히 3개다 — 그 사이 개수는 계약 위반."""
+        if len(v) not in (0, 3):
+            raise ValueError("endings must be empty (fallback) or exactly 3")
         return v
 
 
@@ -156,11 +155,12 @@ class StoryMainEventOut(BaseModel):
 
 
 class StoryEndingOut(BaseModel):
-    """엔딩(story_endings 테이블) — 정본 3필드. 백엔드가 칸별로 저장한다."""
+    """엔딩(story_endings 테이블) — 이름 기반 계약. 백엔드가 칸별로 저장한다(KNK-465)."""
 
-    ending_type: EndingType
-    ending_requirement: str
-    ending_epilogue: str
+    name: str
+    min_turns: int = Field(ge=1)  # 최소 턴 문턱 하한(KNK-465)
+    achievement_condition: str
+    epilogue: str
 
 
 class StoryCompileResponse(BaseModel):
@@ -171,5 +171,5 @@ class StoryCompileResponse(BaseModel):
     story_start_settings: StoryStartSettingsOut
     story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
     story_main_events: list[StoryMainEventOut] = Field(min_length=3, max_length=5)  # 주요 사건 3~5개(KNK-417)
-    story_endings: list[StoryEndingOut] = Field(min_length=3, max_length=3)  # 엔딩 3종 HAPPY/NORMAL/BAD(KNK-417)
+    story_endings: list[StoryEndingOut] = Field(default_factory=list)  # 0개(폴백) 또는 3개(KNK-465)
     meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). compile_story가 항상 채운다.
