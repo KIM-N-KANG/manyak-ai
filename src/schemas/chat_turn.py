@@ -162,6 +162,17 @@ class TokenData(BaseModel):
     text: str
 
 
+class TargetMainEventOut(BaseModel):
+    """completed 판정 메타 — 이번 턴 판정 후 목표 사건 상태.
+
+    백엔드가 저장했다가 다음 턴 요청(`target_main_event`)에 되돌려 싣는다(D11 —
+    상태 보관은 백엔드, 관측과 같은 '응답 계약의 일부' 방식). 와이어는 camelCase.
+    """
+
+    name: str
+    progress_turns: int = Field(ge=0, serialization_alias="progressTurns")
+
+
 class CompletedData(BaseModel):
     """event: completed — 한 턴 응답 완료.
 
@@ -182,6 +193,17 @@ class CompletedData(BaseModel):
     choices: list[str]
     # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
     meta: ChatResponseMeta | None = None
+    # ── 주요 사건·엔딩 판정 메타 (KNK-483, §5-3-4·D11) ─────────────────────────
+    # 백엔드가 턴 저장 트랜잭션에서 채팅 상태로 반영한다(목표 갱신·사건 완결 기록·
+    # 엔딩 도달 해소). 재료가 없거나 판정이 실패하면 셋 다 null — 판정 실패가 턴을
+    # 깨지 않는다(선택지 폴백과 같은 원칙). 서버 DTO는 ignoreUnknown이라 선행 배포 안전.
+    target_main_event: TargetMainEventOut | None = Field(
+        default=None, serialization_alias="targetMainEvent"
+    )
+    occurred_main_event_name: str | None = Field(
+        default=None, serialization_alias="occurredMainEventName"
+    )
+    ending_name: str | None = Field(default=None, serialization_alias="endingName")
 
 
 class ErrorData(BaseModel):
