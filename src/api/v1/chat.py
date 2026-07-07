@@ -2,16 +2,18 @@
 
 `POST /api/v1/chat/turns`. ChatTurnRequest를 받아 6레이어 프롬프트를 조립하고
 (`assemble`), 본문을 스트리밍 호출해(`stream_chat_turn`) 토큰을 흘린다. 본문 스트림이
-끝나면 선택지 전용 호출(`generate_choices`)로 다음 행동 3개를 받아(코드가 항상 정확히
-3개 보장), 본문·선택지·합산 meta를 completed 이벤트 하나로 합쳐 발행한다.
+끝나면 선택지 전용 호출(`generate_choices` — 항상 정확히 3개 보장)과 사건·엔딩 판정
+호출(`generate_judgement` — 재료 없으면 스킵, 실패하면 null)을 병렬로 실행해,
+본문·선택지·판정 메타·합산 meta를 completed 이벤트 하나로 합쳐 발행한다.
 
 AI가 발행하는 SSE 이벤트는 token·completed·error 3개뿐이다(명세 B). started·chatId·turnId는
 백엔드(manyak-server)가 부착한다. completed의 ai_output·meta는 와이어 계약 키(aiOutput·
 camelCase)로 직렬화한다(by_alias=True). 선택지는 completed의 choices로만 나가며 토큰으로
-흘리지 않는다. 와이어 계약(completed{aiOutput, choices, meta})은 기존 그대로 유지된다 —
-바뀐 건 AI 내부에서 LLM 호출이 1번→2번이 된 것뿐이라 백엔드는 수정이 없다.
+흘리지 않는다. completed에 추가된 판정 메타 3필드(targetMainEvent·occurredMainEventName·
+endingName)는 재료 없는 요청에서 null이고, 서버 DTO가 ignoreUnknown이라 선행 배포에 안전하다.
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -32,6 +34,7 @@ from src.schemas.response_meta import ChatResponseMeta
 from src.services.chat_assembler import LAYER_VERSIONS, assemble
 from src.services.chat_llm import stream_chat_turn
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
+from src.services.chat_judgement import JUDGEMENT_VERSION, generate_judgement
 
 router = APIRouter()
 
@@ -60,20 +63,39 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
             yield _sse(name, TokenData(text=ev["text"]).model_dump())
         elif name == EVENT_COMPLETED:
             ai_output = ev["ai_output"]
-            # 본문이 끝난 뒤 선택지 전용 호출 — 누적 재호출+폴백으로 항상 정확히 3개를 보장한다.
-            choices_result = await generate_choices(req, ai_output)
-            # 메타 합산: 토큰은 본문+선택지, prompt_versions는 6레이어+NEXT_ACTIONS,
+            # 본문이 끝난 뒤 선택지·판정 호출을 병렬 실행한다(plan-1 설계 결정) —
+            # 선택지는 항상 3개 보장, 판정은 재료 없으면 스킵·실패하면 null(둘 다 턴을 깨지 않음).
+            choices_result, judgement = await asyncio.gather(
+                generate_choices(req, ai_output),
+                generate_judgement(req, ai_output),
+            )
+            # 메타 합산: 토큰은 본문+선택지+판정, prompt_versions는 6레이어+NEXT_ACTIONS+JUDGEMENT,
             # retry_count는 선택지 재호출 횟수. model·provider는 단일(같은 v4-flash·deepseek).
             meta = ChatResponseMeta(
                 model=ev.get("model") or settings.deepseek_chat_model,
-                prompt_versions={**LAYER_VERSIONS, "NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
+                prompt_versions={
+                    **LAYER_VERSIONS,
+                    "NEXT_ACTIONS": NEXT_ACTIONS_VERSION,
+                    "JUDGEMENT": JUDGEMENT_VERSION,
+                },
                 provider=settings.llm_provider,
-                input_token_count=_add_tokens(ev.get("input_tokens"), choices_result.input_tokens),
-                output_token_count=_add_tokens(ev.get("output_tokens"), choices_result.output_tokens),
+                input_token_count=_add_tokens(
+                    _add_tokens(ev.get("input_tokens"), choices_result.input_tokens),
+                    judgement.input_tokens,
+                ),
+                output_token_count=_add_tokens(
+                    _add_tokens(ev.get("output_tokens"), choices_result.output_tokens),
+                    judgement.output_tokens,
+                ),
                 retry_count=choices_result.retry_count,
             )
             payload = CompletedData(
-                ai_output=ai_output, choices=choices_result.choices, meta=meta
+                ai_output=ai_output,
+                choices=choices_result.choices,
+                meta=meta,
+                target_main_event=judgement.target_main_event,
+                occurred_main_event_name=judgement.occurred_main_event_name,
+                ending_name=judgement.ending_name,
             ).model_dump(by_alias=True)  # aiOutput·camelCase 메타로 직렬화
             yield _sse(EVENT_COMPLETED, payload)
         else:  # EVENT_ERROR
