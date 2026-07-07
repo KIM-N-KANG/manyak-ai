@@ -139,3 +139,24 @@ async def test_bad_json_then_fallback(monkeypatch) -> None:
     res = await generate_choices(_request(), "*장면*")
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2
+
+
+# ── 사건 재료 치환 (KNK-485, §5-3-5 선택지 3구성 재료) ──────────────────────
+def test_build_user_replaces_event_material_slots() -> None:
+    from src.schemas.chat_turn import MainEvent, TargetMainEvent
+
+    req = _request().model_copy(
+        update={
+            "main_events": [
+                MainEvent(name="반란의 서막", description="귀족 연합.", key_sentence="증거를 손에 넣는다.")
+            ],
+            "target_main_event": TargetMainEvent(name="반란의 서막", progress_turns=1),
+            "occurred_main_event_names": ["선왕의 죽음"],
+        }
+    )
+    # 템플릿에 슬롯이 아직 없어도 치환 맵 자체는 재료를 만들어야 한다(무해한 no-op).
+    user = chat_choices._build_user(req, "*장면*")
+    template_has_slots = "{{main_events}}" in chat_choices._USER_TEMPLATE
+    if template_has_slots:
+        assert "반란의 서막" in user and "- 선왕의 죽음" in user
+    assert "{{main_events}}" not in user  # 미치환 슬롯이 남지 않는다

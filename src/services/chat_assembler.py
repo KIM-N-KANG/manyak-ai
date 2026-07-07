@@ -11,7 +11,14 @@ LLM 호출(`stream=True`)·SSE 엔드포인트는 별도(KNK-144)다. 이 모듈
 import re
 from pathlib import Path
 
-from src.schemas.chat_turn import ChatHistoryItem, ChatStartSettings, ChatTurnRequest
+from src.schemas.chat_turn import (
+    ChatHistoryItem,
+    ChatStartSettings,
+    ChatTurnRequest,
+    EndingCandidate,
+    MainEvent,
+    TargetMainEvent,
+)
 from src.services.prompt_meta import read_version
 
 _CHAT_DIR = Path(__file__).parent.parent.parent / "prompt" / "chat"
@@ -63,11 +70,37 @@ def _start_setting_blob(start: ChatStartSettings) -> str:
     return f"# 시작 설정: {start.name}\n\n{start.prologue}\n\n{start.start_situation}"
 
 
+def format_main_events(events: list[MainEvent]) -> str:
+    """주요 사건 목록 → 슬롯 텍스트. 선택지 재료(chat_choices)와 공용이다."""
+    return "\n".join(
+        f"- 이름: {e.name} / 설명: {e.description} / 키 문장: {e.key_sentence}" for e in events
+    ) or "(없음)"
+
+
+def format_target_main_event(target: TargetMainEvent | None) -> str:
+    """목표 사건 상태 → 슬롯 텍스트. 목표 없음도 명시 문구로 넣는다(빈 칸 금지)."""
+    return f"이름: {target.name} (진행 {target.progress_turns}턴)" if target else "(없음)"
+
+
+def _format_endings(endings: list[EndingCandidate]) -> str:
+    """도달 후보 엔딩 → STORY 슬롯 텍스트.
+
+    epilogue를 포함한다 — 본문 호출이 엔딩 응답 생성 여부를 스스로 판단하고 도달 시
+    에필로그 가이드를 반영해야 하기 때문(판정 재료와 달리 출력 가이드까지 필요).
+    """
+    return "\n".join(
+        f"- 이름: {e.name} / 달성 조건: {e.achievement_condition} / 에필로그 가이드: {e.epilogue}"
+        for e in endings
+    ) or "(없음)"
+
+
 def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
     """ChatTurnRequest → 정적 레이어 슬롯 치환 맵(결정적, LLM 없음).
 
     장르는 `stories.genre`, start_setting은 `story_start_settings`에서 오는 예외 소스다
-    (나머지는 story_settings 통글 4필드, 명세 3.3).
+    (나머지는 story_settings 통글 4필드, 명세 3.3). 사건·엔딩 슬롯 3종(KNK-485,
+    §5-4-1)은 STORY 템플릿이 슬롯을 배치하기 전까지 무해한 no-op이며, 재료가 비면
+    "(없음)" 문구로 치환된다.
     """
     ss = req.story_settings
     return {
@@ -77,6 +110,9 @@ def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
         "{{rule_setting}}": ss.rule_setting,
         "{{character_setting}}": ss.character_setting,
         "{{user_role_setting}}": ss.user_role_setting,
+        "{{main_events}}": format_main_events(req.main_events),
+        "{{target_main_event}}": format_target_main_event(req.target_main_event),
+        "{{endings}}": _format_endings(req.endings),
     }
 
 
