@@ -246,6 +246,31 @@ async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyP
     assert res.meta.retry_count == 0
 
 
+async def test_compile_story_forwards_lorebooks_to_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # compile_story가 request.lorebooks를 실제 프롬프트에 실어 보내는지 배선을 고정한다.
+    # (build_compile_prompt 인자에서 request.lorebooks를 지우면 이 테스트가 깨진다 — 회귀 방지.)
+    captured: dict[str, str] = {}
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        captured["user"] = user
+        return _load("spec_valid.json"), story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=[LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘.")],
+    )
+    await story_llm.compile_story(req)
+    assert "내공" in captured["user"]
+    assert "기를 단전에 쌓아 다스리는 힘." in captured["user"]
+
+
 async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
