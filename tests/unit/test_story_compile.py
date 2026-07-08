@@ -119,12 +119,28 @@ def test_build_compile_prompt_injects_lorebooks() -> None:
     assert "기를 단전에 쌓아 다스리는 힘." in user
 
 
+def test_build_compile_prompt_multiple_lorebooks() -> None:
+    # 로어북이 여러 개면 각 항목이 ### 헤더 블록으로 실린다(bullet 인라인 아님).
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [
+            LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘."),
+            LorebookItem(name="외공", content="몸을 단련해 얻는 힘."),
+        ],
+    )
+    assert "### 내공" in user
+    assert "### 외공" in user
+    assert "기를 단전에 쌓아 다스리는 힘." in user
+    assert "몸을 단련해 얻는 힘." in user
+
+
 def test_build_compile_prompt_empty_lorebooks_slot() -> None:
     # 로어북 미전달·빈 배열이면 {{로어북}} 슬롯이 (없음)으로 채워지고(미주입), 두 경로가 동일하다.
     _, user_none = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"])
     _, user_empty = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"], [])
     assert "{{" not in user_none
-    assert "로어북(장르 용어 사전): (없음)" in user_none
+    assert "참고 로어북(장르 용어 사전):" in user_none  # 하단 별도 블록 라벨
+    assert "(없음)" in user_none  # 슬롯이 비주입 마커로 치환됨
     assert user_none == user_empty
 
 
