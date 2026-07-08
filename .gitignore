@@ -31,11 +31,10 @@ Thumbs.db
 # Claude local settings
 .claude/settings.local.json
 
-# Claude skills (로컬 심볼릭 링크 — 하네스/개인 스킬은 레포 밖에서 관리)
-.claude/skills
-
-# 로컬 프롬프트 미리보기/실험 스크립트
-scripts/
+# 로컬 프롬프트 미리보기/실험 스크립트 (테스트 러너만 예외로 커밋)
+scripts/*
+!scripts/test.sh
+!scripts/test.ps1
 
 # AI 실험 환경 (API 키·실험 프롬프트·데이터·결과 — 전체 비공개)
 experiment/

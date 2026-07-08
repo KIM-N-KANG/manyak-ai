@@ -8,5 +8,18 @@
       "Bash(gh api *)",
       "Bash(claude plugin *)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-start.sh\"",
+            "statusMessage": "하네스 규칙·제품 스펙(product-specs 전체) 전문 로드"
+          }
+        ]
+      }
+    ]
   }
 }
