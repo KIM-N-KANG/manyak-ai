@@ -1,6 +1,6 @@
 ---
-version: 4
-updated: 2026-07-06
+version: 5
+updated: 2026-07-08
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -73,6 +73,7 @@ updated: 2026-07-06
 | `{{장르_태그}}` | genre_tags 배열 → 쉼표 구분 문자열 |
 | `{{주인공_특징_태그}}` | protagonist_tags 배열 → 쉼표 구분 문자열 |
 | `{{주변_인물_태그}}` | supporting_tags 배열 → 쉼표 구분 문자열 |
+| `{{로어북}}` | lorebooks 배열 → 항목별 `### name` + content 블록(`\n\n`으로 구분). 비어 있거나 미전달·null이면 `(없음)`. 세계관·용어 확장 재료로만 쓰고 원문을 출력에 노출하지 않음 |
 
 호출 파라미터는 모델만 다르고 나머지는 스토리라인과 같습니다: `response_format={"type": "json_object"}`, temperature 0.75, max_tokens 6144, 추론 비활성(`thinking: disabled`), 90초 타임아웃.
 
@@ -135,7 +136,8 @@ POST /api/v1/story/compile
   "additional_info": "주인공 호칭·선호 등 추가정보(선택)",
   "genre_tags":       ["무협", "회귀"],
   "protagonist_tags": ["냉혹한", "치밀한"],
-  "supporting_tags":  ["배신자", "스승"]
+  "supporting_tags":  ["배신자", "스승"],
+  "lorebooks":        [{ "name": "내공", "content": "기를 단전에 쌓아 다스리는 힘." }]
 }
 ```
 
@@ -146,6 +148,7 @@ POST /api/v1/story/compile
 | genre_tags | string[] | 필수 |
 | protagonist_tags | string[] | 필수 |
 | supporting_tags | string[] | 필수 |
+| lorebooks | object[] | 선택(기본값 빈 배열, null 허용) — 각 항목 `{name, content}`. 세계관·용어 확장 재료로만 쓰고 원문을 출력에 노출하지 않음 |
 
 #### 응답 (Response)
 

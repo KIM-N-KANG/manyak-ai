@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from src.schemas.story_compile import (
+    LorebookItem,
     StoryCompileRequest,
     StoryCompileResponse,
     StorySpec,
@@ -58,6 +59,37 @@ def test_five_characters_allowed() -> None:
     assert len(spec.prompt_settings.character_setting) == 5
 
 
+# ── 로어북 (KNK-422) ─────────────────────────────────────────────────────────
+def test_lorebooks_default_empty_backward_compatible() -> None:
+    # 로어북을 안 보내는 기존 요청은 그대로 통과하고 기본값은 빈 배열(하위호환).
+    assert _request().lorebooks == []
+
+
+def test_lorebooks_parse_when_provided() -> None:
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=[{"name": "내공", "content": "기를 단전에 쌓아 다스리는 힘."}],
+    )
+    assert len(req.lorebooks) == 1
+    assert req.lorebooks[0].name == "내공"
+    assert req.lorebooks[0].content
+
+
+def test_lorebooks_explicit_null_accepted() -> None:
+    # 명시적 null도 "없음"으로 받아 요청 전체가 실패하지 않는다(Gemini 리뷰 — 미전달과 동치).
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=None,
+    )
+    assert req.lorebooks is None
+
+
 # ── 프롬프트 ────────────────────────────────────────────────────────────────
 def test_strip_code_fence() -> None:
     fenced = '```json\n{"a": 1}\n```'
@@ -86,6 +118,60 @@ def test_build_compile_prompt_empty_additional_info() -> None:
     _, user = build_compile_prompt("라인", "", ["판타지"], ["용감한"], ["거친"])
     assert "{{" not in user
     assert "(없음)" in user
+
+
+def test_build_compile_prompt_injects_lorebooks() -> None:
+    # 로어북이 있으면 {{로어북}} 슬롯에 이름·내용이 실려 프롬프트에 들어간다.
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘.")],
+    )
+    assert "{{" not in user
+    assert "내공" in user
+    assert "기를 단전에 쌓아 다스리는 힘." in user
+
+
+def test_build_compile_prompt_multiple_lorebooks() -> None:
+    # 로어북이 여러 개면 각 항목이 ### 헤더 블록으로 실린다(bullet 인라인 아님).
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [
+            LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘."),
+            LorebookItem(name="외공", content="몸을 단련해 얻는 힘."),
+        ],
+    )
+    assert "### 내공" in user
+    assert "### 외공" in user
+    assert "기를 단전에 쌓아 다스리는 힘." in user
+    assert "몸을 단련해 얻는 힘." in user
+
+
+def test_build_compile_prompt_strips_lorebook_whitespace() -> None:
+    # 이름·내용 앞뒤 공백·개행이 있어도 ### 헤더·문단이 깔끔히 렌더된다(Gemini 리뷰).
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [LorebookItem(name="  내공\n", content="\n기를 단전에 쌓는 힘.  ")],
+    )
+    # 앞뒤 공백·개행이 제거돼 헤더·내용이 한 줄씩 붙는다(여분 공백·빈 줄 없음).
+    assert "### 내공\n기를 단전에 쌓는 힘." in user
+
+
+def test_build_compile_prompt_null_lorebooks_slot() -> None:
+    # lorebooks=None(명시적 null)도 (없음)으로 채워져 빈 배열·미전달과 동일하다.
+    _, user = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"], None)
+    assert "{{" not in user
+    assert "참고 로어북(장르 용어 사전):" in user
+    assert "(없음)" in user
+
+
+def test_build_compile_prompt_empty_lorebooks_slot() -> None:
+    # 로어북 미전달·빈 배열이면 {{로어북}} 슬롯이 (없음)으로 채워지고(미주입), 두 경로가 동일하다.
+    _, user_none = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"])
+    _, user_empty = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"], [])
+    assert "{{" not in user_none
+    assert "참고 로어북(장르 용어 사전):" in user_none  # 하단 별도 블록 라벨
+    assert "(없음)" in user_none  # 슬롯이 비주입 마커로 치환됨
+    assert user_none == user_empty
 
 
 # ── genre 주입 ──────────────────────────────────────────────────────────────
@@ -188,6 +274,31 @@ async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyP
     assert res.meta.input_token_count == 100
     assert res.meta.output_token_count == 200
     assert res.meta.retry_count == 0
+
+
+async def test_compile_story_forwards_lorebooks_to_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # compile_story가 request.lorebooks를 실제 프롬프트에 실어 보내는지 배선을 고정한다.
+    # (build_compile_prompt 인자에서 request.lorebooks를 지우면 이 테스트가 깨진다 — 회귀 방지.)
+    captured: dict[str, str] = {}
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        captured["user"] = user
+        return _load("spec_valid.json"), story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=[LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘.")],
+    )
+    await story_llm.compile_story(req)
+    assert "내공" in captured["user"]
+    assert "기를 단전에 쌓아 다스리는 힘." in captured["user"]
 
 
 async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPatch) -> None:
