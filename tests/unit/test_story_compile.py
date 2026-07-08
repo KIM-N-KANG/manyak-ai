@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from src.schemas.story_compile import (
+    LorebookItem,
     StoryCompileRequest,
     StoryCompileResponse,
     StorySpec,
@@ -56,6 +57,25 @@ def test_five_characters_allowed() -> None:
     ]
     spec = StorySpec(**data)
     assert len(spec.prompt_settings.character_setting) == 5
+
+
+# ── 로어북 (KNK-422) ─────────────────────────────────────────────────────────
+def test_lorebooks_default_empty_backward_compatible() -> None:
+    # 로어북을 안 보내는 기존 요청은 그대로 통과하고 기본값은 빈 배열(하위호환).
+    assert _request().lorebooks == []
+
+
+def test_lorebooks_parse_when_provided() -> None:
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=[{"name": "내공", "content": "기를 단전에 쌓아 다스리는 힘."}],
+    )
+    assert len(req.lorebooks) == 1
+    assert req.lorebooks[0].name == "내공"
+    assert req.lorebooks[0].content
 
 
 # ── 프롬프트 ────────────────────────────────────────────────────────────────
