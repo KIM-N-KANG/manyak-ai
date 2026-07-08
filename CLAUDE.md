@@ -1,17 +1,8 @@
 # 기본 지침
 
-아래 공통 하네스 지침과 제품 명세(product-specs)는 세션 시작 시 자동으로 로드됩니다.
-
-@../knk-harness/CLAUDE.md
-
-@../knk-harness/docs/product-specs/0-glossary.md
-@../knk-harness/docs/product-specs/1-background.md
-@../knk-harness/docs/product-specs/2-user-stories.md
-@../knk-harness/docs/product-specs/3-frontend.md
-@../knk-harness/docs/product-specs/4-backend.md
-@../knk-harness/docs/product-specs/5-ai-server.md
-@../knk-harness/docs/product-specs/6-analytics.md
-@../knk-harness/docs/product-specs/7-deployment.md
+세션 시작 시 SessionStart 훅(`.claude/settings.json`)이 하네스 운영 규칙(`../knk-harness/AGENTS.md`)과
+제품 명세(`../knk-harness/docs/product-specs/`의 모든 `.md`)를 컨텍스트에 자동 로드합니다.
+(이 환경에서는 CLAUDE.md `@import`가 펼쳐지지 않아 훅으로 로드합니다.)
 
 `../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다.
 프로젝트별 지침 변경은 이 레포지토리의 `CLAUDE.md`에만 기록합니다.
