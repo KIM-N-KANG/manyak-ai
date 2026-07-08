@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "GUIDE=\"【필수 시작 절차】 아래에는 하네스 운영 규칙(knk-harness/AGENTS.md)과 knk-harness 제품 스펙(docs/product-specs)의 모든 문서 전문이 포함되어 있다. 파일을 다시 열 필요 없이 이 내용을 근거로, 단순 기계적 변경이 아닌 모든 작업을 진행하라.\"; { printf '%s\\n\\n' \"$GUIDE\"; echo '===== KNK-HARNESS AGENTS.md (하네스 운영 규칙) ====='; cat ../knk-harness/AGENTS.md 2>/dev/null; echo; echo '===== PRODUCT SPECS (product-specs 전체 상시 참조) ====='; for f in ../knk-harness/docs/product-specs/*.md; do echo; echo \"===== product-specs/$(basename \"$f\") =====\"; cat \"$f\" 2>/dev/null; done; } || true",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-start.sh\"",
             "statusMessage": "하네스 규칙·제품 스펙(product-specs 전체) 전문 로드"
           }
         ]

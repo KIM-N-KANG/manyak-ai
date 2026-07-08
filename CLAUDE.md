@@ -33,6 +33,8 @@
   - 프로젝트 스킬(create-jira-subtasks, notion-version-control, planning, prompt-authoring, sync-ai-spec) → `../../.agents/skills/<이름>` (이 레포가 정본, git 추적)
   - 하네스 공용 스킬(create-branch, create-commit, create-pr, karpathy-guidelines, technical-writing) → `../../../knk-harness/.claude/skills/<이름>`
 - 새 스킬을 추가할 때는 `.agents/skills/<이름>/SKILL.md`를 만들고 `.claude/skills/<이름>` 심링크를 겁니다. `.agents/skills`에만 두면 로드되지 않습니다.
+- 하네스 스킬과 세션 시작 스펙 로드는 형제 레포 `../knk-harness`가 함께 체크아웃돼 있어야 동작합니다. 이 레포만 클론하면 프로젝트 스킬 5개만 로드되고, 하네스 스킬·제품 명세는 빠집니다.
+- **Windows 주의**: `git config core.symlinks true`(+ 개발자 모드/관리자 권한) 없이 클론하면 심링크가 실제 링크가 아니라 대상 경로가 담긴 텍스트 파일로 체크아웃돼 스킬 로딩이 조용히 깨집니다.
 
 ### 프롬프트·명세 변경
 - `prompt/`·`spec/` 파일은 frontmatter의 `version`·`updated`로 버전을 관리합니다.
