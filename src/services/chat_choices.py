@@ -215,8 +215,10 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
             input_tokens = _add_tokens(input_tokens, in_tok)
             output_tokens = _add_tokens(output_tokens, out_tok)
             _accumulate(collected, seen, raw)
-        except (OpenAIError, json.JSONDecodeError, ValueError) as e:
+        except (OpenAIError, json.JSONDecodeError, ValueError, IndexError, AttributeError) as e:
             # 한 번의 호출이 터져도 턴을 깨지 않는다 — Sentry로만 보고하고 다음 시도/폴백으로 간다.
+            # IndexError(빈 choices)·AttributeError(message=None)도 흡수한다(F2 — 판정과 대칭,
+            # 같은 asyncio.gather라 어느 쪽 예외든 completed 없이 턴을 깨뜨릴 수 있음).
             logger.warning("선택지 호출 실패(시도 %d): %s", attempt, e)
             capture_ai_exception(
                 e,
