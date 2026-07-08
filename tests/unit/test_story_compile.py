@@ -108,6 +108,26 @@ def test_build_compile_prompt_empty_additional_info() -> None:
     assert "(없음)" in user
 
 
+def test_build_compile_prompt_injects_lorebooks() -> None:
+    # 로어북이 있으면 {{로어북}} 슬롯에 이름·내용이 실려 프롬프트에 들어간다.
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘.")],
+    )
+    assert "{{" not in user
+    assert "내공" in user
+    assert "기를 단전에 쌓아 다스리는 힘." in user
+
+
+def test_build_compile_prompt_empty_lorebooks_slot() -> None:
+    # 로어북 미전달·빈 배열이면 {{로어북}} 슬롯이 (없음)으로 채워지고(미주입), 두 경로가 동일하다.
+    _, user_none = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"])
+    _, user_empty = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"], [])
+    assert "{{" not in user_none
+    assert "로어북(장르 용어 사전): (없음)" in user_none
+    assert user_none == user_empty
+
+
 # ── genre 주입 ──────────────────────────────────────────────────────────────
 def test_inject_genre_overwrites() -> None:
     data = {"meta": {"genre": "WRONG"}}
