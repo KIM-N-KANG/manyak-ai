@@ -45,7 +45,8 @@ def _format_lorebooks(lorebooks: list[LorebookItem]) -> str:
     """로어북을 프롬프트 블록으로 만든다. 비어 있으면 `(없음)`(추가정보와 동일 관례)."""
     if not lorebooks:
         return "(없음)"
-    return "\n\n".join(f"### {lb.name}\n{lb.content}" for lb in lorebooks)
+    # 이름·내용 앞뒤 공백·개행을 털어 ### 헤더·문단이 항상 깔끔히 렌더되게 한다.
+    return "\n\n".join(f"### {lb.name.strip()}\n{lb.content.strip()}" for lb in lorebooks)
 
 
 def build_compile_prompt(

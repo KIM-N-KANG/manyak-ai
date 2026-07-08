@@ -78,6 +78,18 @@ def test_lorebooks_parse_when_provided() -> None:
     assert req.lorebooks[0].content
 
 
+def test_lorebooks_explicit_null_accepted() -> None:
+    # 명시적 null도 "없음"으로 받아 요청 전체가 실패하지 않는다(Gemini 리뷰 — 미전달과 동치).
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=None,
+    )
+    assert req.lorebooks is None
+
+
 # ── 프롬프트 ────────────────────────────────────────────────────────────────
 def test_strip_code_fence() -> None:
     fenced = '```json\n{"a": 1}\n```'
@@ -132,6 +144,24 @@ def test_build_compile_prompt_multiple_lorebooks() -> None:
     assert "### 외공" in user
     assert "기를 단전에 쌓아 다스리는 힘." in user
     assert "몸을 단련해 얻는 힘." in user
+
+
+def test_build_compile_prompt_strips_lorebook_whitespace() -> None:
+    # 이름·내용 앞뒤 공백·개행이 있어도 ### 헤더·문단이 깔끔히 렌더된다(Gemini 리뷰).
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [LorebookItem(name="  내공\n", content="\n기를 단전에 쌓는 힘.  ")],
+    )
+    # 앞뒤 공백·개행이 제거돼 헤더·내용이 한 줄씩 붙는다(여분 공백·빈 줄 없음).
+    assert "### 내공\n기를 단전에 쌓는 힘." in user
+
+
+def test_build_compile_prompt_null_lorebooks_slot() -> None:
+    # lorebooks=None(명시적 null)도 (없음)으로 채워져 빈 배열·미전달과 동일하다.
+    _, user = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"], None)
+    assert "{{" not in user
+    assert "참고 로어북(장르 용어 사전):" in user
+    assert "(없음)" in user
 
 
 def test_build_compile_prompt_empty_lorebooks_slot() -> None:
