@@ -175,3 +175,43 @@ async def test_target_cleared_when_same_event_occurred(monkeypatch) -> None:
     res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
     assert res.occurred_main_event_name == "반란의 서막"
     assert res.target_main_event is None
+
+
+async def test_target_in_prior_occurred_nullified(monkeypatch) -> None:
+    # 이전 턴들에서 이미 완결된 사건을 목표로 되보고하면 무효화한다(occurred 가드와 대칭, #1).
+    _mock_call(monkeypatch, '{"target_main_event": {"name": "선왕의 유언", "progress_turns": 2}}')
+    res = await generate_judgement(
+        _request(main_events=_EVENTS, occurred=["선왕의 유언"]), "*장면*"
+    )
+    assert res.target_main_event is None
+
+
+# ── 흡수: 응답 형태 이상(빈 choices·message None)도 턴을 깨지 않는다(F2) ────────
+class _NoChoicesResp:
+    choices: list = []
+    model = "deepseek-v4-flash"
+    usage = None
+
+
+class _NoneMsgChoice:
+    message = None
+
+
+class _NoneMsgResp:
+    choices = [_NoneMsgChoice()]
+    model = "deepseek-v4-flash"
+    usage = None
+
+
+@pytest.mark.parametrize("resp", [_NoChoicesResp(), _NoneMsgResp()])
+async def test_malformed_response_absorbed_to_nulls(monkeypatch, resp) -> None:
+    # choices[0].message.content 접근에서 IndexError(빈 choices)·AttributeError(message None)가
+    # 나도 흡수해 3필드 null로 돌아간다 — gather로 전파돼 completed 없이 턴이 깨지지 않게 한다.
+    async def _create(**kwargs):
+        return resp
+
+    monkeypatch.setattr(chat_judgement._client.chat.completions, "create", _create)
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+    assert res.target_main_event is None
+    assert res.occurred_main_event_name is None
+    assert res.ending_name is None

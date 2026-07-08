@@ -24,6 +24,7 @@ from openai import AsyncOpenAI, OpenAIError
 from src.core.config import settings
 from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
 from src.schemas.chat_turn import ChatTurnRequest, TargetMainEventOut
+from src.services.chat_assembler import format_main_events, format_target_main_event
 from src.services.prompt_meta import read_version
 
 logger = logging.getLogger(__name__)
@@ -74,18 +75,9 @@ class JudgementResult:
 _EMPTY = JudgementResult(None, None, None, None, None)
 
 
-def _format_main_events(req: ChatTurnRequest) -> str:
-    return "\n".join(
-        f"- 이름: {e.name} / 설명: {e.description} / 키 문장: {e.key_sentence}"
-        for e in req.main_events
-    ) or "(없음)"
-
-
-def _format_target(req: ChatTurnRequest) -> str:
-    t = req.target_main_event
-    return f"이름: {t.name} (진행 {t.progress_turns}턴)" if t else "(없음)"
-
-
+# 주요 사건·목표 사건 포맷은 조립기(chat_assembler)와 공용이다 — 표기가 갈리지 않게
+# 한 곳(assembler)에서 import해 재사용한다(F3). 엔딩은 판정 재료에 epilogue를 싣지
+# 않으므로 아래 _format_endings로 따로 둔다(의도적 분기).
 def _format_occurred(req: ChatTurnRequest) -> str:
     return "\n".join(f"- {n}" for n in req.occurred_main_event_names) or "(없음)"
 
@@ -100,8 +92,8 @@ def _format_endings(req: ChatTurnRequest) -> str:
 def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
     """[USER] 블록의 자리표시자를 사건·엔딩 재료 + 방금 생성된 본문으로 치환한다."""
     repl = {
-        "{{main_events}}": _format_main_events(req),
-        "{{target_main_event}}": _format_target(req),
+        "{{main_events}}": format_main_events(req.main_events),
+        "{{target_main_event}}": format_target_main_event(req.target_main_event),
         "{{occurred_main_event_names}}": _format_occurred(req),
         "{{endings}}": _format_endings(req),
         "{{user_input}}": req.user_input,
@@ -140,10 +132,19 @@ def _sanitize(req: ChatTurnRequest, data: dict) -> JudgementResult:
     if isinstance(raw_target, dict):
         name = raw_target.get("name")
         turns = raw_target.get("progress_turns")
-        if isinstance(name, str) and name in event_names and isinstance(turns, int) and turns >= 0:
+        # occurred 가드(아래)와 대칭 — 이전 턴들에서 이미 완결된 사건은 목표로 되보고해도
+        # 무효화한다. 아니면 완결된 사건이 백엔드에 저장돼 다음 턴 STORY 슬롯까지 되돌아와
+        # "끝난 사건을 향해 빌드업"하라고 지시하게 된다(#1).
+        if (
+            isinstance(name, str)
+            and name in event_names
+            and name not in req.occurred_main_event_names
+            and isinstance(turns, int)
+            and turns >= 0
+        ):
             target = TargetMainEventOut(name=name, progress_turns=turns)
         else:
-            logger.warning("판정 target 무효화(목록 밖 이름 또는 형식 위반): %r", raw_target)
+            logger.warning("판정 target 무효화(목록 밖·이미 완결·형식 위반): %r", raw_target)
 
     occurred = data.get("occurred_main_event_name")
     if not (isinstance(occurred, str) and occurred in event_names):
@@ -205,8 +206,10 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
         result.input_tokens = getattr(usage, "prompt_tokens", None)
         result.output_tokens = getattr(usage, "completion_tokens", None)
         return result
-    except (OpenAIError, json.JSONDecodeError, ValueError) as e:
+    except (OpenAIError, json.JSONDecodeError, ValueError, IndexError, AttributeError) as e:
         # 판정 실패가 턴을 깨지 않는다 — Sentry로만 보고하고 null로 돌아간다.
+        # IndexError(빈 choices 배열)·AttributeError(message=None)까지 흡수해, 응답 형태
+        # 이상으로도 gather가 예외를 전파해 턴을 깨는 일이 없게 한다(F2 — 모듈 불변식 보강).
         # 별도 feature 신설은 관측 카탈로그(6-analytics) 개정 사안이라 chat_response로 묶는다.
         logger.warning("판정 호출 실패(흡수 — 메타 null): %s", e)
         capture_ai_exception(
