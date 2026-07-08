@@ -3,7 +3,9 @@ import json
 import pytest
 
 from src.api.v1 import chat as chat_module
+from src.schemas.chat_turn import TargetMainEventOut
 from src.services.chat_choices import ChoicesResult
+from src.services.chat_judgement import JudgementResult
 
 
 def _payload() -> dict:
@@ -49,6 +51,19 @@ def mock_next_actions(monkeypatch):
             return result
 
         monkeypatch.setattr(chat_module, "generate_choices", _fake)
+
+    return _set
+
+
+@pytest.fixture
+def mock_judgement(monkeypatch):
+    """판정 호출(generate_judgement)을 고정 결과로 바꾼다(판정 LLM 회피)."""
+
+    def _set(result: JudgementResult) -> None:
+        async def _fake(req, ai_output):
+            return result
+
+        monkeypatch.setattr(chat_module, "generate_judgement", _fake)
 
     return _set
 
@@ -108,6 +123,13 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events, mock_next_
     assert meta["outputTokenCount"] is None
     assert "input_token_count" not in body  # snake_case 아님(chat은 camel)
 
+    # 판정 메타(재료 없는 현행 요청): generate_judgement가 스킵돼 3필드 null,
+    # JUDGEMENT 버전 키는 항상 실린다. (generate_judgement는 모킹하지 않아 실제 스킵 경로를 탄다.)
+    assert completed["targetMainEvent"] is None
+    assert completed["occurredMainEventName"] is None
+    assert completed["endingName"] is None
+    assert meta["promptVersions"]["JUDGEMENT"] >= 1
+
 
 async def test_chat_turn_merges_tokens_and_retry(client, mock_events, mock_next_actions) -> None:
     # 본문·선택지 토큰은 합산되고, retryCount는 선택지 재호출 횟수가 실린다.
@@ -135,3 +157,53 @@ async def test_chat_turn_sse_error(client, mock_events) -> None:
 
     assert resp.status_code == 200
     assert _data_of(resp.text, "error") == {"code": "LLM_ERROR", "message": "실패"}
+
+
+async def test_chat_turn_completed_serializes_judgement_meta(
+    client, mock_events, mock_next_actions, mock_judgement
+) -> None:
+    # 재료가 실린 턴: 판정 3필드가 completed까지 camelCase로 직렬화되고, meta.promptVersions에
+    # JUDGEMENT 키가 실리며, 판정 토큰이 합산되는지 엔드포인트 전체 흐름으로 확인한다(#3 리뷰 반영).
+    mock_events([{"event": "completed", "ai_output": "장면", "model": "deepseek-v4-flash"}])
+    mock_next_actions(
+        ChoicesResult(choices=["가", "나", "다"], input_tokens=None,
+                      output_tokens=None, retry_count=0, model="deepseek-v4-flash")
+    )
+    mock_judgement(
+        JudgementResult(
+            target_main_event=TargetMainEventOut(name="반란의 증거", progress_turns=2),
+            occurred_main_event_name="선왕의 유언",
+            ending_name="왕좌를 되찾다",
+            input_tokens=15,
+            output_tokens=5,
+        )
+    )
+    payload = {
+        **_payload(),
+        "main_events": [
+            {"name": "반란의 증거", "description": "밀서.", "key_sentence": "밀서를 손에 넣는다."},
+            {"name": "선왕의 유언", "description": "유언장.", "key_sentence": "유언장을 찾는다."},
+        ],
+        "target_main_event": {"name": "반란의 증거", "progress_turns": 1},
+        "occurred_main_event_names": [],
+        "endings": [
+            {"name": "왕좌를 되찾다", "achievement_condition": "둘 다 확보.", "epilogue": "대관식."}
+        ],
+    }
+    resp = await client.post("/api/v1/chat/turns", json=payload)
+
+    assert resp.status_code == 200
+    body = resp.text
+    completed = _data_of(body, "completed")
+
+    # 판정 3필드가 camelCase 와이어 키로 직렬화된다
+    assert completed["targetMainEvent"] == {"name": "반란의 증거", "progressTurns": 2}
+    assert completed["occurredMainEventName"] == "선왕의 유언"
+    assert completed["endingName"] == "왕좌를 되찾다"
+    assert "progress_turns" not in body  # snake_case 누출 없음
+
+    # meta.promptVersions에 JUDGEMENT 키가 실리고, 판정 토큰이 합산된다(본문·선택지 토큰 없음 → 15/5)
+    meta = completed["meta"]
+    assert meta["promptVersions"]["JUDGEMENT"] >= 1
+    assert meta["inputTokenCount"] == 15
+    assert meta["outputTokenCount"] == 5

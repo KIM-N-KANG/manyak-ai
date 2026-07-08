@@ -25,6 +25,7 @@ from openai import AsyncOpenAI, OpenAIError
 from src.core.config import settings
 from src.core.sentry import FEATURE_CHOICE_GENERATION, capture_ai_exception
 from src.schemas.chat_turn import ChatTurnRequest
+from src.services.chat_assembler import format_main_events, format_target_main_event
 from src.services.prompt_meta import read_version
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,12 @@ def _format_history(req: ChatTurnRequest) -> str:
 
 
 def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
-    """[USER] 블록의 자리표시자를 요청 재료 + 방금 생성된 본문으로 치환한다."""
+    """[USER] 블록의 자리표시자를 요청 재료 + 방금 생성된 본문으로 치환한다.
+
+    사건 재료 3종(KNK-485, §5-3-5 — 주요 사건·목표 사건·거쳐온 사건)은 선택지
+    3구성(목표 1 + 미향 1 + 맥락 1)의 재료다. 템플릿이 슬롯을 배치하기 전까지
+    무해한 no-op이다.
+    """
     ss = req.story_settings
     repl = {
         "{{장르}}": req.genre,
@@ -124,6 +130,12 @@ def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
         "{{history}}": _format_history(req) or "(없음)",
         "{{user_input}}": req.user_input,
         "{{ai_output}}": ai_output,
+        "{{main_events}}": format_main_events(req.main_events),
+        "{{target_main_event}}": format_target_main_event(req.target_main_event),
+        "{{occurred_main_event_names}}": "\n".join(
+            f"- {n}" for n in req.occurred_main_event_names
+        )
+        or "(없음)",
     }
     text = _USER_TEMPLATE
     for k, v in repl.items():
@@ -203,8 +215,10 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
             input_tokens = _add_tokens(input_tokens, in_tok)
             output_tokens = _add_tokens(output_tokens, out_tok)
             _accumulate(collected, seen, raw)
-        except (OpenAIError, json.JSONDecodeError, ValueError) as e:
+        except (OpenAIError, json.JSONDecodeError, ValueError, IndexError, AttributeError) as e:
             # 한 번의 호출이 터져도 턴을 깨지 않는다 — Sentry로만 보고하고 다음 시도/폴백으로 간다.
+            # IndexError(빈 choices)·AttributeError(message=None)도 흡수한다(F2 — 판정과 대칭,
+            # 같은 asyncio.gather라 어느 쪽 예외든 completed 없이 턴을 깨뜨릴 수 있음).
             logger.warning("선택지 호출 실패(시도 %d): %s", attempt, e)
             capture_ai_exception(
                 e,
