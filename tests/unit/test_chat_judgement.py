@@ -138,6 +138,17 @@ async def test_invalid_json_absorbed_to_nulls(monkeypatch) -> None:
     assert res.target_main_event is None and res.ending_name is None
 
 
+async def test_failure_capture_carries_latency_and_retry(monkeypatch) -> None:
+    # AN-4-8 — 실패 캡처에 retry_count(단일 호출이라 0)와 latency_ms가 실린다(KNK-529).
+    calls: list = []
+    monkeypatch.setattr(chat_judgement, "capture_ai_exception", lambda *a, **k: calls.append(k))
+    _mock_call(monkeypatch, OpenAIError("boom"))
+    await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+    assert len(calls) == 1
+    assert calls[0]["retry_count"] == 0
+    assert isinstance(calls[0]["latency_ms"], int) and calls[0]["latency_ms"] >= 0
+
+
 # ── 보정: 목록 밖 이름·형식 위반은 무효화한다(D7) ───────────────────────────
 async def test_unknown_names_nullified(monkeypatch) -> None:
     _mock_call(

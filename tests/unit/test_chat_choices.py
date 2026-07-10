@@ -118,6 +118,16 @@ async def test_total_failure_absorbed_to_fallback(monkeypatch) -> None:
     assert res.input_tokens is None and res.output_tokens is None  # 성공한 호출 없음
 
 
+async def test_failure_capture_carries_latency_and_retry(monkeypatch) -> None:
+    # AN-4-8 — 실패 캡처마다 그 시도의 retry_count와 latency_ms가 실린다(KNK-529).
+    calls: list = []
+    monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda *a, **k: calls.append(k))
+    _mock_calls(monkeypatch, [OpenAIError("boom")])
+    await generate_choices(_request(), "*장면*")
+    assert [c["retry_count"] for c in calls] == [0, 1, 2]  # 첫 호출 + 재호출 2회 전부 캡처
+    assert all(isinstance(c["latency_ms"], int) and c["latency_ms"] >= 0 for c in calls)
+
+
 async def test_truncates_when_too_many(monkeypatch) -> None:
     _mock_calls(monkeypatch, ['{"choices": ["a", "b", "c", "d", "e"]}'])
     res = await generate_choices(_request(), "*장면*")

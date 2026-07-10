@@ -17,6 +17,7 @@ COMPILE 템플릿과 같은 위상).
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -210,6 +211,7 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
     while True:
         need = _CHOICES_COUNT - len(collected)
         user = base_user if attempt == 0 else base_user + _refill_suffix(collected, need)
+        t0 = time.monotonic()  # 이번 시도의 소요 시간 — 실패 캡처의 latency_ms 재료
         try:
             raw, model, in_tok, out_tok = await _call(_SYSTEM, user)
             input_tokens = _add_tokens(input_tokens, in_tok)
@@ -225,6 +227,8 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
                 feature=FEATURE_CHOICE_GENERATION,
                 model=settings.deepseek_chat_model,
                 prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
+                retry_count=attempt,  # 0=첫 호출, 1·2=재호출
+                latency_ms=int((time.monotonic() - t0) * 1000),
             )
         if len(collected) >= _CHOICES_COUNT or attempt >= _MAX_REFILL:
             break
