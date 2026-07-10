@@ -131,6 +131,8 @@ updated: 2026-07-10
   "start": { "name": "...", "prologue": "...", "start_situation": "..." },
   "suggested_inputs": ["...", "...", "..."],
   "main_events": [
+    { "name": "...", "description": "...", "key_sentence": "..." },
+    { "name": "...", "description": "...", "key_sentence": "..." },
     { "name": "...", "description": "...", "key_sentence": "..." }
   ],
   "endings": [
