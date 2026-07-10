@@ -10,8 +10,8 @@
 지연 증가를 최소화한다(엔드포인트가 gather).
 
 **판정 실패가 턴을 깨지 않는다** — 호출·파싱이 실패하면 흡수하고 3필드 null로
-돌아간다(선택지 폴백과 같은 원칙). 재료가 아예 없는 턴(현행 트래픽 전부)은 호출
-자체를 스킵해 비용·지연이 0이다(하위호환).
+돌아간다(선택지 폴백과 같은 원칙). 재료가 아예 없는 턴(사건·엔딩 없는 스토리)은
+호출 자체를 스킵해 비용·지연이 0이다(하위호환).
 """
 
 import json
@@ -183,7 +183,7 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
     '판정 없음(null)'이 가장 안전한 결과다.
     """
     if not req.main_events and not req.endings:
-        return _EMPTY  # 현행 트래픽(재료 없음) — 비용·지연 0
+        return _EMPTY  # 사건·엔딩 없는 스토리(재료 없음) — 비용·지연 0
 
     start = time.monotonic()
     try:
