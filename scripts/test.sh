@@ -26,7 +26,9 @@ done
 # 리포지토리 루트로 이동(어디서 호출하든 -v $PWD가 프로젝트 루트를 가리키도록).
 cd "$(dirname "$0")/.."
 
-inner="pip install -q -e '.[dev]' && pytest -q ${PYTEST_ARGS[*]}"
+# ${arr[*]:-}의 :-는 macOS 기본 bash 3.2에서 필수다 — set -u 아래서 빈 배열 전개가
+# unbound variable로 죽는다(bash 4.4+에서는 문제없어 리눅스 CI에선 재현 안 됨).
+inner="pip install -q -e '.[dev]' && pytest -q ${PYTEST_ARGS[*]:-}"
 
 docker_args=(
     run --rm
