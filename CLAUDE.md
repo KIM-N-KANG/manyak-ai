@@ -30,7 +30,7 @@
 ### 스킬 배치(.claude/skills)
 - Claude Code는 `.claude/skills/`만 스캔합니다(`.agents/skills/`는 로드하지 않음). 스킬은 모두 `.claude/skills/`에 있어야 인식됩니다.
 - `.claude/skills/`는 **항목별 심링크**로 구성돼 있습니다:
-  - 프로젝트 스킬(create-jira-subtasks, notion-version-control, planning, prompt-authoring, sync-ai-spec) → `../../.agents/skills/<이름>` (이 레포가 정본, git 추적)
+  - 프로젝트 스킬(create-jira-subtasks, planning, prompt-authoring, sync-ai-spec) → `../../.agents/skills/<이름>` (이 레포가 정본, git 추적)
   - 하네스 공용 스킬(create-branch, create-commit, create-pr, karpathy-guidelines, technical-writing) → `../../../knk-harness/.claude/skills/<이름>`
 - 새 스킬을 추가할 때는 `.agents/skills/<이름>/SKILL.md`를 만들고 `.claude/skills/<이름>` 심링크를 겁니다. `.agents/skills`에만 두면 로드되지 않습니다.
 - 하네스 스킬과 세션 시작 스펙 로드는 형제 레포 `../knk-harness`가 함께 체크아웃돼 있어야 동작합니다. 이 레포만 클론하면 프로젝트 스킬 5개만 로드되고, 하네스 스킬·제품 명세는 빠집니다.
@@ -38,7 +38,7 @@
 
 ### 프롬프트·명세 변경
 - `prompt/`·`spec/` 파일은 frontmatter의 `version`·`updated`로 버전을 관리합니다.
-- 프롬프트·명세 수정 후에는 `notion-version-control` 스킬로 Notion에 버전 스냅샷을 저장합니다.
+- 변경 이력 관리는 git 단독입니다(Notion 버전 스냅샷은 폐기). pre-commit 훅이 브랜치당 1회 frontmatter 버전을 자동으로 올립니다(로컬 전용).
 - 파일은 LF 줄바꿈으로 저장합니다(CRLF면 frontmatter 파싱이 깨질 수 있음).
 
 ### 테스트
