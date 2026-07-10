@@ -37,7 +37,7 @@
 
 ### 프롬프트·명세 변경
 - `prompt/`·`spec/` 파일은 frontmatter의 `version`·`updated`로 버전을 관리합니다.
-- 변경 이력 관리는 git 단독입니다(Notion 버전 스냅샷은 폐기). pre-commit 훅이 브랜치당 1회 frontmatter 버전을 자동으로 올립니다(로컬 전용).
+- 변경 이력 관리는 git 단독입니다(Notion 버전 스냅샷은 폐기). `prompt/`·`spec/` 파일을 고치면 커밋 전에 frontmatter의 `version`(+1)·`updated`(오늘 날짜)를 직접 올립니다(자동 갱신 장치 없음 — 브랜치당 파일별 1회면 충분).
 - 파일은 LF 줄바꿈으로 저장합니다(CRLF면 frontmatter 파싱이 깨질 수 있음).
 
 ### 테스트
