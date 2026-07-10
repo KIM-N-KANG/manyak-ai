@@ -10,6 +10,7 @@ build/
 
 # Env
 .env
+.env.jira
 
 # Test / coverage
 .pytest_cache/
