@@ -109,7 +109,7 @@ class Ending(BaseModel):
 class StorySpec(BaseModel):
     """스토리 컴파일(시점 A-1)의 영속 산출물 — 스토리 명세 JSON(MVP 확정본).
 
-    reference/chat/4-SERVICE-IMPLEMENTATION.md 3.4 스키마와 1:1 대응.
+    spec/story/2-COMPILE.md §5-2(내부 세분 스키마)와 1:1 대응.
     """
 
     meta: Meta

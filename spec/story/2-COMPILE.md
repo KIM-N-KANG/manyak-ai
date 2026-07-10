@@ -1,6 +1,6 @@
 ---
-version: 5
-updated: 2026-07-08
+version: 6
+updated: 2026-07-10
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -183,7 +183,7 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
   ],
   "meta": {
     "model": "deepseek-v4-pro",
-    "prompt_versions": { "COMPILE": 5 },
+    "prompt_versions": { "COMPILE": 7 },
     "provider": "deepseek",
     "input_token_count": 3500,
     "output_token_count": 2200,
@@ -296,7 +296,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 - `plot_setting.conflict`: 앞으로 일어날 수 있는 갈등·분기만 적고, 확정된 결과처럼 쓰지 않는다.
 - `length_ratio`: 묘사와 대사의 비중을 `묘사 N : 대사 M` 형식으로 적는다.
 - `character_setting`: 이야기에 실제로 등장하는 주요 인물 **최대 5명만** 카드화하고, 그 이상은 `world_setting` 배경으로 흡수한다. 인물마다 말투·성격이 서로 구분되게 한다.
-- `suggested_inputs`: 첫 입력 추천 문구 최대 3개. 행동 묘사는 `*...*`로 감쌀 수 있다.
+- `suggested_inputs`: 첫 입력 추천 문구 **정확히 3개**. 행동 묘사는 `*...*`로 감쌀 수 있다.
 - `main_events`: 주요 사건 3~5개(name·description·key_sentence). 이야기의 갈림길로 짜되 기본 순서만 두고 건너뛰기를 허용한다. `key_sentence`는 "사용자가 ~한다" 사용자 시점의 유도 문장으로, 사용자가 자연스럽게 떠올려 입력할 만하게 직관적으로 쓴다.
 - `endings`: 엔딩 3개. 성취 유형(해피·노말·배드)을 **내부 기준으로만** 삼아 하나씩 만들되 **유형은 출력하지 않고 `name`으로 식별**한다. 사건들의 조합·해결에 뿌리내리게 하되, 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 나눠 결말 상태를 빈틈없이 덮는다(상호배타+총망라, 노말이 중간대 흡수). 조건은 `min_turns`(최소 턴, 정수)와 `achievement_condition`(목적·거친 사건을 한 문장에 담되 특정 사건 경유 비강제)로 나누고, `epilogue`엔 완성 글이 아니라 방향을 담되 "사용자의 행적을 반드시 반영해 그 행동이 세계를 바꾼 결과로 마무리하라"는 지시를 포함한다.
 

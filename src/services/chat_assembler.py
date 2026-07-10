@@ -99,8 +99,7 @@ def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
 
     장르는 `stories.genre`, start_setting은 `story_start_settings`에서 오는 예외 소스다
     (나머지는 story_settings 통글 4필드, 명세 3.3). 사건·엔딩 슬롯 3종(KNK-485,
-    §5-4-1)은 STORY 템플릿이 슬롯을 배치하기 전까지 무해한 no-op이며, 재료가 비면
-    "(없음)" 문구로 치환된다.
+    §5-4-1)은 재료가 비면 "(없음)" 문구로 치환된다(재료 없는 요청과의 하위호환).
     """
     ss = req.story_settings
     return {

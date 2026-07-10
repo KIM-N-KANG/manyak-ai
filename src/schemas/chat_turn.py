@@ -1,6 +1,6 @@
 """채팅 턴 API(시점 B 런타임)의 입출력 계약.
 
-reference/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
+spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
 백엔드가 모든 재료를 실어 보내고 AI는 받은 것만으로 응답하는 **완전 stateless**
 구조다. AI는 턴 사이에 아무것도 보관하지 않으며, 세션 식별자도 두지 않는다.
 
@@ -136,9 +136,10 @@ class ChatTurnRequest(BaseModel):
     # 이라, 그전까지 백엔드는 빈 문자열을 보낸다.
     summary: str
     # ── 주요 사건·엔딩 진행 재료 (KNK-482, 5-ai-server §5-3-4·D11) ──────────────
-    # 넷 다 선택 필드다 — 백엔드 런타임 전달(4-backend §4-3-10)이 미구현이라, 재료가
-    # 없으면 기존 요청과 동일하게 동작해야 한다(하위호환·AI 선행 배포). 재료가 실리면
-    # 프롬프트 판정 재료와 completed 판정 메타의 입력이 된다.
+    # 넷 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
+    # 않으므로, 없으면 기존 요청과 동일하게 동작한다(하위호환 — 백엔드 전달은
+    # 4-backend §4-3-10). 재료가 실리면 프롬프트 판정 재료와 completed 판정 메타의
+    # 입력이 된다.
     main_events: list[MainEvent] = Field(default_factory=list, max_length=10)
     target_main_event: TargetMainEvent | None = None
     occurred_main_event_names: list[str] = Field(default_factory=list)

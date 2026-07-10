@@ -1,6 +1,6 @@
 ---
-version: 4
-updated: 2026-07-08
+version: 5
+updated: 2026-07-10
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -95,14 +95,14 @@ updated: 2026-07-08
 STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 - **결정적 치환**: 이름·태그처럼 그대로 꽂으면 되는 값은 `{{슬롯}}` 치환. (현 `prompt.py` 패턴)
-- **컴파일 LLM 확장**: 말투·동기·세계관 디테일처럼 **풍부함이 필요한 부분**은 세션 1회 LLM 호출로 생성.
+- **컴파일 LLM 확장**: 말투·동기·세계관 디테일처럼 **풍부함이 필요한 부분**은 스토리 컴파일(A-1, 스토리당 1회) LLM 호출로 생성.
 
 근거: 순수 치환만으로는 캐릭터 카드가 얇아져 긴 세션 몰입이 약해지고, 풀 컴파일은 비용·지연·검증 난도가 크다. 하이브리드가 **풍부함과 결정성**을 동시에 확보한다.
 
 ### 2.3 모델 추상화 — 인터페이스 1개 + OpenAI 호환 구현 1개
 
 - **얇은 `ChatProvider` 인터페이스**(예: `async def complete(messages, **opts) -> str`) 하나만 정의한다.
-- 1차 구현은 **OpenAI 호환 chat completions** 클라이언트 하나(현 `gemini.py`처럼 `AsyncOpenAI` + `base_url` 교체). DeepSeek·Upstage·OpenAI 대부분이 그대로 붙는다.
+- 1차 구현은 **OpenAI 호환 chat completions** 클라이언트 하나(`chat_llm.py`의 `AsyncOpenAI` + `base_url` 교체 방식). DeepSeek·Upstage·OpenAI 대부분이 그대로 붙는다.
 - 모델·`base_url`·키는 `config.py`에서 주입한다.
 - **과잉 추상화 금지**: provider별 클래스를 처음부터 만들지 않는다. messages 구조가 다른 provider(예: Anthropic)가 실제 필요해질 때 **어댑터를 추가**한다.
 
@@ -116,7 +116,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 ### 2.5 입출력 표기·구조 규약 (CORE 소유)
 
 - **표기 규약**: 사용자 입력과 AI 출력은 **동일한 표기**를 공유한다. `*...*` = 행동·상황 묘사(지문), 따옴표 없는 일반 텍스트 = 대사. 이 규약의 소유는 **CORE**다([1-PROMPT-LAYER.md]의 "대사·지문·내면 묘사의 표기 규약"). 입력·출력이 같은 형식이라야 History가 일관된 문체 본보기가 된다([3-CONTEXT-ARCHITECTURE.md] 3부).
-  - **화자 라벨**: AI가 연기하는 주변 인물의 대사는 `인물명: 대사` 형식으로 화자를 매 줄 명시한다(예: `레이: 늦었군.`). 따옴표·볼드·괄호 화자 표기 등 다른 장식은 쓰지 않으며, 화자를 지문 서술로만 암시하지 않는다. 주인공(사용자)은 화자가 하나뿐이므로 라벨을 **생략**한다(`*...*`는 연출, 그 외 텍스트는 주인공 대사). 라벨 형식의 세부는 **CORE 소유**이며 그 구현은 `CORE-PROMPT.md`에 둔다.
+  - **화자 라벨**: AI가 연기하는 주변 인물의 대사는 `인물명: 대사` 형식으로 화자를 매 줄 명시한다(예: `레이: 늦었군.`). 따옴표·볼드·괄호 화자 표기 등 다른 장식은 쓰지 않으며, 화자를 지문 서술로만 암시하지 않는다. 주인공(사용자)은 화자가 하나뿐이므로 라벨을 **생략**한다(`*...*`는 연출, 그 외 텍스트는 주인공 대사). 라벨 형식의 세부는 **CORE 소유**이며 그 구현은 `CORE-TEMPLATE.md`에 둔다.
     - **와이어 포맷 ↔ UI 표시 분리**: 이 라벨은 **모델이 출력하는 와이어 포맷**이다. 프론트엔드는 이를 **파싱해 화자를 식별한 뒤 이름 헤더·말풍선 등으로 변환·표시**(단일 화자 시 숨김 가능)하고, **History에는 라벨 원문을 그대로 보존**해 다음 턴 모델에 되먹인다. 즉 라벨은 payload(모델 출력·History)에 항상 존재하되, 최종 화면에 글자 그대로 `인물명:`을 노출할지는 표현 계층의 자유다.
 - **턴 결과 3종 = 두 번의 LLM 호출**: 한 턴의 결과는 ① 상황 묘사 ② 인물 대사 ③ 다음 행동 선택지 3개로 구성되지만, **①②(본문)와 ③(선택지)는 분리된 두 번의 LLM 호출**로 만들어 엔드포인트가 합쳐 내보낸다(4.2). 매 응답에 선택지를 함께 담아 개수를 모델에 맡기던 옛 단일 호출 설계를 대체한다. (주요 사건·엔딩 재료가 실린 턴은 화면 출력이 아닌 **판정 메타**를 만드는 3번째 호출이 선택지와 병렬로 더해진다 — 2.8 ④.)
   - **본문 호출(스트리밍)**: 6레이어 조립 프롬프트로 ① 상황 ② 대사만 생성한다. **본문은 선택지를 담지 않는다** — `CORE`가 "선택지·`[다음 행동]`·번호 목록을 본문 끝에 붙이지 않는다"를 명시한다.
@@ -183,7 +183,8 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 ### 3.1 입력 스키마 (백엔드 → AI 서버)
 - `selected_storyline`: 사용자가 선택한 스토리라인 1편 (4문장 본문)
 - `additional_info`: 사용자가 입력한 추가정보 (자유 텍스트)
-- `tags` (carry-over): 원래 장르·주인공·주변인물 태그
+- `genre_tags`·`protagonist_tags`·`supporting_tags` (carry-over): 원래 장르·주인공·주변인물 태그
+- `lorebooks` (선택): 장르 공용 용어 사전 `{name, content}` 배열 — 세계관·용어 확장 재료로만 쓰고 원문을 출력 계약에 노출하지 않는다(KNK-422). 비거나 미전달이면 프롬프트에 주입하지 않는다
 
 > **컴파일 산출물 = "스토리 명세 JSON" (영속 대상).** 위 희소 입력을 컴파일한 결과는 **스토리당 1번** 만들어져 백엔드 DB에 저장되고, 이후 채팅 세션은 이 저장본을 읽어 슬롯을 채운다(템플릿 6개는 모든 스토리가 공유, 스토리별로 다른 것은 이 JSON뿐). 마냑 ERD에서의 영속 위치는 다음과 같다.
 >
@@ -192,9 +193,13 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 > | 프롬프트 재료 (STORY/CHARACTER/USER) | `story_settings` | 정적 레이어 슬롯의 소스 — 3.3 바인딩 |
 > | 노출 메타 | `stories` (`title`, `one_line_intro`, `description`, `genre`) | 목록·상세 노출 전용(`genre`만 `{{장르}}` 슬롯에도 치환). **프롬프트 레이어 아님** |
 > | 세션 시작 화면 / STORY 슬롯 | `story_start_settings` (`name`, `prologue`, `start_situation`) | 세 곳에 쓰인다 — ⓐ `name`=시작 설정 이름(UI 표시), ⓑ `prologue`·`start_situation`=첫 화면 도입 + 첫 턴 History 시드(3.4·4.2, 백엔드 담당), ⓒ 세 필드를 통글로 엮어 **STORY `{{start_setting}}` 슬롯**에 매 턴 고정 삽입(이 플레이의 출발점·전개 방향 전제, 3.3). 시드(ⓑ)는 직전 장면 연속성이라 10턴 윈도우 밖으로 밀려나지만 슬롯(ⓒ)은 세션 내내 유지된다. |
-> | 첫 입력 추천 | `story_suggested_inputs` (`input_text`, 최대 3) | UI 추천 문구. 레이어 아님 |
+> | 첫 입력 추천 | `story_suggested_inputs` (`input_text`, 정확히 3) | UI 추천 문구. 레이어 아님 |
+> | 주요 사건 | `story_main_events` (`name`·`description`·`key_sentence`, 3~5개) | 이야기의 갈림길. 컴파일 산출물이되 채팅엔 매 턴 **요청 재료**로 되실려 STORY 슬롯·판정에 쓰인다(2.8) |
+> | 엔딩 | `story_endings` (`name`·`min_turns`·`achievement_condition`·`epilogue`, 0 또는 3개) | 도달 후보. 백엔드가 최소 턴 수 충족분만 걸러 매 턴 요청에 싣는다(2.8) |
 >
 > **SSOT 주의**: `stories.description`(노출 상세 소개)과 `story_settings.world_setting`(STORY 재료)은 내용이 겹치기 쉽다. 프롬프트에는 `world_setting`만 쓰고 `description`은 노출 전용으로 분리한다(0절 원칙).
+>
+> **정본 주의**: 컴파일 입출력 계약의 상세(스키마·검증·재호출·폴백 규칙)는 `spec/story/2-COMPILE.md`가 정본이다. 본 절(3절)은 채팅 슬롯 재료 관점의 요약만 유지하며, 어긋나면 2-COMPILE이 우선한다.
 
 ### 3.2 레이어별 채우기 (하이브리드)
 
@@ -232,7 +237,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 >
 > SAFETY·CORE에는 대응하는 `story_settings` 필드가 없다(콘텐츠 비의존). MEMORY는 명세서가 아니라 런타임 대화로 채워진다(5절).
 
-#### STORY-PROMPT.md (정적 무대·연출)
+#### STORY-TEMPLATE.md (정적 무대·연출)
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
 | `{{장르}}` | 치환 | `stories.genre` (예외 경로 — 유일하게 원본에서 직접 치환) |
@@ -245,12 +250,12 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 > 위 사건·엔딩 슬롯 3종은 컴파일 산출물(`story_settings`)이 아니라 **매 턴 요청 재료**에서 채워진다(장르·시작 설정과 같은 예외 소스 계열). 상세는 2.8. 재료가 실리지 않는 현행 트래픽에서는 "(없음)"으로 치환돼 기존 동작과 동일하다(하위호환).
 
-#### CHARACTER-PROMPT.md (주변인물 통글 — **주요 인물 최대 5명**)
+#### CHARACTER-TEMPLATE.md (주변인물 통글 — **주요 인물 최대 5명**)
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
 | `{{character_setting}}` | 통글 삽입 | `character_setting` 통글(`# 등장인물` + 인물 1명당 `## 블록`; 성격·말투·동기·주인공에 대한 태도 포함, 최대 5명). NPC가 주인공을 대하는 태도는 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
 
-#### USER-PROMPT.md (주인공, 1인칭)
+#### USER-TEMPLATE.md (주인공, 1인칭)
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
 | `{{user_role_setting}}` | 통글 삽입 | `user_role_setting` 통글(`# 주인공` + 호칭·역할·배경·성격·입력 선호; 입력 선호는 비어 있을 수 있음) |
@@ -280,7 +285,9 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 | 시작 화면 (`story_start_settings`) | `name` | 시작 설정 이름 | AI 초안 + 사용자 확정 | ✅ `{{start_setting}}` 통글 + UI 표시 | STORY |
 | | `prologue` | 프롤로그 | AI 초안 + 사용자 확정 | ✅ `{{start_setting}}` 통글 + 첫 화면 도입 + **첫 턴 History 시드** | STORY |
 | | `start_situation` | 시작 상황 | AI 초안 + 사용자 확정 | ✅ `{{start_setting}}` 통글 + 첫 화면 도입 + **첫 턴 History 시드** | STORY |
-| 추천 입력 (`story_suggested_inputs`) | `input_text` | 추천 입력(최대 3) | AI | ❌ 추천 버튼 | — |
+| 추천 입력 (`story_suggested_inputs`) | `input_text` | 추천 입력(정확히 3) | AI | ❌ 추천 버튼 | — |
+| 주요 사건 (`story_main_events`) | `name`·`description`·`key_sentence` | 주요 사건(3~5개) | AI 컴파일 | ✅ 컴파일 시점엔 미유입 — 매 턴 요청 재료로 `{{main_events}}` 등 STORY 슬롯·판정에 유입(2.8) | STORY |
+| 엔딩 (`story_endings`) | `name`·`min_turns`·`achievement_condition`·`epilogue` | 엔딩(0 또는 3개) | AI 컴파일 | ✅ 컴파일 시점엔 미유입 — 매 턴 요청 재료로 `{{endings}}` 슬롯·판정에 유입(2.8) | STORY |
 
 **JSON 형태:**
 
@@ -323,11 +330,17 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
     "prologue": "...",
     "start_situation": "..."
   },
-  "suggested_inputs": ["...", "...", "..."]
+  "suggested_inputs": ["...", "...", "..."],   // 정확히 3개
+  "main_events": [                             // 주요 사건 3~5개 (런타임 요청 재료의 원천, 2.8)
+    { "name": "...", "description": "...", "key_sentence": "..." }
+  ],
+  "endings": [                                 // 정상 3개, 재호출로도 못 채우면 빈 배열 폴백(KNK-465)
+    { "name": "...", "min_turns": 3, "achievement_condition": "...", "epilogue": "..." }
+  ]
 }
 ```
 
-**채워진 예시 (다크 판타지):**
+**채워진 예시 (다크 판타지 — 주요 사건·엔딩은 생략, 형태는 위 스키마와 2-COMPILE §5-2 참조):**
 
 ```json
 {
@@ -390,7 +403,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 }
 ```
 
-> 위 세분 JSON은 컴파일 LLM의 **내부 표현**이다(예시는 인물 3명이지만 상한은 5명). `story_compile_render`가 이를 레이어별 **통글 마크다운**으로 합쳐 백엔드 계약(`StoryCompileResponse`)으로 변환한다 — `world_setting`←세계관+전제+갈등, `rule_setting`←전개규칙+문체톤+분량배분, `character_setting`←인물 카드(최대 5명) 반복, `user_role_setting`←주인공. `story_settings`에는 이 **통글 4필드만** 저장되며(세분 객체·별도 컬럼 없음), 매 턴 런타임 조립(B)이 각 통글을 대응 슬롯에 통째로 삽입한다(3.3).
+> 위 세분 JSON은 컴파일 LLM의 **내부 표현**이다(예시는 인물 3명이지만 상한은 5명). `story_compile_render`가 이를 레이어별 **통글 마크다운**으로 합쳐 백엔드 계약(`StoryCompileResponse`)으로 변환한다 — `world_setting`←세계관+전제+갈등, `rule_setting`←전개규칙+문체톤+분량배분, `character_setting`←인물 카드(최대 5명) 반복, `user_role_setting`←주인공. `story_settings`에는 이 **통글 4필드만** 저장되며(세분 객체·별도 컬럼 없음), 매 턴 런타임 조립(B)이 각 통글을 대응 슬롯에 통째로 삽입한다(3.3). 주요 사건·엔딩은 통글로 뭉치지 않고 **항목별 그대로** `story_main_events`·`story_endings`로 내려간다(2-COMPILE §5-3).
 
 ##### 세분 JSON → 백엔드 계약 (통글 4필드, `StoryCompileResponse`)
 
@@ -404,7 +417,13 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
     "rule_setting": "# 전개 규칙\n...\n\n# 문체 톤\n...\n\n# 분량 배분\n묘사 6 : 대사 4"
   },
   "story_start_settings": { "name": "...", "start_situation": "...", "prologue": "..." },
-  "story_suggested_inputs": ["...", "...", "..."]
+  "story_suggested_inputs": ["...", "...", "..."],
+  "story_main_events": [
+    { "name": "...", "description": "...", "key_sentence": "..." }
+  ],
+  "story_endings": [
+    { "name": "...", "min_turns": 3, "achievement_condition": "...", "epilogue": "..." }
+  ]
 }
 ```
 
@@ -457,9 +476,10 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
    + 사용자 입력 + 메모리 요약(summary). session_id 없음.
 2. 슬롯 치환: 통글·장르·시작 설정을 STORY/CHARACTER/USER 슬롯에 결정적 치환(LLM 없음)
 3. History 정규화: role 대문자(USER/ASSISTANT) → LLM 호출용 소문자(user/assistant) 변환, SYSTEM 제외
-   · 사용자 입력(*지문*/대사/선택지)은 변환 없이 user 턴으로 (2.5·2.6) — 백엔드가 history에 붙여 보냄
-4. MEMORY-PROMPT.md 양식에 받은 summary 렌더 → "[현재 상태]" 블록 (빈 문자열이면 빈 칸 그대로)
-5. 조립기: 시스템(앞) + History + Depth(현재 상태) + PHI 구성
+   · 사용자 입력(*지문*/대사/선택지)은 별도 필드(`user_input`)로 받아, 조립기가 변환 없이
+     History 뒤 마지막 user 턴으로 붙인다 (2.5·2.6)
+4. MEMORY-TEMPLATE.md 양식에 받은 summary 렌더 → "[현재 상태]" 블록 (빈 문자열이면 빈 칸 그대로)
+5. 조립기: 시스템(앞) + History + 사용자 입력(마지막 user 턴) + Depth(현재 상태) + PHI 구성
 6. 본문 호출: ChatProvider.complete(messages, stream=True) → 본문 스트림(상황 묘사 + 대사만, 선택지 없음, 2.5)
 7. 본문 완료 후 두 호출을 **병렬 실행**(asyncio.gather):
    · 선택지 호출: CHOICES 프롬프트로 별도 LLM 호출(비스트리밍 JSON) → 다음 행동 3개.
@@ -487,12 +507,12 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 | 구분 | 정체 | 어디에 사는가 | 정적/동적 |
 |---|---|---|---|
-| **① MEMORY-PROMPT.md** | 상태를 **어떤 포맷으로 적고**, **무엇만 기록하며**(Actuality+State), LLM이 주입된 상태를 **어떻게 읽을지**의 규칙·스키마·렌더 양식 | 리포 `prompt/chat/` | **정적** (커밋됨) |
+| **① MEMORY-TEMPLATE.md** | 상태를 **어떤 포맷으로 적고**, **무엇만 기록하며**(Actuality+State), LLM이 주입된 상태를 **어떻게 읽을지**의 규칙·스키마·렌더 양식 | 리포 `prompt/chat/` | **정적** (커밋됨) |
 | **② 런타임 상태 데이터(summary)** | 대화 맥락 요약·배경 정보 압축본 | **백엔드**(매 턴 request의 `summary`로 전달; 영속은 백엔드 DB) | **동적** (채팅별) |
 | **③ History** | 원본 대화 트랜스크립트 | **백엔드 DB**(매 턴 messages 배열로 전달) | 누적 |
 
 핵심 규칙:
-- **① MEMORY-PROMPT.md는 채팅 맥락을 저장하지 않는다.** "어떻게 저장·관리할지를 정의"하는 **정적 계약서**다.
+- **① MEMORY-TEMPLATE.md는 채팅 맥락을 저장하지 않는다.** "어떻게 저장·관리할지를 정의"하는 **정적 계약서**다.
 - **② 실제 상태(summary)는 AI가 보관하지 않는다.** AI는 무상태이므로, 매 턴 백엔드가 보낸 `summary`를 받아 Depth에 삽입할 뿐이다(빈 문자열이면 빈 칸). 채팅별 summary의 영속은 백엔드 DB가 소유한다.
 - **MEMORY는 History의 파생 요약**이다. ([1-PROMPT-LAYER.md:204]) **요약 생성은 백엔드가 수행하는 별개 기능(Phase 4)**이며, AI는 그 결과(summary)를 **참조만** 한다 — 참조(매 턴, 지금)와 생성(Phase 4, 백엔드)을 섞지 않는다.
 - **③ History 원본의 영속 저장도 백엔드 DB가 소유**한다. AI 서버는 History도 summary도 보관하지 않으며 매 턴 둘 다 request로 받는다(채팅 이어가기는 백엔드 DB의 History·summary 복원으로 이뤄진다).
@@ -508,7 +528,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 ```
 > 채팅 턴 API에서 `summary`는 **문자열 한 칸**이다(`ChatTurnRequest.summary: str`). 위 JSON은 향후 스탯이 생길 때를 대비한 상태 스키마 표현이며, 현 MVP는 요약 텍스트 한 줄만 받는다.
 
-**Depth 주입 렌더 양식 (`MEMORY-PROMPT.md`가 정의):**
+**Depth 주입 렌더 양식 (`MEMORY-TEMPLATE.md`가 정의):**
 ```text
 [현재 상태]
 {{summary}}
@@ -549,10 +569,10 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 **Phase 0 — 설계 확정 (완료)**: 2절의 4가지 결정.
 
 **Phase 1 — 정적 레이어 템플릿 작성**
-1. `SAFETY-PROMPT.md` — 콘텐츠 비의존 가드레일 (슬롯 없음)
-2. `CORE-PROMPT.md` — 출력 형식·표기·길이 봉투 (슬롯 없음)
-3. `MEMORY-PROMPT.md` — 상태 스키마 + 기록 규칙 + 렌더 양식 (5절 ①)
-4. `STORY` / `CHARACTER` / `USER-PROMPT.md` — **통글 슬롯 포함 템플릿**으로
+1. `SAFETY-TEMPLATE.md` — 콘텐츠 비의존 가드레일 (슬롯 없음)
+2. `CORE-TEMPLATE.md` — 출력 형식·표기·길이 봉투 (슬롯 없음)
+3. `MEMORY-TEMPLATE.md` — 상태 스키마 + 기록 규칙 + 렌더 양식 (5절 ①)
+4. `STORY` / `CHARACTER` / `USER-TEMPLATE.md` — **통글 슬롯 포함 템플릿**으로
    - STORY는 `{{world_setting}}`·`{{start_setting}}`·`{{rule_setting}}`(+`{{장르}}`), CHARACTER는 `{{character_setting}}`, USER는 `{{user_role_setting}}` 통글 슬롯으로 작성한다(3.3 확정). 전개규칙/문체톤/분량배분, 세계관/전제/갈등은 각 통글 내부 헤더로 구분된다. `{{start_setting}}`은 `story_start_settings`에서 엮은 예외 소스 슬롯이다(장르처럼 `story_settings` 밖).
 
 **Phase 2 — 스토리 컴파일 파이프라인 (시점 A-1)** (3절)
