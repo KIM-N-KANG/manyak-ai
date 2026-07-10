@@ -13,6 +13,7 @@
 
 import logging
 import re
+import time
 from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI, OpenAIError
@@ -69,6 +70,7 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
     model: str | None = None               # 응답이 돌려준 실제 모델(로깅 메타)
     input_tokens: int | None = None        # usage 청크에서 취득(없으면 None)
     output_tokens: int | None = None
+    start = time.monotonic()
 
     try:
         stream = await _client.chat.completions.create(
@@ -114,6 +116,8 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
             feature=FEATURE_CHAT_RESPONSE,
             model=settings.deepseek_chat_model,
             prompt_versions=LAYER_VERSIONS,
+            retry_count=0,  # 본문은 재호출 없음
+            latency_ms=int((time.monotonic() - start) * 1000),
         )
         # 내부 상세(str(e))는 Sentry·로그로만 남기고 클라이언트엔 정제 메시지를 보낸다(AN-4-10).
         yield {

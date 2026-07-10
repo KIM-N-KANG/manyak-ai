@@ -16,6 +16,7 @@
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -184,6 +185,7 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
     if not req.main_events and not req.endings:
         return _EMPTY  # 현행 트래픽(재료 없음) — 비용·지연 0
 
+    start = time.monotonic()
     try:
         response = await _client.chat.completions.create(
             model=settings.deepseek_chat_model,
@@ -217,5 +219,7 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
             feature=FEATURE_CHAT_RESPONSE,
             model=settings.deepseek_chat_model,
             prompt_versions={"JUDGEMENT": JUDGEMENT_VERSION},
+            retry_count=0,  # 단일 호출 — 재호출 없음(D12)
+            latency_ms=int((time.monotonic() - start) * 1000),
         )
         return _EMPTY
