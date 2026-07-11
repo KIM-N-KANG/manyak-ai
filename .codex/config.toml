@@ -1,3 +1,7 @@
+# 클라우드 PR 리뷰가 이 레포 설정을 읽을 경우 리뷰 모델(팀 기본). 로컬 개인 설정(~/.codex)이 이를 덮을 수 있음 — 실측으로 확인.
+[model]
+review_model = "gpt-5.5"
+
 [mcp_servers.atlassian-jira]
 command = "/bin/bash"
 args = [
