@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from src.schemas.story_compile import LorebookItem
 from src.services.prompt_meta import read_version
 
 _PROMPT_DIR = Path(__file__).parent.parent.parent / "prompt" / "story"
@@ -40,12 +41,21 @@ def build_storylines_prompt(
     return _STORYLINES_SYSTEM, user_text
 
 
+def _format_lorebooks(lorebooks: list[LorebookItem]) -> str:
+    """로어북을 프롬프트 블록으로 만든다. 비어 있으면 `(없음)`(추가정보와 동일 관례)."""
+    if not lorebooks:
+        return "(없음)"
+    # 이름·내용 앞뒤 공백·개행을 털어 ### 헤더·문단이 항상 깔끔히 렌더되게 한다.
+    return "\n\n".join(f"### {lb.name.strip()}\n{lb.content.strip()}" for lb in lorebooks)
+
+
 def build_compile_prompt(
     selected_storyline: str,
     additional_info: str,
     genre_tags: list[str],
     protagonist_tags: list[str],
     supporting_tags: list[str],
+    lorebooks: list[LorebookItem] | None = None,
 ) -> tuple[str, str]:
     """스토리 컴파일(시점 A-1)용 프롬프트를 완성한다."""
     user_text = (
@@ -55,6 +65,7 @@ def build_compile_prompt(
         .replace("{{장르_태그}}", ", ".join(genre_tags))
         .replace("{{주인공_특징_태그}}", ", ".join(protagonist_tags))
         .replace("{{주변_인물_태그}}", ", ".join(supporting_tags))
+        .replace("{{로어북}}", _format_lorebooks(lorebooks or []))
     )
     return _COMPILE_SYSTEM, user_text
 

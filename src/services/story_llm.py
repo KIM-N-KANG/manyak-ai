@@ -20,7 +20,7 @@ from src.core.sentry import (
     classify_error_code,
 )
 from src.schemas.response_meta import StoryResponseMeta
-from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse, StorySpec
+from src.schemas.story_compile import Ending, StoryCompileRequest, StoryCompileResponse, StorySpec
 from src.services.prompt import (
     COMPILE_VERSION,
     STORYLINES_VERSION,
@@ -225,6 +225,25 @@ def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _is_valid_min_turns(value: object) -> bool:
+    """min_turns가 하한(1) 이상 정수로 해석되는지 — Ending(ge=1) 강제와 맞춰,
+    0·음수·비정수를 재호출 대상으로 잡아 502 대신 폴백으로 흐르게 한다(KNK-465)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value >= 1
+    if isinstance(value, float):
+        return value.is_integer() and value >= 1
+    if isinstance(value, str):
+        # int()로 직접 해석한다 — isdigit()은 '²'·'①' 등 int()가 못 바꾸는 유니코드 숫자에도
+        # True를 줘서, 검사 도중 ValueError가 새어 나가면 폴백이 아니라 500이 된다(Gemini 리뷰).
+        try:
+            return int(value.strip()) >= 1
+        except ValueError:
+            return False
+    return False
+
+
 def _find_missing_keys(data: dict) -> list[str]:
     """비어 있는 필수 필드의 경로 목록을 반환한다(빈 목록이면 통과).
 
@@ -276,6 +295,30 @@ def _find_missing_keys(data: dict) -> list[str]:
             if _is_empty(s):
                 missing.append(f"suggested_inputs[{i}]")
 
+    events = data.get("main_events")
+    if not isinstance(events, list) or not (3 <= len(events) <= 5):  # 3~5개 필수
+        missing.append("main_events")
+    else:
+        for i, raw in enumerate(events):
+            ev = _as_dict(raw)
+            for k in ("name", "description", "key_sentence"):
+                if _is_empty(ev.get(k)):
+                    missing.append(f"main_events[{i}].{k}")
+
+    endings = data.get("endings")
+    # 엔딩은 정상 3개를 목표로 재호출을 유도한다. 3개가 아니거나 빈 필드·하한 미달(0·음수)·비정수 min_turns면 누락.
+    # (재호출 후에도 못 채우면 compile_story가 502가 아니라 빈 배열로 폴백한다 — KNK-465.)
+    if not isinstance(endings, list) or len(endings) != 3:
+        missing.append("endings")
+    else:
+        for i, raw in enumerate(endings):
+            en = _as_dict(raw)
+            for k in ("name", "achievement_condition", "epilogue"):
+                if _is_empty(en.get(k)):
+                    missing.append(f"endings[{i}].{k}")
+            if not _is_valid_min_turns(en.get("min_turns")):
+                missing.append(f"endings[{i}].min_turns")
+
     return missing
 
 
@@ -287,6 +330,10 @@ def _block_of(path: str) -> str:
         return "start"
     if path.startswith("suggested_inputs"):
         return "suggested_inputs"
+    if path.startswith("main_events"):
+        return "main_events"
+    if path.startswith("endings"):
+        return "endings"
     if path.startswith("prompt_settings."):
         rest = path[len("prompt_settings."):]
         return rest.split(".")[0].split("[")[0]
@@ -304,21 +351,39 @@ def _merge_blocks(data: dict, refill: dict, blocks: list[str]) -> None:
             if not isinstance(data.get("prompt_settings"), dict):
                 data["prompt_settings"] = {}
             data["prompt_settings"][b] = refill[b]
-        else:  # meta / start / suggested_inputs (top-level)
+        else:  # meta / start / suggested_inputs / main_events / endings (top-level)
             data[b] = refill[b]
 
 
 def _inject_genre(data: dict, genre_tags: list[str]) -> None:
-    """genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 덮어쓴다(3.3·3.4)."""
+    """genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 덮어쓴다(spec/story/2-COMPILE.md §4-3)."""
     if isinstance(data.get("meta"), dict):
         data["meta"]["genre"] = ", ".join(genre_tags)
+
+
+def _endings_incomplete(data: dict) -> bool:
+    """엔딩이 '파싱 가능한 정확히 3개'가 아니면 True(폴백 대상).
+
+    _find_missing_keys는 재호출 유도용 얕은 검사라, 타입 오류(min_turns 비정수 등)까지
+    한 번에 걸러 502를 막으려면 실제 Ending 파싱을 시도해 최종 판정한다(KNK-465).
+    """
+    endings = data.get("endings")
+    if not isinstance(endings, list) or len(endings) != 3:
+        return True
+    try:
+        for raw in endings:
+            Ending(**_as_dict(raw))
+    except (TypeError, ValueError):
+        return True
+    return False
 
 
 async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     """시점 A-1: 희소 입력을 스토리 명세로 컴파일해 백엔드 계약(nested 통글)으로 반환한다.
 
     흐름: LLM 세분 JSON → genre 주입 → 빈 필수키 검증 → 빈 블록만 부분 재호출(최대 2회)
-    → StorySpec 파싱 → nested 통글 변환. PromptCompiler 추상 경계(6절). HTTP 노출은 KNK-78.
+    → 엔딩 미완성 시 빈 배열 폴백(KNK-465) → StorySpec 파싱 → nested 통글 변환.
+    PromptCompiler 추상 경계는 spec/chat/4-SERVICE-IMPLEMENTATION.md §6.
     """
     system_prompt, user_prompt = build_compile_prompt(
         request.selected_storyline,
@@ -326,6 +391,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         request.genre_tags,
         request.protagonist_tags,
         request.supporting_tags,
+        request.lorebooks,
     )
     data, usage = await _complete_json(
         system_prompt,
@@ -371,6 +437,15 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         attempts,
         missing or "없음",
     )
+
+    # 엔딩은 soft 블록(KNK-465): 엔딩 사유로는 502를 내지 않는다. 최종 판정은 _endings_incomplete가
+    # 단독으로 하므로, missing에서 endings 경로를 항상 걷어내고(그래야 _find_missing_keys의 얕은 검사가
+    # Pydantic 강제와 어긋나도 엉뚱한 502가 나지 않는다), 파싱 가능한 3개가 아니면 빈 배열로 폴백해 200을
+    # 반환한다 — 스토리 본체·주요 사건은 살린다(선택지 폴백과 같은 원칙).
+    missing = [p for p in missing if _block_of(p) != "endings"]
+    if _endings_incomplete(data):
+        logger.info("compile 엔딩 폴백: 재호출 후에도 엔딩 미완성 → 빈 배열([])로 반환")
+        data["endings"] = []
 
     if missing:
         exc = _InvalidAiResponse(f"재호출 후에도 필수 필드 누락: {missing}")

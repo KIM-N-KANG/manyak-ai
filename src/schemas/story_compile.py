@@ -1,6 +1,16 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.schemas.response_meta import StoryResponseMeta
+
+
+class LorebookItem(BaseModel):
+    """장르 공용 용어 사전 한 항목 — 백엔드가 스토리 장르로 선별해 전달(§5-3-3).
+
+    세계관·용어 확장의 재료로만 쓰고, 원문을 출력 계약에 그대로 노출하지 않는다.
+    """
+
+    name: str
+    content: str
 
 
 class StoryCompileRequest(BaseModel):
@@ -14,6 +24,9 @@ class StoryCompileRequest(BaseModel):
     genre_tags: list[str]
     protagonist_tags: list[str]
     supporting_tags: list[str]
+    # 장르 공용 로어북(선택) — 미전달·빈 배열·null이면 프롬프트 미주입, 기존 요청과 하위호환(KNK-422).
+    # 명시적 null도 "없음"으로 받도록 | None 허용(빌더는 `lorebooks or []`로 안전 처리).
+    lorebooks: list[LorebookItem] | None = Field(default_factory=list)
 
 
 class Meta(BaseModel):
@@ -73,16 +86,47 @@ class Start(BaseModel):
     start_situation: str
 
 
+class MainEvent(BaseModel):
+    """주요 사건 — 이야기의 갈림길. key_sentence는 사용자 입력이 이 사건과 연결되는지 판단하는 기준."""
+
+    name: str
+    description: str
+    key_sentence: str
+
+
+class Ending(BaseModel):
+    """엔딩 정의. 본문이 아니라 도달 시 생성될 에필로그의 이름·최소 턴·달성 조건·연출 방향.
+
+    유형(해피/노말/배드)은 생성용 내부 기준일 뿐 계약엔 없고, 엔딩은 name으로 식별한다(KNK-465).
+    """
+
+    name: str
+    min_turns: int = Field(ge=1)  # 최소 턴 문턱 — 0·음수면 첫 턴 도달이 가능해져 계약 위반(KNK-465)
+    achievement_condition: str
+    epilogue: str
+
+
 class StorySpec(BaseModel):
     """스토리 컴파일(시점 A-1)의 영속 산출물 — 스토리 명세 JSON(MVP 확정본).
 
-    reference/chat/4-SERVICE-IMPLEMENTATION.md 3.4 스키마와 1:1 대응.
+    spec/story/2-COMPILE.md §5-2(내부 세분 스키마)와 1:1 대응.
     """
 
     meta: Meta
     prompt_settings: PromptSettings
     start: Start
     suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+    # 주요 사건 3~5개를 결속 생성. 엔딩은 정상 3개이되, 재호출 후에도 못 채우면 빈 배열 폴백(KNK-465).
+    main_events: list[MainEvent] = Field(min_length=3, max_length=5)
+    endings: list[Ending] = Field(default_factory=list)
+
+    @field_validator("endings")
+    @classmethod
+    def _zero_or_three(cls, v: list[Ending]) -> list[Ending]:
+        """엔딩은 0개(폴백) 또는 정확히 3개다 — 그 사이 개수는 계약 위반."""
+        if len(v) not in (0, 3):
+            raise ValueError("endings must be empty (fallback) or exactly 3")
+        return v
 
 
 # ── 컴파일 API output (백엔드 계약) ─────────────────────────────────────────
@@ -115,11 +159,30 @@ class StoryStartSettingsOut(BaseModel):
     prologue: str
 
 
+class StoryMainEventOut(BaseModel):
+    """주요 사건(story_main_events 테이블) — 항목별 이산 필드로 전달(통글 아님). 배열 순서=명목 순서(비강제)."""
+
+    name: str
+    description: str
+    key_sentence: str
+
+
+class StoryEndingOut(BaseModel):
+    """엔딩(story_endings 테이블) — 이름 기반 계약. 백엔드가 칸별로 저장한다(KNK-465)."""
+
+    name: str
+    min_turns: int = Field(ge=1)  # 최소 턴 문턱 하한(KNK-465)
+    achievement_condition: str
+    epilogue: str
+
+
 class StoryCompileResponse(BaseModel):
-    """컴파일 API output — ERD 4테이블에 1:1 대응하는 nested 계약본."""
+    """컴파일 API output — ERD 테이블에 1:1 대응하는 nested 계약본."""
 
     stories: StoriesOut
     story_settings: StorySettingsOut
     story_start_settings: StoryStartSettingsOut
     story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
+    story_main_events: list[StoryMainEventOut] = Field(min_length=3, max_length=5)  # 주요 사건 3~5개(KNK-417)
+    story_endings: list[StoryEndingOut] = Field(default_factory=list)  # 0개(폴백) 또는 3개(KNK-465)
     meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). compile_story가 항상 채운다.

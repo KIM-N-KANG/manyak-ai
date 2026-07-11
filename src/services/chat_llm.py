@@ -1,6 +1,6 @@
 """채팅 본문 LLM 통로(ChatProvider) — 스트리밍 호출 (시점 B).
 
-`assemble()`가 만든 messages를 Upstage/DeepSeek(OpenAI 호환) `stream=True`로 호출하고,
+`assemble()`가 만든 messages를 DeepSeek(OpenAI 호환) `stream=True`로 호출하고,
 토큰을 실시간으로 흘린다. 본문은 상황 묘사 + 인물 대사만 만든다 — **다음 행동 선택지는
 이 호출이 만들지 않으며**, 본문 스트림이 끝난 뒤 별도 호출(`chat_choices`)이 전담한다
 (그래서 `[다음 행동]` 마커 파싱·버퍼링이 사라졌다).
@@ -13,6 +13,7 @@
 
 import logging
 import re
+import time
 from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI, OpenAIError
@@ -69,6 +70,7 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
     model: str | None = None               # 응답이 돌려준 실제 모델(로깅 메타)
     input_tokens: int | None = None        # usage 청크에서 취득(없으면 None)
     output_tokens: int | None = None
+    start = time.monotonic()
 
     try:
         stream = await _client.chat.completions.create(
@@ -114,6 +116,8 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
             feature=FEATURE_CHAT_RESPONSE,
             model=settings.deepseek_chat_model,
             prompt_versions=LAYER_VERSIONS,
+            retry_count=0,  # 본문은 재호출 없음
+            latency_ms=int((time.monotonic() - start) * 1000),
         )
         # 내부 상세(str(e))는 Sentry·로그로만 남기고 클라이언트엔 정제 메시지를 보낸다(AN-4-10).
         yield {

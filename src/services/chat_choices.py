@@ -17,6 +17,7 @@ COMPILE 템플릿과 같은 위상).
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from openai import AsyncOpenAI, OpenAIError
 from src.core.config import settings
 from src.core.sentry import FEATURE_CHOICE_GENERATION, capture_ai_exception
 from src.schemas.chat_turn import ChatTurnRequest
+from src.services.chat_assembler import format_main_events, format_target_main_event
 from src.services.prompt_meta import read_version
 
 logger = logging.getLogger(__name__)
@@ -112,7 +114,12 @@ def _format_history(req: ChatTurnRequest) -> str:
 
 
 def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
-    """[USER] 블록의 자리표시자를 요청 재료 + 방금 생성된 본문으로 치환한다."""
+    """[USER] 블록의 자리표시자를 요청 재료 + 방금 생성된 본문으로 치환한다.
+
+    사건 재료 3종(KNK-485, §5-3-5 — 주요 사건·목표 사건·거쳐온 사건)은 선택지
+    3구성(목표 1 + 미향 1 + 맥락 1)의 재료다. 재료가 비면 "(없음)"으로 치환된다
+    (하위호환).
+    """
     ss = req.story_settings
     repl = {
         "{{장르}}": req.genre,
@@ -124,6 +131,12 @@ def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
         "{{history}}": _format_history(req) or "(없음)",
         "{{user_input}}": req.user_input,
         "{{ai_output}}": ai_output,
+        "{{main_events}}": format_main_events(req.main_events),
+        "{{target_main_event}}": format_target_main_event(req.target_main_event),
+        "{{occurred_main_event_names}}": "\n".join(
+            f"- {n}" for n in req.occurred_main_event_names
+        )
+        or "(없음)",
     }
     text = _USER_TEMPLATE
     for k, v in repl.items():
@@ -198,19 +211,24 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
     while True:
         need = _CHOICES_COUNT - len(collected)
         user = base_user if attempt == 0 else base_user + _refill_suffix(collected, need)
+        t0 = time.monotonic()  # 이번 시도의 소요 시간 — 실패 캡처의 latency_ms 재료
         try:
             raw, model, in_tok, out_tok = await _call(_SYSTEM, user)
             input_tokens = _add_tokens(input_tokens, in_tok)
             output_tokens = _add_tokens(output_tokens, out_tok)
             _accumulate(collected, seen, raw)
-        except (OpenAIError, json.JSONDecodeError, ValueError) as e:
+        except (OpenAIError, json.JSONDecodeError, ValueError, IndexError, AttributeError) as e:
             # 한 번의 호출이 터져도 턴을 깨지 않는다 — Sentry로만 보고하고 다음 시도/폴백으로 간다.
+            # IndexError(빈 choices)·AttributeError(message=None)도 흡수한다(F2 — 판정과 대칭,
+            # 같은 asyncio.gather라 어느 쪽 예외든 completed 없이 턴을 깨뜨릴 수 있음).
             logger.warning("선택지 호출 실패(시도 %d): %s", attempt, e)
             capture_ai_exception(
                 e,
                 feature=FEATURE_CHOICE_GENERATION,
                 model=settings.deepseek_chat_model,
                 prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
+                retry_count=attempt,  # 0=첫 호출, 1·2=재호출
+                latency_ms=int((time.monotonic() - t0) * 1000),
             )
         if len(collected) >= _CHOICES_COUNT or attempt >= _MAX_REFILL:
             break

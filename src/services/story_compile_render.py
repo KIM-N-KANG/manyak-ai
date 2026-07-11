@@ -10,6 +10,8 @@ from src.schemas.story_compile import (
     PromptSettings,
     StoriesOut,
     StoryCompileResponse,
+    StoryEndingOut,
+    StoryMainEventOut,
     StorySettingsOut,
     StorySpec,
     StoryStartSettingsOut,
@@ -83,4 +85,21 @@ def spec_to_response(spec: StorySpec) -> StoryCompileResponse:
             prologue=spec.start.prologue,
         ),
         story_suggested_inputs=spec.suggested_inputs,
+        story_main_events=[
+            StoryMainEventOut(
+                name=ev.name,
+                description=ev.description,
+                key_sentence=ev.key_sentence,
+            )
+            for ev in spec.main_events
+        ],
+        story_endings=[
+            StoryEndingOut(
+                name=e.name,
+                min_turns=e.min_turns,
+                achievement_condition=e.achievement_condition,
+                epilogue=e.epilogue,
+            )
+            for e in spec.endings
+        ],
     )

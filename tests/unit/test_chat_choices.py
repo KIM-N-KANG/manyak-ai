@@ -118,6 +118,16 @@ async def test_total_failure_absorbed_to_fallback(monkeypatch) -> None:
     assert res.input_tokens is None and res.output_tokens is None  # 성공한 호출 없음
 
 
+async def test_failure_capture_carries_latency_and_retry(monkeypatch) -> None:
+    # AN-4-8 — 실패 캡처마다 그 시도의 retry_count와 latency_ms가 실린다(KNK-529).
+    calls: list = []
+    monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda *a, **k: calls.append(k))
+    _mock_calls(monkeypatch, [OpenAIError("boom")])
+    await generate_choices(_request(), "*장면*")
+    assert [c["retry_count"] for c in calls] == [0, 1, 2]  # 첫 호출 + 재호출 2회 전부 캡처
+    assert all(isinstance(c["latency_ms"], int) and c["latency_ms"] >= 0 for c in calls)
+
+
 async def test_truncates_when_too_many(monkeypatch) -> None:
     _mock_calls(monkeypatch, ['{"choices": ["a", "b", "c", "d", "e"]}'])
     res = await generate_choices(_request(), "*장면*")
@@ -139,3 +149,24 @@ async def test_bad_json_then_fallback(monkeypatch) -> None:
     res = await generate_choices(_request(), "*장면*")
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2
+
+
+# ── 사건 재료 치환 (KNK-485, §5-3-5 선택지 3구성 재료) ──────────────────────
+def test_build_user_replaces_event_material_slots() -> None:
+    from src.schemas.chat_turn import MainEvent, TargetMainEvent
+
+    req = _request().model_copy(
+        update={
+            "main_events": [
+                MainEvent(name="반란의 서막", description="귀족 연합.", key_sentence="증거를 손에 넣는다.")
+            ],
+            "target_main_event": TargetMainEvent(name="반란의 서막", progress_turns=1),
+            "occurred_main_event_names": ["선왕의 죽음"],
+        }
+    )
+    # 템플릿에 슬롯이 아직 없어도 치환 맵 자체는 재료를 만들어야 한다(무해한 no-op).
+    user = chat_choices._build_user(req, "*장면*")
+    template_has_slots = "{{main_events}}" in chat_choices._USER_TEMPLATE
+    if template_has_slots:
+        assert "반란의 서막" in user and "- 선왕의 죽음" in user
+    assert "{{main_events}}" not in user  # 미치환 슬롯이 남지 않는다

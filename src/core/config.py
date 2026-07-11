@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-pro"  # 스토리 컴파일용(pro)
-    # 채팅 턴·선택지·스토리라인 생성 공용 fast 모델(KNK-215). 이름의 chat은 역사적 표기다.
+    # 채팅 턴·선택지·판정·스토리라인 생성 공용 fast 모델(KNK-215). 이름의 chat은 역사적 표기다.
     # env var(DEEPSEEK_CHAT_MODEL)는 manyak-infra와 묶인 계약이라 필드 rename은 별도 과제.
     deepseek_chat_model: str = "deepseek-v4-flash"
     # 로깅 메타 provider. 모델은 응답(response.model)에서 읽지만 provider는 응답에 없어

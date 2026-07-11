@@ -132,3 +132,36 @@ def test_empty_history_only_user_input() -> None:
     # [시스템 앞] → user_input → [Depth] → [PHI] = 4개
     assert len(messages) == 4
     assert messages[1] == {"role": "user", "content": "시작"}
+
+
+# ── 사건·엔딩 슬롯 재료 (KNK-485) ───────────────────────────────────────────
+def test_slot_map_event_materials_empty_defaults() -> None:
+    """재료 없는 요청(현행 트래픽)은 사건·엔딩 슬롯이 '(없음)' 문구다."""
+    slots = chat_assembler._slot_map(_request())
+    assert slots["{{main_events}}"] == "(없음)"
+    assert slots["{{target_main_event}}"] == "(없음)"
+    assert slots["{{endings}}"] == "(없음)"
+
+
+def test_slot_map_event_materials_formatted() -> None:
+    from src.schemas.chat_turn import EndingCandidate, MainEvent, TargetMainEvent
+
+    req = _request()
+    req = req.model_copy(
+        update={
+            "main_events": [
+                MainEvent(name="반란의 서막", description="귀족 연합.", key_sentence="증거를 손에 넣는다.")
+            ],
+            "target_main_event": TargetMainEvent(name="반란의 서막", progress_turns=2),
+            "endings": [
+                EndingCandidate(
+                    name="왕좌를 되찾다", achievement_condition="왕좌를 되찾는다.", epilogue="대관식."
+                )
+            ],
+        }
+    )
+    slots = chat_assembler._slot_map(req)
+    assert "반란의 서막" in slots["{{main_events}}"] and "증거를 손에 넣는다." in slots["{{main_events}}"]
+    assert slots["{{target_main_event}}"] == "이름: 반란의 서막 (진행 2턴)"
+    # STORY 슬롯 엔딩은 본문이 엔딩 응답을 생성해야 하므로 에필로그 가이드까지 포함한다.
+    assert "달성 조건" in slots["{{endings}}"] and "에필로그 가이드: 대관식." in slots["{{endings}}"]

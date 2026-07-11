@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from src.schemas.story_compile import (
+    LorebookItem,
     StoryCompileRequest,
     StoryCompileResponse,
     StorySpec,
@@ -58,6 +59,37 @@ def test_five_characters_allowed() -> None:
     assert len(spec.prompt_settings.character_setting) == 5
 
 
+# ── 로어북 (KNK-422) ─────────────────────────────────────────────────────────
+def test_lorebooks_default_empty_backward_compatible() -> None:
+    # 로어북을 안 보내는 기존 요청은 그대로 통과하고 기본값은 빈 배열(하위호환).
+    assert _request().lorebooks == []
+
+
+def test_lorebooks_parse_when_provided() -> None:
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=[{"name": "내공", "content": "기를 단전에 쌓아 다스리는 힘."}],
+    )
+    assert len(req.lorebooks) == 1
+    assert req.lorebooks[0].name == "내공"
+    assert req.lorebooks[0].content
+
+
+def test_lorebooks_explicit_null_accepted() -> None:
+    # 명시적 null도 "없음"으로 받아 요청 전체가 실패하지 않는다(Gemini 리뷰 — 미전달과 동치).
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=None,
+    )
+    assert req.lorebooks is None
+
+
 # ── 프롬프트 ────────────────────────────────────────────────────────────────
 def test_strip_code_fence() -> None:
     fenced = '```json\n{"a": 1}\n```'
@@ -86,6 +118,60 @@ def test_build_compile_prompt_empty_additional_info() -> None:
     _, user = build_compile_prompt("라인", "", ["판타지"], ["용감한"], ["거친"])
     assert "{{" not in user
     assert "(없음)" in user
+
+
+def test_build_compile_prompt_injects_lorebooks() -> None:
+    # 로어북이 있으면 {{로어북}} 슬롯에 이름·내용이 실려 프롬프트에 들어간다.
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘.")],
+    )
+    assert "{{" not in user
+    assert "내공" in user
+    assert "기를 단전에 쌓아 다스리는 힘." in user
+
+
+def test_build_compile_prompt_multiple_lorebooks() -> None:
+    # 로어북이 여러 개면 각 항목이 ### 헤더 블록으로 실린다(bullet 인라인 아님).
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [
+            LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘."),
+            LorebookItem(name="외공", content="몸을 단련해 얻는 힘."),
+        ],
+    )
+    assert "### 내공" in user
+    assert "### 외공" in user
+    assert "기를 단전에 쌓아 다스리는 힘." in user
+    assert "몸을 단련해 얻는 힘." in user
+
+
+def test_build_compile_prompt_strips_lorebook_whitespace() -> None:
+    # 이름·내용 앞뒤 공백·개행이 있어도 ### 헤더·문단이 깔끔히 렌더된다(Gemini 리뷰).
+    _, user = build_compile_prompt(
+        "라인", "정보", ["무협"], ["신중한"], ["거친"],
+        [LorebookItem(name="  내공\n", content="\n기를 단전에 쌓는 힘.  ")],
+    )
+    # 앞뒤 공백·개행이 제거돼 헤더·내용이 한 줄씩 붙는다(여분 공백·빈 줄 없음).
+    assert "### 내공\n기를 단전에 쌓는 힘." in user
+
+
+def test_build_compile_prompt_null_lorebooks_slot() -> None:
+    # lorebooks=None(명시적 null)도 (없음)으로 채워져 빈 배열·미전달과 동일하다.
+    _, user = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"], None)
+    assert "{{" not in user
+    assert "참고 로어북(장르 용어 사전):" in user
+    assert "(없음)" in user
+
+
+def test_build_compile_prompt_empty_lorebooks_slot() -> None:
+    # 로어북 미전달·빈 배열이면 {{로어북}} 슬롯이 (없음)으로 채워지고(미주입), 두 경로가 동일하다.
+    _, user_none = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"])
+    _, user_empty = build_compile_prompt("라인", "정보", ["무협"], ["신중한"], ["거친"], [])
+    assert "{{" not in user_none
+    assert "참고 로어북(장르 용어 사전):" in user_none  # 하단 별도 블록 라벨
+    assert "(없음)" in user_none  # 슬롯이 비주입 마커로 치환됨
+    assert user_none == user_empty
 
 
 # ── genre 주입 ──────────────────────────────────────────────────────────────
@@ -190,6 +276,31 @@ async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyP
     assert res.meta.retry_count == 0
 
 
+async def test_compile_story_forwards_lorebooks_to_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # compile_story가 request.lorebooks를 실제 프롬프트에 실어 보내는지 배선을 고정한다.
+    # (build_compile_prompt 인자에서 request.lorebooks를 지우면 이 테스트가 깨진다 — 회귀 방지.)
+    captured: dict[str, str] = {}
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        captured["user"] = user
+        return _load("spec_valid.json"), story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    req = StoryCompileRequest(
+        selected_storyline="x",
+        genre_tags=["무협"],
+        protagonist_tags=["신중한"],
+        supporting_tags=["거친"],
+        lorebooks=[LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘.")],
+    )
+    await story_llm.compile_story(req)
+    assert "내공" in captured["user"]
+    assert "기를 단전에 쌓아 다스리는 힘." in captured["user"]
+
+
 async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
@@ -257,3 +368,219 @@ async def test_compile_story_schema_failure_captures(monkeypatch: pytest.MonkeyP
     assert exc.value.status_code == 502
     assert len(calls) == 1
     assert calls[0]["error_code"] == "schema_validation_failed"
+
+
+# ── 엔딩·주요 사건 (KNK-417) ─────────────────────────────────────────────────
+def test_spec_to_response_passes_events_and_endings() -> None:
+    # 엔딩·사건이 응답에 항목별 이산 필드로 실려야 한다(회귀 방지).
+    spec = StorySpec(**_load("spec_valid.json"))
+    res = spec_to_response(spec)
+    assert 3 <= len(res.story_main_events) <= 5
+    ev = res.story_main_events[0]
+    assert ev.name and ev.description and ev.key_sentence
+    assert len(res.story_endings) == 3
+    end = res.story_endings[0]
+    assert end.name and end.achievement_condition and end.epilogue
+    assert isinstance(end.min_turns, int)
+
+
+def test_endings_wrong_count_rejected() -> None:
+    # 엔딩은 0개(폴백) 또는 정확히 3개. 2개·4개는 거부.
+    for n in (2, 4):
+        data = _load("spec_valid.json")
+        base = data["endings"][0]
+        data["endings"] = [dict(base, name=f"엔딩{i}") for i in range(n)]
+        with pytest.raises(ValidationError):
+            StorySpec(**data)
+
+
+def test_zero_endings_allowed() -> None:
+    # 빈 배열(폴백)은 계약상 허용된다 — StorySpec 파싱·응답 변환 모두 통과.
+    data = _load("spec_valid.json")
+    data["endings"] = []
+    spec = StorySpec(**data)
+    assert spec.endings == []
+    assert spec_to_response(spec).story_endings == []
+
+
+def test_min_turns_lower_bound_rejected() -> None:
+    # min_turns는 1 이상(ge=1). 0·음수는 "최소 턴 문턱"이 무의미해져 거부.
+    for bad in (0, -1):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = bad
+        with pytest.raises(ValidationError):
+            StorySpec(**data)
+
+
+def test_events_out_of_range_rejected() -> None:
+    # 사건은 3~5개. 2개(하한 위반)·6개(상한 위반) 모두 거부.
+    for n in (2, 6):
+        data = _load("spec_valid.json")
+        base = data["main_events"][0]
+        data["main_events"] = [dict(base, name=f"사건{i}") for i in range(n)]
+        with pytest.raises(ValidationError):
+            StorySpec(**data)
+
+
+def test_find_missing_keys_detects_event_ending_issues() -> None:
+    # 사건 개수 하한 위반
+    data = _load("spec_valid.json")
+    data["main_events"] = data["main_events"][:2]
+    assert "main_events" in story_llm._find_missing_keys(data)
+    # 사건 항목의 빈 필드
+    data = _load("spec_valid.json")
+    data["main_events"][0]["key_sentence"] = ""
+    assert "main_events[0].key_sentence" in story_llm._find_missing_keys(data)
+    # 엔딩 항목의 빈 필드
+    data = _load("spec_valid.json")
+    data["endings"][1]["epilogue"] = "   "
+    assert "endings[1].epilogue" in story_llm._find_missing_keys(data)
+    # 엔딩 min_turns 비정수는 재호출 대상으로 잡힌다
+    data = _load("spec_valid.json")
+    data["endings"][0]["min_turns"] = "열다섯"
+    assert "endings[0].min_turns" in story_llm._find_missing_keys(data)
+    # 엔딩 min_turns 하한 미달(0·음수)도 재호출 대상으로 잡힌다(ge=1 강제와 정합)
+    data = _load("spec_valid.json")
+    data["endings"][0]["min_turns"] = 0
+    assert "endings[0].min_turns" in story_llm._find_missing_keys(data)
+    data = _load("spec_valid.json")
+    data["endings"][1]["min_turns"] = -3
+    assert "endings[1].min_turns" in story_llm._find_missing_keys(data)
+    # int()가 못 바꾸는 유니코드 숫자('²')는 예외 없이 재호출 대상으로 잡힌다(500 방지 — Gemini 리뷰)
+    data = _load("spec_valid.json")
+    data["endings"][0]["min_turns"] = "²"  # 위첨자 2: isdigit()=True지만 int()는 ValueError
+    assert "endings[0].min_turns" in story_llm._find_missing_keys(data)
+    # 엔딩 개수 위반(2개)도 endings 블록으로 잡힌다
+    data = _load("spec_valid.json")
+    data["endings"] = data["endings"][:2]
+    assert "endings" in story_llm._find_missing_keys(data)
+
+
+def test_find_missing_keys_clean_with_events_and_endings() -> None:
+    # 정상 spec은 엔딩·사건 때문에 오탐이 나지 않아야 한다.
+    assert story_llm._find_missing_keys(_load("spec_valid.json")) == []
+
+
+def test_block_of_maps_event_ending_paths() -> None:
+    assert story_llm._block_of("main_events[0].key_sentence") == "main_events"
+    assert story_llm._block_of("endings") == "endings"
+    assert story_llm._block_of("endings[2].min_turns") == "endings"
+
+
+async def test_compile_story_falls_back_to_empty_endings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 재호출 후에도 엔딩이 온전한 3개가 아니면 502가 아니라 빈 배열로 폴백해 200으로 반환한다.
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"] = data["endings"][:2]  # 매번 2개 → 재호출로도 3개 못 채움
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert isinstance(res, StoryCompileResponse)
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음
+
+
+async def test_compile_story_keeps_valid_endings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 정상 엔딩 3개는 재호출·폴백 없이 그대로 응답에 실린다.
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _load("spec_valid.json"), story_llm.LlmUsage("m", 100, 200)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert len(res.story_endings) == 3
+    assert res.story_endings[0].name
+    assert res.meta.retry_count == 0
+
+
+async def test_compile_story_502_when_endings_incomplete_and_other_field_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 엔딩이 미완성이어도, 엔딩 외 필수 필드가 비면 여전히 502여야 한다
+    # (엔딩 폴백이 진짜 실패를 가리지 않는지 — 마스킹 방지).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"] = data["endings"][:2]  # 엔딩 미완성
+        data["start"]["prologue"] = ""  # 엔딩 외 필수 누락
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    with pytest.raises(HTTPException) as exc:
+        await story_llm.compile_story(_request())
+    assert exc.value.status_code == 502
+
+
+async def test_compile_story_keeps_numeric_string_min_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # min_turns가 숫자 문자열("15")이면 재호출·폴백 없이 정수로 실려야 한다(_is_valid_min_turns↔Pydantic 일치).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        for e in data["endings"]:
+            e["min_turns"] = "15"
+        return data, story_llm.LlmUsage("m", 100, 200)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert res.meta.retry_count == 0  # 재호출 없음
+    assert len(res.story_endings) == 3
+    assert res.story_endings[0].min_turns == 15  # 정수로 강제
+
+
+async def test_compile_story_falls_back_when_min_turns_uncoercible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 정수로 못 바꾸는 min_turns가 재호출로도 안 고쳐지면 엔딩만 빈 배열로 폴백해 200을 반환한다
+    # (_endings_incomplete의 파싱 실패 분기 커버).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = "열다섯"  # 매번 비정수
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음
+
+
+async def test_compile_story_falls_back_when_min_turns_below_lower_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 하한 미달(0) min_turns가 재호출로도 안 고쳐지면 502가 아니라 엔딩만 빈 배열로 폴백한다
+    # (ge=1 강제가 502를 유발하지 않고 폴백으로 흐르는지 — 얕은 검사↔Pydantic 정합).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = 0  # 매번 하한 미달
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음
+
+
+async def test_compile_story_falls_back_on_unicode_digit_min_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # int()가 못 바꾸는 유니코드 숫자('²') min_turns는 500이 아니라 엔딩만 빈 배열로 폴백한다
+    # (isdigit()의 헐거움이 ValueError를 흘려 500이 나던 회귀 방지 — Gemini 리뷰).
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        data = _load("spec_valid.json")
+        data["endings"][0]["min_turns"] = "²"  # 위첨자 2
+        return data, story_llm.LlmUsage("m", 1, 1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())  # 500 없이 정상 반환
+    assert res.story_endings == []  # 엔딩만 폴백
+    assert 3 <= len(res.story_main_events) <= 5  # 스토리 본체는 살아남음

@@ -154,3 +154,6 @@ async def test_stream_error_captures(monkeypatch) -> None:
     assert "boom" not in err_event["message"]  # provider 원문(str(e)) 미노출 — AN-4-10
     assert len(calls) == 1
     assert calls[0]["feature"] == "chat_response"
+    # AN-4-8 컨텍스트 — 실패 캡처에 재호출 횟수·소요 시간이 실린다(KNK-529)
+    assert calls[0]["retry_count"] == 0
+    assert isinstance(calls[0]["latency_ms"], int) and calls[0]["latency_ms"] >= 0
