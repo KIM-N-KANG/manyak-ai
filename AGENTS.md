@@ -1,11 +1,16 @@
 # 기본 지침
 
-세션 시작 시 SessionStart 훅(`.claude/settings.json`)이 하네스 운영 규칙(`../knk-harness/AGENTS.md`)과
-제품 명세(`../knk-harness/docs/product-specs/`의 모든 `.md`)를 컨텍스트에 자동 로드합니다.
-(이 환경에서는 CLAUDE.md `@import`가 펼쳐지지 않아 훅으로 로드합니다.)
+이 파일은 Codex 등 `AGENTS.md`를 읽는 에이전트를 위한 프로젝트 지침입니다.
+(Claude Code는 같은 내용을 `CLAUDE.md`로 읽습니다 — 두 파일은 같은 규칙을 공유합니다.)
+
+작업을 시작하기 전에 형제 하네스 레포지토리의 다음 문서를 먼저 확인하세요.
+Codex는 세션 시작 훅으로 이들을 자동 로드하지 않으므로, 직접 열어 근거로 삼습니다.
+
+- 하네스 운영 규칙: `../knk-harness/AGENTS.md`
+- 제품 명세 전체: `../knk-harness/docs/product-specs/`의 모든 `.md`
 
 `../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다.
-프로젝트별 지침 변경은 이 레포지토리의 `CLAUDE.md`에만 기록합니다.
+프로젝트별 지침 변경은 이 레포지토리의 `AGENTS.md`(및 짝인 `CLAUDE.md`)에만 기록합니다.
 
 ## Manyak AI 전용 지침
 
@@ -28,11 +33,11 @@
 - 구현 변경이 `dev`에 머지되면 `sync-ai-spec` 스킬로 knk-harness의 AI 서버 스펙(`docs/product-specs/5-ai-server.md`)을 동기화합니다.
 
 ### 스킬 배치(.agents/skills)
-- 스킬 정본은 `.agents/skills/`입니다(여러 에이전트 공통 표준). Codex는 이 디렉터리를 직접 읽고, Claude Code는 `.claude/skills/*`가 `.agents/skills/*`를 가리키는 심링크로 같은 스킬을 읽습니다(한 소스, 두 에이전트 공유).
+- 스킬 정본은 `.agents/skills/`입니다. Codex는 이 디렉터리를 직접 읽고, Claude Code는 `.claude/skills/*`가 `.agents/skills/*`를 가리키는 심링크로 같은 스킬을 읽습니다(한 소스, 두 에이전트 공유).
 - 프로젝트 스킬(create-jira-subtasks, planning, prompt-authoring, sync-ai-spec)은 `.agents/skills/<이름>/`이 **원본**입니다(이 레포가 정본, git 추적).
 - 하네스 공용 스킬(create-branch, create-commit, create-pr, karpathy-guidelines, technical-writing)은 **항목별 심링크**입니다 → `../../../knk-harness/.agents/skills/<이름>`. 복사하지 않습니다 — 정본은 하네스이고, 복사하면 하네스 개정을 못 따라갑니다.
 - `.claude/skills/<이름>`은 전부 `../../.agents/skills/<이름>` 심링크입니다. 새 스킬을 추가할 때는 `.agents/skills/<이름>/SKILL.md`를 만들고 `.claude/skills/<이름>` 심링크를 겁니다.
-- 하네스 스킬과 세션 시작 스펙 로드는 형제 레포 `../knk-harness`가 함께 체크아웃돼 있어야 동작합니다. 이 레포만 클론하면 프로젝트 스킬 4개만 로드되고, 하네스 스킬·제품 명세는 빠집니다.
+- 하네스 스킬과 제품 명세는 형제 레포 `../knk-harness`가 함께 체크아웃돼 있어야 동작합니다. 이 레포만 클론하면 프로젝트 스킬 4개만 로드되고, 하네스 스킬·제품 명세는 빠집니다.
 - **Windows 주의**: `git config core.symlinks true`(+ 개발자 모드/관리자 권한) 없이 클론하면 심링크가 실제 링크가 아니라 대상 경로가 담긴 텍스트 파일로 체크아웃돼 스킬 로딩이 조용히 깨집니다.
 
 ### 프롬프트·명세 변경
