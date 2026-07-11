@@ -3,11 +3,25 @@
 이 파일은 Codex 등 `AGENTS.md`를 읽는 에이전트를 위한 프로젝트 지침입니다.
 (Claude Code는 같은 내용을 `CLAUDE.md`로 읽습니다 — 두 파일은 같은 규칙을 공유합니다.)
 
-작업을 시작하기 전에 형제 하네스 레포지토리의 다음 문서를 먼저 확인하세요.
-Codex는 세션 시작 훅으로 이들을 자동 로드하지 않으므로, 직접 열어 근거로 삼습니다.
+작업을 시작할 때 형제 하네스 레포지토리의 운영 규칙
+`../knk-harness/AGENTS.md`를 먼저 확인하세요. 제품 명세 전체를 미리 읽지 말고,
+아래 인덱스에서 현재 작업에 필요한 문서만 직접 열어 근거로 삼습니다.
 
-- 하네스 운영 규칙: `../knk-harness/AGENTS.md`
-- 제품 명세 전체: `../knk-harness/docs/product-specs/`의 모든 `.md`
+| 작업 범위 | 먼저 확인할 문서 |
+| --- | --- |
+| 도메인 용어·필드 이름 | `../knk-harness/docs/product-specs/0-glossary.md` |
+| 제품 배경·MVP 범위·사용자 요구 | `../knk-harness/docs/product-specs/1-background.md`, `../knk-harness/docs/product-specs/2-user-stories.md` |
+| 프론트엔드 화면·호출 흐름·SSE 소비 방식 | `../knk-harness/docs/product-specs/3-frontend.md` |
+| 백엔드 API·SSE·저장·오류 계약 | `../knk-harness/docs/product-specs/4-backend.md` |
+| AI 요청·응답·프롬프트·실패 처리·채팅 판정(`judgement`) 계약 | `../knk-harness/docs/product-specs/5-ai-server.md` |
+| 이벤트·지표·AI 관측 | `../knk-harness/docs/product-specs/6-analytics.md` |
+| AI 서버 배포·환경 변수·운영 검수 | `../knk-harness/docs/product-specs/7-deployment.md` |
+| 채팅 내부 설계·구현 규칙 | `spec/chat/`의 관련 문서 |
+| 스토리 내부 설계·구현 규칙 | `spec/story/`의 관련 문서 |
+
+여러 계약이 맞물린 작업만 관련 문서를 함께 읽습니다. 예를 들어 채팅 판정의 AI
+계약은 `5-ai-server.md`를 먼저 보고, 백엔드의 상태 저장·SSE 계약까지 바꾸면
+`4-backend.md`와 `spec/chat/`의 관련 문서를 추가로 확인합니다.
 
 `../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다.
 프로젝트별 지침 변경은 이 레포지토리의 `AGENTS.md`(및 짝인 `CLAUDE.md`)에만 기록합니다.
@@ -20,9 +34,8 @@ Codex는 세션 시작 훅으로 이들을 자동 로드하지 않으므로, 직
 - 핵심 구조: `prompt/`(LLM 프롬프트), `spec/`(명세), `src/`(FastAPI 앱), `tests/`.
 
 ### 설계·아키텍처
-- 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 먼저 `spec/`을 확인합니다.
-  - 채팅: `spec/chat/`
-  - 스토리: `spec/story/`
+- 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 위 인덱스에서 제품 명세와
+  로컬 `spec/` 문서를 선택해 확인합니다.
 
 ### 작업 워크플로
 - 작업 주기는 스킬로 표준화돼 있습니다: `create-branch` → `create-commit` → `create-pr`.

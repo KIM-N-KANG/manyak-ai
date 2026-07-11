@@ -1,0 +1,6 @@
+[mcp_servers.atlassian-jira]
+command = "/bin/bash"
+args = [
+    "-lc",
+    'exec docker run -i --rm --env-file "$(git rev-parse --show-toplevel)/.env.jira" ghcr.io/sooperset/mcp-atlassian:latest',
+]
