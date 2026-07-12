@@ -14,9 +14,10 @@ description: 이미 올라간 PR을 ready로 전환하고 `@codex review` 코멘
 - **Codex는 draft PR을 리뷰하지 않습니다.** 반드시 ready로 먼저 전환합니다. (메모리: codex-review-needs-ready-pr)
 - 리뷰 호출은 PR 본문이 아니라 **PR 코멘트 `@codex review`** 로만 트리거됩니다.
 - 리뷰는 즉시 오지 않습니다. **폴링으로 도착을 감지**합니다(보통 수 분~20분).
-- Codex 봇 계정은 `chatgpt-codex-connector[bot]`입니다.
-- **Codex는 지적이 있을 때만 정식 review(`pulls/{n}/reviews`)를 만듭니다. 지적이 없으면 "Didn't find any major issues" 같은 이슈 코멘트(`issues/{n}/comments`)나 호출 코멘트의 👍 리액션으로만 응답합니다.** 그래서 `reviews` 수만 폴링하면 "지적 없음" 응답을 놓쳐 timeout이 납니다. **리뷰 도착은 리뷰 수 증가 · Codex 봇 이슈 코멘트 증가 · 호출 코멘트의 Codex 봇 👍 세 신호 중 하나로 감지**합니다. 👍는 반드시 **봇 계정 리액션만** 세야 합니다. 사람이 호출 코멘트에 먼저 👍를 누르면 오탐하므로 `.content=="+1"`에 더해 `.user.login==$BOT`로 필터합니다. (메모리: codex-review-as-issue-comment)
+- Codex 봇 계정은 `chatgpt-codex-connector[bot]`입니다. 다만 환경·이벤트에 따라 `[bot]` 접미사 없이 `chatgpt-codex-connector`로 보고되기도 하므로, 봇 필터는 두 형태를 모두 잡도록 **`.user.login|contains("codex-connector")`** 로 둡니다. 한 형태(`==`)로만 매칭하면 다른 형태로 올 때 카운트가 0에 머물러 응답이 왔는데도 timeout이 납니다.
+- **Codex는 지적이 있을 때만 정식 review(`pulls/{n}/reviews`)를 만듭니다. 지적이 없으면 "Didn't find any major issues" 같은 이슈 코멘트(`issues/{n}/comments`)나 호출 코멘트의 👍 리액션으로만 응답합니다.** 그래서 `reviews` 수만 폴링하면 "지적 없음" 응답을 놓쳐 timeout이 납니다. **리뷰 도착은 리뷰 수 증가 · Codex 봇 이슈 코멘트 증가 · 호출 코멘트의 Codex 봇 👍 세 신호 중 하나로 감지**합니다. 👍는 반드시 **봇 계정 리액션만** 세야 합니다. 사람이 호출 코멘트에 먼저 👍를 누르면 오탐하므로 `.content=="+1"`에 더해 `.user.login|contains("codex-connector")`로 필터합니다. (메모리: codex-review-as-issue-comment)
 - `issues/{n}/comments`·`pulls/{n}/reviews`·`pulls/{n}/comments`·`issues/comments/{id}/reactions`는 기본 30개씩 페이지네이션됩니다. 코멘트·리액션이 많은 PR에서는 Codex의 새 응답이나 봇 👍가 2페이지 이상으로 밀려 1페이지만 세면 감지에 실패하므로 **항상 `--paginate`(+`per_page=100`)로 전 페이지를 훑습니다.** 단, `--slurp`는 `--jq`와 함께 못 씁니다(gh 에러). **카운트는 `--paginate --jq "…|length"`가 페이지마다 수를 뱉으니 `awk`로 합산**하되, `gh api | awk`로 파이프하면 gh 실패가 awk의 성공에 가려져 조용히 0이 됩니다. 기준선이 거짓 0이면 이전 라운드의 옛 코멘트를 현재 응답으로 오인해 조기 종료하므로, **`codex_count` 헬퍼처럼 gh 출력을 먼저 받아 실패 시 `return 1`로 전파**하고(기준선은 실패 시 중단, 폴링은 이전 값 유지) 그 뒤에 `awk`로 합산합니다. **조회는 `--paginate --jq 'select(…)'`**로 페이지별 필터 결과를 이어 받습니다.
+- **에이전트의 Bash 도구는 코드블록마다 셸 상태(변수·함수)를 초기화할 수 있습니다.** 그래서 2단계가 만든 기준선(`PREV_*`)·`CMTID`·`HEAD`를 3·4단계가 그대로 참조하면 빈 값이 되어 폴링·조회가 깨집니다. 이를 막기 위해 **2단계가 상태를 파일(`$STATE`)로 기록하고, 3·4단계는 그 파일을 `source`** 합니다. `codex_count` 같은 함수는 파일로 못 넘기니 블록마다 다시 정의합니다.
 
 ## 작업 흐름
 
@@ -30,36 +31,54 @@ gh pr ready <PR번호>     # isDraft=true일 때만
 - 이미 ready면 전환을 건너뜁니다.
 - PR이 없으면 이 스킬을 멈추고 `create-pr`로 먼저 PR을 만들도록 안내합니다.
 
-### 2. Codex 리뷰 호출
+### 2. Codex 리뷰 호출 + 상태 기록
 
-호출 **전에** 현재 Codex 봇 리뷰 수와 이슈 코멘트 수를 기준선(`PREV_REVIEWS`, `PREV_COMMENTS`)으로 기록합니다. 사람 리뷰·코멘트가 먼저 달려 있을 수 있으므로 전체 수가 아니라 **Codex 봇 것만** 세야, 폴링이 사람 것을 Codex 응답으로 오판하지 않습니다. 호출 코멘트 id(`CMTID`)도 확보해 👍 리액션 감지에 씁니다.
+호출 **전에** 현재 Codex 봇 리뷰 수와 이슈 코멘트 수를 기준선(`PREV_REVIEWS`, `PREV_COMMENTS`)으로 기록합니다. 사람 리뷰·코멘트가 먼저 달려 있을 수 있으므로 전체 수가 아니라 **Codex 봇 것만** 세야, 폴링이 사람 것을 Codex 응답으로 오판하지 않습니다. 호출 코멘트 id(`CMTID`)와 현재 head 커밋(`HEAD`)도 확보해 각각 👍 감지와 4단계의 라운드 스코프에 씁니다. 마지막에 이 값들을 상태 파일로 남겨 다음 블록이 이어받게 합니다.
 
 ```bash
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 BOT="chatgpt-codex-connector[bot]"; PR=<PR번호>
+STATE="${TMPDIR:-/tmp}/codex-review-<PR번호>.env"
 # 전 페이지를 훑어 봇 응답 수를 합산한다. gh 실패 시 0이 아니라 return 1로 알려, 기준선이 거짓 0으로 깔리는 것을 막는다.
 codex_count() {  # $1=endpoint, $2=jq
   local pages; pages=$(gh api --paginate "$1" --jq "$2") || return 1
   printf '%s\n' "$pages" | awk '{s+=$1} END{print s+0}'
 }
-PREV_REVIEWS=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100"   "[.[]|select(.user.login==\"$BOT\")]|length") || { echo "기준선(reviews) 조회 실패 — 중단"; exit 1; }
-PREV_COMMENTS=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100" "[.[]|select(.user.login==\"$BOT\")]|length") || { echo "기준선(comments) 조회 실패 — 중단"; exit 1; }
-CMT_URL=$(gh pr comment $PR --body "@codex review")
+PREV_REVIEWS=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100"   "[.[]|select(.user.login|contains(\"codex-connector\"))]|length") || { echo "기준선(reviews) 조회 실패 — 중단"; exit 1; }
+PREV_COMMENTS=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100" "[.[]|select(.user.login|contains(\"codex-connector\"))]|length") || { echo "기준선(comments) 조회 실패 — 중단"; exit 1; }
+CMT_URL=$(gh pr comment $PR --body "@codex review") || { echo "코멘트 작성 실패 — 중단"; exit 1; }
 CMTID=${CMT_URL##*-}   # .../pull/<PR>#issuecomment-<id> → <id>
-echo "baseline reviews=$PREV_REVIEWS comments=$PREV_COMMENTS trigger_comment=$CMTID"
+[[ "$CMTID" =~ ^[0-9]+$ ]] || { echo "코멘트 ID 추출 실패: $CMT_URL — 중단"; exit 1; }
+HEAD=$(gh pr view $PR --json headRefOid --jq .headRefOid) || { echo "head SHA 조회 실패 — 중단"; exit 1; }
+# 다음 블록이 새 셸일 수 있으므로 기준선·CMTID·HEAD를 파일로 넘긴다.
+cat > "$STATE" <<EOF
+REPO=$REPO
+BOT='$BOT'
+PR=$PR
+PREV_REVIEWS=$PREV_REVIEWS
+PREV_COMMENTS=$PREV_COMMENTS
+CMTID=$CMTID
+HEAD=$HEAD
+EOF
+echo "baseline reviews=$PREV_REVIEWS comments=$PREV_COMMENTS trigger_comment=$CMTID head=$HEAD state=$STATE"
 ```
 
-- `CMTID`는 3단계·5단계 폴링에서 👍 리액션(=추가 지적 없음) 감지에 씁니다.
+- `CMTID`는 3단계 폴링에서 👍 리액션(=추가 지적 없음) 감지에, `HEAD`는 4단계에서 옛 라운드 리뷰를 걸러내는 데 씁니다.
 
 ### 3. 첫 응답 도착까지 폴링 (최대 ~20분)
 
-**리뷰 수 증가 · Codex 봇 이슈 코멘트 증가 · 호출 코멘트 👍** 세 신호 중 하나라도 잡히면 응답 도착으로 봅니다. `reviews`만 보면 "지적 없음"이 이슈 코멘트/👍로 오는 경우를 놓칩니다.
+2단계가 남긴 상태 파일을 먼저 `source`합니다(같은 셸이 아닐 수 있음). **리뷰 수 증가 · Codex 봇 이슈 코멘트 증가 · 호출 코멘트 👍** 세 신호 중 하나라도 잡히면 응답 도착으로 봅니다. `reviews`만 보면 "지적 없음"이 이슈 코멘트/👍로 오는 경우를 놓칩니다.
 
 ```bash
+STATE="${TMPDIR:-/tmp}/codex-review-<PR번호>.env"; source "$STATE"   # REPO·PR·PREV_*·CMTID 로드
+codex_count() {  # 함수는 파일로 못 넘기니 다시 정의
+  local pages; pages=$(gh api --paginate "$1" --jq "$2") || return 1
+  printf '%s\n' "$pages" | awk '{s+=$1} END{print s+0}'
+}
 for i in $(seq 1 40); do
-  rv=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100"    "[.[]|select(.user.login==\"$BOT\")]|length") || rv=$PREV_REVIEWS
-  cm=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100"  "[.[]|select(.user.login==\"$BOT\")]|length") || cm=$PREV_COMMENTS
-  tu=$(codex_count "repos/$REPO/issues/comments/$CMTID/reactions?per_page=100" "[.[]|select(.content==\"+1\" and .user.login==\"$BOT\")]|length") || tu=0
+  rv=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100"    "[.[]|select(.user.login|contains(\"codex-connector\"))]|length") || rv=$PREV_REVIEWS
+  cm=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100"  "[.[]|select(.user.login|contains(\"codex-connector\"))]|length") || cm=$PREV_COMMENTS
+  tu=$(codex_count "repos/$REPO/issues/comments/$CMTID/reactions?per_page=100" "[.[]|select(.content==\"+1\" and (.user.login|contains(\"codex-connector\")))]|length") || tu=0
   if [ "${rv:-0}" -gt "$PREV_REVIEWS" ];  then echo "CODEX_REVIEW_DETECTED reviews=$rv (정식 리뷰 — 지적 있음)"; exit 0; fi
   if [ "${cm:-0}" -gt "$PREV_COMMENTS" ]; then echo "CODEX_COMMENT_DETECTED comments=$cm (이슈 코멘트 도착 — 4단계 본문 확인 필요)"; exit 0; fi
   if [ "${tu:-0}" -ge 1 ];                then echo "CODEX_THUMB_DETECTED (👍 — 지적 없음)"; exit 0; fi
@@ -74,16 +93,19 @@ echo "TIMEOUT_20MIN_NO_RESPONSE"; exit 0
 
 ### 4. 리뷰 내용 확인·판단
 
-세 곳을 모두 봅니다. "지적 없음" 응답은 이슈 코멘트로 오므로, 정식 리뷰·인라인 코멘트가 비어 있어도 **이슈 코멘트를 반드시 확인**합니다.
+상태 파일을 `source`해 `HEAD`(이번 라운드 head 커밋)를 얻고, **현재 head 커밋에 달린 Codex 응답만** 봅니다. 옛 라운드 리뷰나 사람 리뷰 텍스트를 현재 Codex 결과로 오인하지 않기 위함입니다. "지적 없음" 응답은 이슈 코멘트로 오므로, 정식 리뷰·인라인 코멘트가 비어 있어도 **가장 최근 이슈 코멘트를 반드시 확인**합니다.
 
 ```bash
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
-# 정식 리뷰 본문
-gh pr view $PR --json reviews --jq '.reviews[] | {author: .author.login, state, body}'
-# Codex 봇 이슈 코멘트("Didn't find any major issues" 같은 요약·지적 없음 응답이 여기로 온다)
-gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | {created_at, body}'
-# 인라인(파일 위) 코멘트 본문
-gh api --paginate "repos/$REPO/pulls/$PR/comments?per_page=100"  --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | {path, line, body}'
+STATE="${TMPDIR:-/tmp}/codex-review-<PR번호>.env"; source "$STATE"   # REPO·PR·HEAD 로드
+# 정식 리뷰 — 현재 head 커밋을 리뷰한 Codex 것만(옛 라운드 배제)
+gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" \
+  --jq ".[] | select(.user.login|contains(\"codex-connector\")) | select(.commit_id==\"$HEAD\") | {state, submitted_at, body}"
+# Codex 봇 이슈 코멘트 — 가장 최근 라운드 요약 하나만("Didn't find any major issues" 류가 여기로 온다)
+gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+  --jq "[.[] | select(.user.login|contains(\"codex-connector\"))] | sort_by(.created_at) | last | {created_at, body}"
+# 인라인(파일 위) 코멘트 — 현재 head 커밋에 달린 Codex 것만
+gh api --paginate "repos/$REPO/pulls/$PR/comments?per_page=100" \
+  --jq ".[] | select(.user.login|contains(\"codex-connector\")) | select((.commit_id==\"$HEAD\") or (.original_commit_id==\"$HEAD\")) | {path, line, body}"
 ```
 
 - 지적을 **메이저(반영 필요)** 와 **마이너/제안(보류 가능)** 으로 분류합니다.
@@ -92,22 +114,35 @@ gh api --paginate "repos/$REPO/pulls/$PR/comments?per_page=100"  --jq '.[] | sel
 
 ### 5. 반영 후 재리뷰 (지적을 고친 경우)
 
-수정·커밋·push 후 **재호출 직전에 기준선을 다시 기록**하고 `@codex review` 코멘트를 답니다. 재리뷰도 3단계와 같은 세 신호(리뷰 수 증가 · 이슈 코멘트 증가 · 새 호출 코멘트 👍)로 감지합니다.
+수정·커밋·push 후 **재호출 직전에 기준선을 다시 기록**하고 `@codex review` 코멘트를 답니다. push로 head 커밋이 바뀌었으므로 `HEAD`도 새로 잡아 상태 파일을 덮어씁니다(4단계가 새 라운드를 스코프하게). 재리뷰도 3단계와 같은 세 신호로 감지합니다.
 
 ```bash
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 BOT="chatgpt-codex-connector[bot]"; PR=<PR번호>
+STATE="${TMPDIR:-/tmp}/codex-review-<PR번호>.env"
 codex_count() {  # $1=endpoint, $2=jq (gh 실패 시 return 1 → 거짓 0 방지)
   local pages; pages=$(gh api --paginate "$1" --jq "$2") || return 1
   printf '%s\n' "$pages" | awk '{s+=$1} END{print s+0}'
 }
-PREV_REVIEWS=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100"   "[.[]|select(.user.login==\"$BOT\")]|length") || { echo "기준선(reviews) 조회 실패 — 중단"; exit 1; }
-PREV_COMMENTS=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100" "[.[]|select(.user.login==\"$BOT\")]|length") || { echo "기준선(comments) 조회 실패 — 중단"; exit 1; }
-CMT_URL=$(gh pr comment $PR --body "@codex review"); CMTID=${CMT_URL##*-}
+PREV_REVIEWS=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100"   "[.[]|select(.user.login|contains(\"codex-connector\"))]|length") || { echo "기준선(reviews) 조회 실패 — 중단"; exit 1; }
+PREV_COMMENTS=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100" "[.[]|select(.user.login|contains(\"codex-connector\"))]|length") || { echo "기준선(comments) 조회 실패 — 중단"; exit 1; }
+CMT_URL=$(gh pr comment $PR --body "@codex review") || { echo "코멘트 작성 실패 — 중단"; exit 1; }
+CMTID=${CMT_URL##*-}
+[[ "$CMTID" =~ ^[0-9]+$ ]] || { echo "코멘트 ID 추출 실패: $CMT_URL — 중단"; exit 1; }
+HEAD=$(gh pr view $PR --json headRefOid --jq .headRefOid) || { echo "head SHA 조회 실패 — 중단"; exit 1; }
+cat > "$STATE" <<EOF
+REPO=$REPO
+BOT='$BOT'
+PR=$PR
+PREV_REVIEWS=$PREV_REVIEWS
+PREV_COMMENTS=$PREV_COMMENTS
+CMTID=$CMTID
+HEAD=$HEAD
+EOF
 for i in $(seq 1 40); do
-  rv=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100"    "[.[]|select(.user.login==\"$BOT\")]|length") || rv=$PREV_REVIEWS
-  cm=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100"  "[.[]|select(.user.login==\"$BOT\")]|length") || cm=$PREV_COMMENTS
-  tu=$(codex_count "repos/$REPO/issues/comments/$CMTID/reactions?per_page=100" "[.[]|select(.content==\"+1\" and .user.login==\"$BOT\")]|length") || tu=0
+  rv=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100"    "[.[]|select(.user.login|contains(\"codex-connector\"))]|length") || rv=$PREV_REVIEWS
+  cm=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100"  "[.[]|select(.user.login|contains(\"codex-connector\"))]|length") || cm=$PREV_COMMENTS
+  tu=$(codex_count "repos/$REPO/issues/comments/$CMTID/reactions?per_page=100" "[.[]|select(.content==\"+1\" and (.user.login|contains(\"codex-connector\")))]|length") || tu=0
   if [ "${rv:-0}" -gt "$PREV_REVIEWS" ];  then echo "NEW_REVIEW reviews=$rv"; exit 0; fi
   if [ "${cm:-0}" -gt "$PREV_COMMENTS" ]; then echo "NEW_COMMENT comments=$cm (이슈 코멘트 도착 — 4단계 본문 확인 필요)"; exit 0; fi
   if [ "${tu:-0}" -ge 1 ];                then echo "APPROVED_THUMB (👍 — 추가 지적 없음)"; exit 0; fi

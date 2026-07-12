@@ -4,7 +4,9 @@
 제품 명세(`../knk-harness/docs/product-specs/`의 모든 `.md`)를 컨텍스트에 자동 로드합니다.
 (이 환경에서는 CLAUDE.md `@import`가 펼쳐지지 않아 훅으로 로드합니다.)
 
-`../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다.
+`../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다. **한 가지 예외**로,
+구현이 `dev`에 머지된 뒤 `sync-ai-spec` 스킬로 AI 서버 스펙
+`../knk-harness/docs/product-specs/5-ai-server.md`를 동기화하는 것은 허용됩니다(아래 "작업 워크플로" 참조).
 프로젝트별 지침 변경은 이 레포지토리의 `CLAUDE.md`에만 기록하고, 짝 파일인
 `AGENTS.md`(Codex 등 다른 에이전트용)와 규칙이 어긋나지 않게 함께 갱신합니다.
 

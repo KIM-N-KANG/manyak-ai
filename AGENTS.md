@@ -24,7 +24,9 @@
 계약은 `5-ai-server.md`를 먼저 보고, 백엔드의 상태 저장·SSE 계약까지 바꾸면
 `4-backend.md`와 `spec/chat/`의 관련 문서를 추가로 확인합니다.
 
-`../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다.
+`../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다. **한 가지 예외**로,
+구현이 `dev`에 머지된 뒤 `sync-ai-spec` 스킬로 AI 서버 스펙
+`../knk-harness/docs/product-specs/5-ai-server.md`를 동기화하는 것은 허용됩니다(아래 "작업 워크플로" 참조).
 프로젝트별 지침 변경은 이 레포지토리의 `AGENTS.md`(및 짝인 `CLAUDE.md`)에만 기록합니다.
 
 ## Manyak AI 전용 지침
