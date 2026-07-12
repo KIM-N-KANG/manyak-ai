@@ -40,10 +40,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      # branch coverage를 측정하고 최저선(90%) 아래면 실패시킨다(재감사 #9). 최저선은 현재
+      # 커버리지(95%)보다 낮게 잡은 baseline이다 — 정상 변경을 막지 않으면서 회귀를 걸러내고,
+      # 팀 합의로 점차 올린다. term-missing이 미실행 라인을 PR 로그에 남긴다.
       - name: Run tests
         env:
           DEEPSEEK_API_KEY: dummy-key-for-ci
-        run: pytest
+        run: pytest --cov --cov-report=term-missing --cov-fail-under=90
 
   # 빌드한 이미지를 실제로 기동해 /api/v1/health 200을 PR 단계에서 확인한다(KNK-574 감사 3장).
   # CI가 이미지를 빌드만 하고 띄우지 않아, COPY prompt 누락 등 패키징 회귀가 prod 배포 게이트에서야
