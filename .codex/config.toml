@@ -1,6 +1,7 @@
-# 클라우드 PR 리뷰가 이 레포 설정을 읽을 경우 리뷰 모델(팀 기본). 로컬 개인 설정(~/.codex)이 이를 덮을 수 있음 — 실측으로 확인.
-[model]
-review_model = "gpt-5.5"
+# 리뷰 모델은 이 레포에 고정하지 않는다. 레포(.codex) 설정은 개인 ~/.codex/config.toml을
+# 덮어써(project-scoped override) 개인별 로컬 리뷰 모델을 못 쓰게 만들고, PR(클라우드) 리뷰는
+# 이 파일을 읽지 않는다(review_model은 로컬 `codex review` 전용). 로컬 리뷰 모델은 각자
+# ~/.codex/config.toml의 review_model로 정한다.
 
 [mcp_servers.atlassian-jira]
 command = "/bin/bash"
