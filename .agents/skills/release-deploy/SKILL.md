@@ -60,7 +60,10 @@ main 머지 → 사후 정리)을 빠뜨리는 단계 없이 진행한다. 핵�
    운영 `/api/v1/health`가 `ok`인지 검증한다. 실패 시 런북 7절(트러블슈팅)을
    따르고 상태를 그대로 보고한다.
 
-5. **사후 정리** — annotated tag `vX.Y.Z` push → `release → dev` 역류 PR
+5. **사후 정리** — 먼저 `git checkout main && git pull`로 4단계에서 생긴 머지 커밋을
+   받는다(태그가 release 브랜치 끝이 아니라 **실제 배포된 main 머지 커밋**을 가리키게
+   하기 위함 — release 브랜치 끝과 main 머지 커밋은 내용은 같아도 다른 커밋이다).
+   그 위에서 annotated tag `vX.Y.Z`를 달아 push → `release → dev` 역류 PR
    (Merge Commit; QA 수정이 없어 release==dev면 불필요) → release 브랜치 삭제 →
    릴리즈 티켓 완료 처리(결과 기록 규칙은 `create-jira-subtasks` 준수).
    **런북 갱신**: 배포 이력(9절)에 이번 배포를 기록하고, 새로 확인된 사실·주의
