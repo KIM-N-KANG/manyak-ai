@@ -165,12 +165,15 @@ async def _complete_json(
             output_tokens=getattr(response.usage, "completion_tokens", None),
         )
         return parsed, usage
-    except (OpenAIError, json.JSONDecodeError, _InvalidAiResponse) as exc:
+    except (OpenAIError, json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError) as exc:
         # 실패를 한 곳에서 모아 Sentry에 보고하고(AN-4) error_code별 502로 바꾼다. 502 detail에는
         # provider 원문(str(e))을 싣지 않는다 — 내부 상세는 Sentry로만 보낸다(AN-4-7·4-10).
+        # IndexError(빈 choices)·AttributeError(message=None)도 잡아 응답 모양이 깨진 malformed
+        # SDK 응답을 500이 아니라 정제 502(invalid_ai_response)로 수렴시킨다(§5-5 준수 —
+        # chat_choices·chat_judgement가 이미 하는 방어와 대칭, story만 빠져 있었다).
         error_code = (
             ERROR_INVALID_AI_RESPONSE
-            if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse))
+            if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError))
             else classify_error_code(exc)
         )
         capture_ai_exception(

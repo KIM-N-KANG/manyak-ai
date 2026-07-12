@@ -133,6 +133,39 @@ async def test_code_fenced_json_passes(monkeypatch, captures) -> None:
     assert captures == []  # 성공 경로이므로 실패 캡처 없음
 
 
+# ── malformed SDK 응답 모양 → 502 invalid (재감사 #4) ─────────────────────────
+# 빈 content(위)와 달리, 응답 '껍데기'가 깨진 경계다: choices[0].message.content 접근에서
+# IndexError(빈 choices)·AttributeError(message=None)가 나도 500이 아니라 정제 502로
+# 수렴해야 한다. chat_choices·chat_judgement는 이미 이 둘을 잡는데 story만 빠져 있었다(F2 대칭).
+class _NoChoicesResp:
+    choices: list = []
+    model = "deepseek-v4-pro"
+    usage = _Usage()
+
+
+class _NoneMsgChoice:
+    message = None
+
+
+class _NoneMsgResp:
+    choices = [_NoneMsgChoice()]
+    model = "deepseek-v4-pro"
+    usage = _Usage()
+
+
+@pytest.mark.parametrize("resp", [_NoChoicesResp(), _NoneMsgResp()])
+async def test_malformed_sdk_shape_returns_502_invalid(monkeypatch, captures, resp) -> None:
+    async def _create(**kwargs):
+        return resp
+
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", _create)
+    with pytest.raises(HTTPException) as ei:
+        await story_llm._complete_json("sys", "user")
+    assert ei.value.status_code == 502
+    assert "올바른 형식" in ei.value.detail  # invalid_ai_response detail(원문 미포함)
+    assert captures[-1]["error_code"] == ERROR_INVALID_AI_RESPONSE
+
+
 # ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
 # 가짜가 kwargs를 버리면 model·json 모드·temperature·max_tokens 회귀를 못 잡는다.
 # 넘긴 인자를 붙잡아, compile은 pro(기본)·storylines는 flash로 호출하고 나머지 인자는
