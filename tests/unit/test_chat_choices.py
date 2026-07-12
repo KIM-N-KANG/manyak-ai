@@ -184,6 +184,30 @@ async def test_malformed_structure_absorbed_to_fallback(monkeypatch) -> None:
     assert res.retry_count == 2
 
 
+# ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
+# 가짜가 kwargs를 버리면 model·json 모드·max_tokens·thinking 회귀를 못 잡는다.
+# 넘긴 인자를 붙잡아 선택지 호출 계약(비스트리밍 json 단발)을 고정한다.
+async def test_call_contract(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"choices": ["a", "b", "c"]}', usage=_Usage(5, 7))
+
+    monkeypatch.setattr(chat_choices._client.chat.completions, "create", _create)
+    await chat_choices._call("SYS", "USER")
+
+    assert captured["model"] == chat_choices.settings.deepseek_chat_model
+    assert captured["messages"] == [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "USER"},
+    ]
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["max_tokens"] == chat_choices._MAX_TOKENS
+    assert captured["extra_body"] == chat_choices._THINKING_DISABLED
+    assert "stream" not in captured  # 선택지는 비스트리밍 단발 호출
+
+
 # ── 사건 재료 치환 (KNK-485, §5-3-5 선택지 3구성 재료) ──────────────────────
 def test_build_user_replaces_event_material_slots() -> None:
     from src.schemas.chat_turn import MainEvent, TargetMainEvent

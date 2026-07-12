@@ -131,3 +131,41 @@ async def test_code_fenced_json_passes(monkeypatch, captures) -> None:
     assert usage.model == "deepseek-v4-pro"
     assert usage.input_tokens == 11 and usage.output_tokens == 13
     assert captures == []  # 성공 경로이므로 실패 캡처 없음
+
+
+# ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
+# 가짜가 kwargs를 버리면 model·json 모드·temperature·max_tokens 회귀를 못 잡는다.
+# 넘긴 인자를 붙잡아, compile은 pro(기본)·storylines는 flash로 호출하고 나머지 인자는
+# 공통임을 고정한다(모델 오배선·인자 누락 방지).
+def _capture(store: dict):
+    async def _create(**kwargs):
+        store.update(kwargs)
+        return _Resp('{"meta": {"title": "t"}}')
+
+    return _create
+
+
+async def test_complete_json_call_contract_compile(monkeypatch) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", _capture(captured))
+    await story_llm._complete_json("SYS", "USER")  # model 미지정 → 컴파일 기본
+
+    assert captured["model"] == story_llm.settings.deepseek_model  # compile 기본 = pro
+    assert captured["messages"] == [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "USER"},
+    ]
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["temperature"] == story_llm._TEMPERATURE
+    assert captured["max_tokens"] == story_llm._MAX_TOKENS
+    assert captured["extra_body"] == story_llm._THINKING_DISABLED
+
+
+async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", _capture(captured))
+    await story_llm.generate_storylines("SYS", "USER")
+
+    assert captured["model"] == story_llm.settings.deepseek_chat_model  # storylines = flash
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["extra_body"] == story_llm._THINKING_DISABLED

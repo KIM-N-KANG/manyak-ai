@@ -226,3 +226,24 @@ async def test_malformed_response_absorbed_to_nulls(monkeypatch, resp) -> None:
     assert res.target_main_event is None
     assert res.occurred_main_event_name is None
     assert res.ending_name is None
+
+
+# ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
+# 가짜가 kwargs를 버리면 model·json 모드·max_tokens·thinking 회귀를 못 잡는다.
+# 넘긴 인자를 붙잡아 판정 호출 계약(선택지와 같은 비스트리밍 json 단발)을 고정한다.
+async def test_judgement_call_contract(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    monkeypatch.setattr(chat_judgement._client.chat.completions, "create", _create)
+    await generate_judgement(_request(main_events=_EVENTS, endings=_ENDINGS), "*장면*")
+
+    assert captured["model"] == chat_judgement.settings.deepseek_chat_model
+    assert [m["role"] for m in captured["messages"]] == ["system", "user"]
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["max_tokens"] == chat_judgement._MAX_TOKENS
+    assert captured["extra_body"] == chat_judgement._THINKING_DISABLED
+    assert "stream" not in captured  # 판정은 비스트리밍 단발 호출
