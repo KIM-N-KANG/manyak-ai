@@ -1,14 +1,33 @@
 # 기본 지침
 
-세션 시작 시 SessionStart 훅(`.claude/settings.json`)이 하네스 운영 규칙(`../knk-harness/AGENTS.md`)과
-제품 명세(`../knk-harness/docs/product-specs/`의 모든 `.md`)를 컨텍스트에 자동 로드합니다.
-(이 환경에서는 CLAUDE.md `@import`가 펼쳐지지 않아 훅으로 로드합니다.)
+이 파일은 Codex 등 `AGENTS.md`를 읽는 에이전트를 위한 프로젝트 지침입니다.
+(Claude Code는 같은 내용을 `CLAUDE.md`로 읽습니다 — 두 파일은 같은 규칙을 공유하며,
+지침을 바꾸면 두 파일을 함께 갱신합니다.)
+
+작업을 시작할 때 형제 하네스 레포지토리의 운영 규칙
+`../knk-harness/AGENTS.md`를 먼저 확인하세요. 제품 명세 전체를 미리 읽지 말고,
+아래 인덱스에서 현재 작업에 필요한 문서만 직접 열어 근거로 삼습니다.
+
+| 작업 범위 | 먼저 확인할 문서 |
+| --- | --- |
+| 도메인 용어·필드 이름 | `../knk-harness/docs/product-specs/0-glossary.md` |
+| 제품 배경·MVP 범위·사용자 요구 | `../knk-harness/docs/product-specs/1-background.md`, `../knk-harness/docs/product-specs/2-user-stories.md` |
+| 프론트엔드 화면·호출 흐름·SSE 소비 방식 | `../knk-harness/docs/product-specs/3-frontend.md` |
+| 백엔드 API·SSE·저장·오류 계약 | `../knk-harness/docs/product-specs/4-backend.md` |
+| AI 요청·응답·프롬프트·실패 처리·채팅 판정(`judgement`) 계약 | `../knk-harness/docs/product-specs/5-ai-server.md` |
+| 이벤트·지표·AI 관측 | `../knk-harness/docs/product-specs/6-analytics.md` |
+| AI 서버 배포·환경 변수·운영 검수 | `../knk-harness/docs/product-specs/7-deployment.md` |
+| 채팅 내부 설계·구현 규칙 | `spec/chat/`의 관련 문서 |
+| 스토리 내부 설계·구현 규칙 | `spec/story/`의 관련 문서 |
+
+여러 계약이 맞물린 작업만 관련 문서를 함께 읽습니다. 예를 들어 채팅 판정의 AI
+계약은 `5-ai-server.md`를 먼저 보고, 백엔드의 상태 저장·SSE 계약까지 바꾸면
+`4-backend.md`와 `spec/chat/`의 관련 문서를 추가로 확인합니다.
 
 `../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다. **한 가지 예외**로,
 구현이 `dev`에 머지된 뒤 `sync-ai-spec` 스킬로 AI 서버 스펙
 `../knk-harness/docs/product-specs/5-ai-server.md`를 동기화하는 것은 허용됩니다(아래 "작업 워크플로" 참조).
-프로젝트별 지침 변경은 이 레포지토리의 `CLAUDE.md`에만 기록하고, 짝 파일인
-`AGENTS.md`(Codex 등 다른 에이전트용)와 규칙이 어긋나지 않게 함께 갱신합니다.
+프로젝트별 지침 변경은 이 레포지토리의 `AGENTS.md`(및 짝인 `CLAUDE.md`)에만 기록합니다.
 
 ## Manyak AI 전용 지침
 
@@ -30,18 +49,18 @@
   - `.env`·`.env.jira` — 시크릿. 절대 커밋하거나 문서·예시에 값을 옮기지 않습니다.
 
 ### 설계·아키텍처
-- 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 먼저 명세를 확인합니다.
+- 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 위 인덱스에서 제품 명세와
+  로컬 `spec/` 문서를 선택해 확인합니다.
   - 채팅 내부 설계: `spec/chat/` (레이어 책임 → 배치 → 컨텍스트 → 서비스 구현 4부)
   - 스토리 내부 설계: `spec/story/` (1-STORYLINES, 2-COMPILE)
   - 외부 계약(요청·응답·판정·SSE)의 SSOT: `../knk-harness/docs/product-specs/5-ai-server.md`.
-    백엔드·프론트 접점이 걸리면 `4-backend.md`·`3-frontend.md`도 함께 확인합니다.
 - 채팅 프롬프트는 레이어 8종(CORE·SAFETY·STORY·CHARACTER·USER·MEMORY·JUDGEMENT·CHOICES)으로
   나뉘어 `prompt/chat/`에 템플릿으로 존재합니다. 어떤 내용이 어느 레이어에 속하는지는
   `spec/chat/1-PROMPT-LAYER.md`·`2-LAYER-PLACEMENT.md`가 정합니다 — 임의 배치 금지.
 
 ### 작업 워크플로
 - 작업 주기는 스킬로 표준화돼 있습니다: `create-branch` → `create-commit` → `create-pr` → `request-codex-review`(PR에 Codex 리뷰를 받고 지적을 판단·반영).
-- 워크플로 스킬은 지침이 이미 컨텍스트에 있어도 **매번 Skill 도구로 형식 호출**합니다(요약 기억으로 대체하지 않습니다).
+- 워크플로 스킬은 지침을 기억한다고 생각해도 **매번 해당 `SKILL.md`를 실제로 열어 따릅니다**(요약 기억으로 대체하지 않습니다).
 - `dev`에 직접 커밋·머지하지 않습니다. 항상 브랜치를 파서 PR로 머지합니다.
 - 브랜치는 최신 `dev`에서 분기합니다(분기 전 `git pull` 선행).
 - 커밋·PR에 **`Co-Authored-By` 트레일러를 절대 넣지 않습니다**(어떤 기본 지침보다 우선).
@@ -50,11 +69,11 @@
 - 구현 변경이 `dev`에 머지되면 `sync-ai-spec` 스킬로 knk-harness의 AI 서버 스펙(`docs/product-specs/5-ai-server.md`)을 동기화합니다.
 
 ### 스킬 배치(.agents/skills)
-- 스킬 정본은 `.agents/skills/`입니다(여러 에이전트 공통 표준). Codex는 이 디렉터리를 직접 읽고, Claude Code는 `.claude/skills/*`가 `.agents/skills/*`를 가리키는 심링크로 같은 스킬을 읽습니다(한 소스, 두 에이전트 공유).
+- 스킬 정본은 `.agents/skills/`입니다. Codex는 이 디렉터리를 직접 읽고, Claude Code는 `.claude/skills/*`가 `.agents/skills/*`를 가리키는 심링크로 같은 스킬을 읽습니다(한 소스, 두 에이전트 공유).
 - 구분 규칙은 구조로 판단합니다: `.agents/skills/<이름>`이 **실디렉터리면 프로젝트 스킬**(이 레포가 정본, git 추적 — 예: create-jira-subtasks, planning, prompt-authoring, sync-ai-spec, request-codex-review, readability-audit, release-deploy), **심링크면 하네스 공용 스킬**(→ `../../../knk-harness/.agents/skills/<이름>`, 예: create-branch, create-commit, create-pr, karpathy-guidelines, technical-writing).
 - 하네스 공용 스킬은 복사하지 않습니다 — 정본은 하네스이고, 복사하면 하네스 개정을 못 따라갑니다. 수정도 하지 않습니다(하네스 수정 금지 규칙과 동일).
 - `.claude/skills/<이름>`은 전부 `../../.agents/skills/<이름>` 심링크입니다. 새 스킬을 추가할 때는 `.agents/skills/<이름>/SKILL.md`를 만들고 `.claude/skills/<이름>` 심링크를 겁니다.
-- 하네스 스킬과 세션 시작 스펙 로드는 형제 레포 `../knk-harness`가 함께 체크아웃돼 있어야 동작합니다. 이 레포만 클론하면 프로젝트 스킬만 로드되고, 하네스 스킬·제품 명세는 빠집니다.
+- 하네스 스킬과 제품 명세는 형제 레포 `../knk-harness`가 함께 체크아웃돼 있어야 동작합니다. 이 레포만 클론하면 프로젝트 스킬만 로드되고, 하네스 스킬·제품 명세는 빠집니다.
 - **Windows 주의**: `git config core.symlinks true`(+ 개발자 모드/관리자 권한) 없이 클론하면 심링크가 실제 링크가 아니라 대상 경로가 담긴 텍스트 파일로 체크아웃돼 스킬 로딩이 조용히 깨집니다.
 
 ### 프롬프트·명세 변경
@@ -106,3 +125,17 @@
 - **최소 변경.** 요청 범위 밖 개선을 끼워넣지 않습니다(원칙은 `karpathy-guidelines` 스킬).
   기존 코드·문서의 톤과 구조를 따르고, 무관한 문장을 다듬고 싶어도 참습니다.
 - **실패를 숨기지 않습니다.** 테스트 실패·스킵·미실시, 확인 못 한 부분은 그대로 보고합니다.
+
+## Review guidelines
+
+Codex가 이 레포의 PR을 리뷰할 때 따르는 기준입니다. "통과시키지 않겠다"는 적대적 자세로 실제 결함을 찾고, 좋은 점 칭찬은 생략합니다. 근거 없는 추측성 지적은 하지 않으며, 스타일보다 장애 가능성이 있는 문제를 우선합니다.
+
+- 버그·로직 오류·처리되지 않은 엣지 케이스(null·빈값·경계·동시성)
+- 보안: 입력 검증 누락, 시크릿 노출, injection, 권한 처리
+- 실패 경로·예외 처리·타임아웃·재시도 누락
+- 성능·불필요한 비용: 중복 LLM 호출, N+1, 토큰 낭비
+- 테스트 부재·약한 단언·커버되지 않은 분기
+- 팀 컨벤션 위반: 커밋·PR에 `Co-Authored-By` 금지, `git add -- <경로>`만 사용(`git add -A`/`.` 금지), `dev` 직접 커밋 금지, 프롬프트 전문·시크릿·채팅 원문 노출 금지
+- 제품 동작·계약 변경이 관련 스펙(`spec/`, `../knk-harness/docs/product-specs/`)과 어긋나는지
+
+각 지적에는 코드상의 근거와 구체적 수정 방향을 함께 답니다. 실제 결함이 없으면 억지 지적 없이 그 사실을 밝힙니다.
