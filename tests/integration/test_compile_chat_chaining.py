@@ -25,7 +25,7 @@ _FIXTURES = Path(__file__).parent.parent / "unit" / "fixtures"
 
 
 def _compiled() -> StoryCompileResponse:
-    spec = StorySpec(**json.loads((_FIXTURES / "spec_valid.json").read_text(encoding="utf-8")))
+    spec = StorySpec(**json.loads((_FIXTURES / "spec_valid.json").read_text(encoding="utf-8-sig")))
     return spec_to_response(spec)
 
 

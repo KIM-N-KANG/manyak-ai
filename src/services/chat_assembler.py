@@ -31,7 +31,7 @@ def _body_only(text: str) -> str:
     줄바꿈은 LF/CRLF 모두 허용한다(read_version과 동일 관례) — CRLF로 저장된
     템플릿에서 frontmatter가 본문에 새어 LLM에 전달되는 사고를 막는다(KNK-574).
     """
-    m = re.match(r"^---\r?\n.*?\r?\n---\r?\n(.*)$", text, re.S)
+    m = re.match(r"^---[ \t]*\r?\n.*?\r?\n---[ \t]*\r?\n(.*)$", text, re.S)
     return (m.group(1) if m else text).strip()
 
 

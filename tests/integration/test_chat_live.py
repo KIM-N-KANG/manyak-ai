@@ -16,7 +16,7 @@ from src.services.chat_choices import generate_choices
 
 def _sse_data(body: str, event: str) -> dict:
     """SSE 응답 본문에서 지정 event 프레임의 data(JSON)를 뽑는다."""
-    for frame in body.split("\n\n"):
+    for frame in body.replace("\r\n", "\n").split("\n\n"):
         lines = frame.splitlines()
         if lines and lines[0] == f"event: {event}":
             data_line = next(ln for ln in lines if ln.startswith("data: "))

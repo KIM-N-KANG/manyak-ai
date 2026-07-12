@@ -93,6 +93,13 @@ def test_body_only_strips_frontmatter_crlf() -> None:
     assert "layer" not in body  # frontmatter가 시스템 프롬프트에 새지 않음
 
 
+def test_body_only_strips_frontmatter_trailing_space() -> None:
+    """구분자 `---` 뒤에 공백·탭이 붙어도 frontmatter가 잘려야 한다(편집 실수 방어, Gemini 리뷰)."""
+    body = _body_only("--- \nlayer: CORE\nversion: 1\n---\t\n본문 시작")
+    assert body == "본문 시작"
+    assert "layer" not in body  # 뒤 공백 때문에 frontmatter가 새지 않음
+
+
 def test_body_only_no_frontmatter_passthrough() -> None:
     """frontmatter가 없으면 원문(공백만 정리)을 그대로 반환한다."""
     assert _body_only("frontmatter 없는 본문") == "frontmatter 없는 본문"

@@ -266,11 +266,11 @@ def test_spec_to_response_render_equality() -> None:
     assert res.stories.description == data["meta"]["description"]
 
     # 사건·엔딩 — 항목별 필드 정확 일치(description↔key_sentence 뒤바뀜 방지)
-    for got, src in zip(res.story_main_events, data["main_events"]):
+    for got, src in zip(res.story_main_events, data["main_events"], strict=True):
         assert (got.name, got.description, got.key_sentence) == (
             src["name"], src["description"], src["key_sentence"]
         )
-    for got, src in zip(res.story_endings, data["endings"]):
+    for got, src in zip(res.story_endings, data["endings"], strict=True):
         assert (got.name, got.min_turns, got.achievement_condition, got.epilogue) == (
             src["name"], src["min_turns"], src["achievement_condition"], src["epilogue"]
         )
