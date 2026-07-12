@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -11,6 +12,16 @@ from src.schemas.chat_turn import (
 from src.services.chat_assembler import assemble
 from src.services.chat_llm import stream_chat_turn
 from src.services.chat_choices import generate_choices
+
+
+def _sse_data(body: str, event: str) -> dict:
+    """SSE 응답 본문에서 지정 event 프레임의 data(JSON)를 뽑는다."""
+    for frame in body.split("\n\n"):
+        lines = frame.splitlines()
+        if lines and lines[0] == f"event: {event}":
+            data_line = next(ln for ln in lines if ln.startswith("data: "))
+            return json.loads(data_line[len("data: "):])
+    raise AssertionError(f"{event} 프레임이 응답에 없습니다: {body!r}")
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +75,35 @@ async def test_chat_turn_live() -> None:
     assert "[다음 행동]" not in completed["ai_output"]
     assert "choices" not in completed
 
+    # 로깅 메타(KNK-243): include_usage로 실 DeepSeek이 토큰을 채우는지는 라이브만 관측한다.
+    # 공급자가 usage 방식을 바꾸면 백엔드 ai_call_logs 토큰이 조용히 null이 되는 회귀를 잡는다.
+    assert completed["input_tokens"] and completed["input_tokens"] > 0
+    assert completed["output_tokens"] and completed["output_tokens"] > 0
+    assert completed["model"]
+
     # 분리된 2번째 호출이 항상 정확히 3개를 보장한다(엔드포인트와 동일 흐름).
     next_actions = await generate_choices(req, completed["ai_output"])
     assert len(next_actions.choices) == 3
     assert all(c.strip() for c in next_actions.choices)
+
+
+async def test_chat_turn_full_path_live(client) -> None:
+    """전 구간 결합(HTTP → 조립 → 실 LLM → SSE 직렬화)을 ASGI client로 최소 1개 확보한다.
+
+    다른 라이브 테스트가 서비스 함수를 직접 부르는 것과 달리, 여기서는 실제 엔드포인트를
+    거쳐 '실 LLM × 와이어 계약'을 검증한다(aiOutput camelCase·choices 3개·합산 meta 토큰).
+    """
+    payload = _request().model_dump(mode="json")
+    resp = await client.post("/api/v1/chat/turns", json=payload)
+
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    body = resp.text
+    assert "event: error" not in body, body
+    assert "event: completed" in body
+
+    completed = _sse_data(body, "completed")
+    assert completed["aiOutput"].strip()  # 와이어 계약 키는 camelCase
+    assert len(completed["choices"]) == 3
+    # 합산 meta 토큰(본문+선택지+판정)이 실 usage로 채워진다.
+    assert completed["meta"]["inputTokenCount"] and completed["meta"]["inputTokenCount"] > 0
