@@ -72,7 +72,7 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
             # 메타 합산: 토큰은 본문+선택지+판정, prompt_versions는 6레이어+NEXT_ACTIONS+JUDGEMENT,
             # retry_count는 선택지 재호출 횟수. model·provider는 단일(같은 v4-flash·deepseek).
             meta = ChatResponseMeta(
-                model=ev.get("model") or settings.deepseek_chat_model,
+                model=ev.get("model") or settings.chat_model,
                 prompt_versions={
                     **LAYER_VERSIONS,
                     "NEXT_ACTIONS": NEXT_ACTIONS_VERSION,

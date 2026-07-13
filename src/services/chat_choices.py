@@ -169,7 +169,7 @@ def _accumulate(collected: list[str], seen: set[str], raw: object) -> None:
 async def _call(system: str, user: str) -> tuple[list, str, int | None, int | None]:
     """선택지 호출 1회 → (choices 리스트, model, in_tokens, out_tokens). 실패 시 예외."""
     response = await _client.chat.completions.create(
-        model=settings.deepseek_chat_model,
+        model=settings.chat_model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -188,7 +188,7 @@ async def _call(system: str, user: str) -> tuple[list, str, int | None, int | No
     usage = response.usage
     return (
         choices,
-        response.model or settings.deepseek_chat_model,
+        response.model or settings.chat_model,
         getattr(usage, "prompt_tokens", None),
         getattr(usage, "completion_tokens", None),
     )
@@ -205,7 +205,7 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
     seen: set[str] = set()
     input_tokens: int | None = None
     output_tokens: int | None = None
-    model = settings.deepseek_chat_model
+    model = settings.chat_model
     attempt = 0  # 0=첫 호출, 1·2=재호출. 종료 시 값이 곧 재호출 횟수다.
 
     while True:
@@ -225,7 +225,7 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
             capture_ai_exception(
                 e,
                 feature=FEATURE_CHOICE_GENERATION,
-                model=settings.deepseek_chat_model,
+                model=settings.chat_model,
                 prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
                 retry_count=attempt,  # 0=첫 호출, 1·2=재호출
                 latency_ms=int((time.monotonic() - t0) * 1000),

@@ -197,7 +197,7 @@ async def test_call_contract(monkeypatch) -> None:
     monkeypatch.setattr(chat_choices._client.chat.completions, "create", _create)
     await chat_choices._call("SYS", "USER")
 
-    assert captured["model"] == chat_choices.settings.deepseek_chat_model
+    assert captured["model"] == chat_choices.settings.chat_model
     assert captured["messages"] == [
         {"role": "system", "content": "SYS"},
         {"role": "user", "content": "USER"},

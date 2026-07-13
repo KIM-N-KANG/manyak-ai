@@ -241,7 +241,7 @@ async def test_judgement_call_contract(monkeypatch) -> None:
     monkeypatch.setattr(chat_judgement._client.chat.completions, "create", _create)
     await generate_judgement(_request(main_events=_EVENTS, endings=_ENDINGS), "*장면*")
 
-    assert captured["model"] == chat_judgement.settings.deepseek_chat_model
+    assert captured["model"] == chat_judgement.settings.chat_model
     assert [m["role"] for m in captured["messages"]] == ["system", "user"]
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["max_tokens"] == chat_judgement._MAX_TOKENS

@@ -176,7 +176,7 @@ async def test_stream_call_contract(monkeypatch) -> None:
     msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
     _ = [e async for e in stream_chat_turn(msgs)]
 
-    assert captured["model"] == chat_llm.settings.deepseek_chat_model
+    assert captured["model"] == chat_llm.settings.chat_model
     assert captured["messages"] is msgs  # 조립한 messages를 가공 없이 그대로 넘긴다
     assert captured["stream"] is True
     assert captured["stream_options"] == {"include_usage": True}  # 토큰 로깅용
