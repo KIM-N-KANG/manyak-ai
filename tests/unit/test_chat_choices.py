@@ -151,6 +151,63 @@ async def test_bad_json_then_fallback(monkeypatch) -> None:
     assert res.retry_count == 2
 
 
+# ── _call 구조 방어 4분기 (KNK-574 감사 1-1) ────────────────────────────────
+# _call은 응답이 계약을 어기면 ValueError를 던지고, generate_choices가 이를 흡수해
+# 폴백으로 간다. JSONDecodeError 외 3분기(빈 content·비-dict·choices 부재)를 직접 태운다.
+async def test_call_strips_code_fence(monkeypatch) -> None:
+    # 코드펜스로 감싼 정상 응답도 펜스를 벗겨 파싱해야 한다(_strip_code_fence 실경로).
+    _mock_calls(monkeypatch, ['```json\n{"choices": ["a", "b", "c"]}\n```'])
+    choices, model, _in, _out = await chat_choices._call("sys", "user")
+    assert choices == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",  # 빈 content
+        '["a", "b"]',  # 유효 JSON이나 dict가 아님(배열)
+        '{"foo": 1}',  # dict지만 choices 키 부재
+        '{"choices": "abc"}',  # choices가 list가 아님
+    ],
+)
+async def test_call_raises_on_malformed_structure(monkeypatch, content) -> None:
+    _mock_calls(monkeypatch, [content])
+    with pytest.raises(ValueError):
+        await chat_choices._call("sys", "user")
+
+
+async def test_malformed_structure_absorbed_to_fallback(monkeypatch) -> None:
+    # 위 구조 위반이 generate_choices까지 오면 흡수돼 폴백 3개로 수렴한다(배열 케이스 대표).
+    _mock_calls(monkeypatch, ['["a", "b"]'])
+    res = await generate_choices(_request(), "*장면*")
+    assert res.choices == list(_FALLBACK)
+    assert res.retry_count == 2
+
+
+# ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
+# 가짜가 kwargs를 버리면 model·json 모드·max_tokens·thinking 회귀를 못 잡는다.
+# 넘긴 인자를 붙잡아 선택지 호출 계약(비스트리밍 json 단발)을 고정한다.
+async def test_call_contract(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"choices": ["a", "b", "c"]}', usage=_Usage(5, 7))
+
+    monkeypatch.setattr(chat_choices._client.chat.completions, "create", _create)
+    await chat_choices._call("SYS", "USER")
+
+    assert captured["model"] == chat_choices.settings.deepseek_chat_model
+    assert captured["messages"] == [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "USER"},
+    ]
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["max_tokens"] == chat_choices._MAX_TOKENS
+    assert captured["extra_body"] == chat_choices._THINKING_DISABLED
+    assert "stream" not in captured  # 선택지는 비스트리밍 단발 호출
+
+
 # ── 사건 재료 치환 (KNK-485, §5-3-5 선택지 3구성 재료) ──────────────────────
 def test_build_user_replaces_event_material_slots() -> None:
     from src.schemas.chat_turn import MainEvent, TargetMainEvent

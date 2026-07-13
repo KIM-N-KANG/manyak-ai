@@ -40,15 +40,58 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      # branch coverage를 측정하고 최저선(90%) 아래면 실패시킨다(재감사 #9). 최저선은 현재
+      # 커버리지(95%)보다 낮게 잡은 baseline이다 — 정상 변경을 막지 않으면서 회귀를 걸러내고,
+      # 팀 합의로 점차 올린다. term-missing이 미실행 라인을 PR 로그에 남긴다.
       - name: Run tests
         env:
           DEEPSEEK_API_KEY: dummy-key-for-ci
-        run: pytest
+        run: pytest --cov --cov-report=term-missing --cov-fail-under=90
+
+  # 빌드한 이미지를 실제로 기동해 /api/v1/health 200을 PR 단계에서 확인한다(KNK-574 감사 3장).
+  # CI가 이미지를 빌드만 하고 띄우지 않아, COPY prompt 누락 등 패키징 회귀가 prod 배포 게이트에서야
+  # 드러나던 공백을 메운다. 프롬프트 로딩이 임포트 시점이라 컨테이너 기동만으로 회귀가 걸린다.
+  smoke:
+    name: Image smoke (health)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 러너 아키텍처(amd64) 단일 이미지를 로컬 데몬에 적재한다(멀티아치 build-push는 --load 불가).
+      - name: Build image (load to local daemon)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: manyak-ai:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run container and check health
+        run: |
+          docker run -d --name ai-smoke -e DEEPSEEK_API_KEY=dummy-key-for-ci -p 8000:8000 manyak-ai:smoke
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' http://localhost:8000/api/v1/health || true)
+            if [ "$code" = "200" ] && grep -q '"status":"ok"' /tmp/health.json; then
+              echo "✅ /api/v1/health 200 ok"; cat /tmp/health.json
+              docker rm -f ai-smoke; exit 0
+            fi
+            echo "health 대기 $i/30 (code=$code)"; sleep 2
+          done
+          echo "::error::health 스모크 실패 — 컨테이너 로그:"; docker logs ai-smoke
+          docker rm -f ai-smoke; exit 1
 
   docker:
     name: Docker build and publish
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, smoke]
 
     steps:
       - name: Checkout
