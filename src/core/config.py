@@ -13,10 +13,11 @@ class Settings(BaseSettings):
 
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-pro"  # 스토리 컴파일용(pro)
-    # 채팅 턴·선택지·판정·스토리라인 생성 공용 fast 모델(KNK-215). 이름의 chat은 역사적 표기다.
-    # env var(DEEPSEEK_CHAT_MODEL)는 manyak-infra와 묶인 계약이라 필드 rename은 별도 과제.
-    deepseek_chat_model: str = "deepseek-v4-flash"
+    # 모델은 용도별 3개 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
+    # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
+    story_compile_model: str = "deepseek-v4-pro"  # 스토리 컴파일 전용(pro)
+    storylines_model: str = "deepseek-v4-flash"  # 스토리라인 생성 전용(fast, KNK-215)
+    chat_model: str = "deepseek-v4-flash"  # 채팅 턴·선택지·판정 공용(fast, KNK-215)
     # 로깅 메타 provider. 모델은 응답(response.model)에서 읽지만 provider는 응답에 없어
     # config가 유일한 출처다 — 공급자 교체 시 여기만 바꾸면 로그가 정확해진다(KNK-243).
     llm_provider: str = "deepseek"

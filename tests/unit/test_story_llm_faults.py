@@ -183,7 +183,7 @@ async def test_complete_json_call_contract_compile(monkeypatch) -> None:
     monkeypatch.setattr(story_llm._client.chat.completions, "create", _capture(captured))
     await story_llm._complete_json("SYS", "USER")  # model 미지정 → 컴파일 기본
 
-    assert captured["model"] == story_llm.settings.deepseek_model  # compile 기본 = pro
+    assert captured["model"] == story_llm.settings.story_compile_model  # compile 기본 = pro
     assert captured["messages"] == [
         {"role": "system", "content": "SYS"},
         {"role": "user", "content": "USER"},
@@ -199,6 +199,6 @@ async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
     monkeypatch.setattr(story_llm._client.chat.completions, "create", _capture(captured))
     await story_llm.generate_storylines("SYS", "USER")
 
-    assert captured["model"] == story_llm.settings.deepseek_chat_model  # storylines = flash
+    assert captured["model"] == story_llm.settings.storylines_model  # storylines = flash
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["extra_body"] == story_llm._THINKING_DISABLED

@@ -36,9 +36,8 @@
   완전 stateless — 상태는 백엔드가 들고, 이 서버는 요청마다 받은 컨텍스트로 프롬프트를 조립해 LLM을 호출합니다.
 - Python 3.11+, Pydantic(+pydantic-settings) 기반입니다.
 - LLM은 **DeepSeek API를 OpenAI SDK(호환 클라이언트)로 호출**합니다. Anthropic SDK는 쓰지 않습니다.
-  - `deepseek-v4-pro` — 스토리 컴파일 전용.
-  - `deepseek-v4-flash` — 채팅 턴·선택지·판정·스토리라인 공용.
-    env 이름 `DEEPSEEK_CHAT_MODEL`의 "chat"은 역사적 표기입니다(rename은 manyak-infra와 묶인 별도 과제, `src/core/config.py` 주석 참조).
+  - `deepseek-v4-pro`(env `STORY_COMPILE_MODEL`) — 스토리 컴파일 전용.
+  - `deepseek-v4-flash` — 스토리라인 생성(env `STORYLINES_MODEL`)과 채팅 턴·선택지·판정(env `CHAT_MODEL`)에 각각. 지금은 같은 flash 기본이지만 용도별 독립 설정이 가능하도록 env를 3개로 분리했습니다(KNK-595). manyak-infra의 Compose env 이름 동기화는 짝 작업입니다.
 - API는 `/api/v1` 아래 health·story·chat 라우터(`src/api/v1/`)이고, 채팅 턴은 SSE 스트리밍을 지원합니다.
 - git 추적 구조: `prompt/`(LLM 프롬프트 템플릿), `spec/`(내부 설계 명세), `src/`(FastAPI 앱: api/v1·core·schemas·services), `tests/`(unit + API 테스트).
 - **로컬 전용(git 무시) 디렉터리** — 존재하지만 커밋 대상이 아닙니다. 커밋에 딸려 들어가면 사고입니다:
