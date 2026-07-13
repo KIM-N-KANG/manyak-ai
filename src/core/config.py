@@ -2,7 +2,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # extra="ignore": .env에 남은 옛/무관 키(예: 폐기된 DEEPSEEK_MODEL·DEEPSEEK_CHAT_MODEL)를
+    # 기동 실패로 만들지 않는다. pydantic-settings는 dotenv 여분 키를 기본 금지(extra_forbidden)해
+    # 필드 rename(KNK-595) 뒤 옛 .env로 앱이 안 뜨는 문제가 있었다 — 프로세스 env는 원래 무시하므로
+    # dotenv도 같게 맞춘다.
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
     app_version: str = "0.1.0"
