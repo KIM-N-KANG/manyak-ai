@@ -42,3 +42,7 @@ experiment/
 
 # 참고·원천 자료 창고 (정제되지 않은 크롤·발췌 등 — 로컬 전용)
 references/
+
+# 로컬 전용 스킬 (로컬 도구 scripts/·산출물 references/에만 의존 — genre-lorebook)
+.agents/skills/genre-lorebook/
+.claude/skills/genre-lorebook
