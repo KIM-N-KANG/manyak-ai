@@ -10,6 +10,7 @@ dependencies = [
     # "aiohttp>=3.9.0,<3.10.0",
     "openai>=1.0.0",
     "sentry-sdk[fastapi]>=2.0.0",
+    "langfuse>=4.0.0",
 ]
 
 [project.optional-dependencies]

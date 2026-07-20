@@ -32,5 +32,12 @@ class Settings(BaseSettings):
     sentry_environment: str = "local"
     sentry_traces_sample_rate: float = 0.0
 
+    # Langfuse LLM 관측 (KNK-624). 키가 비면 비활성(no-op) — Sentry DSN 규약과 동일하게 맞춘다.
+    # Sentry와 달리 프롬프트·응답 원문을 싣는다(AN-4-10 원문 비수집의 명시적 예외 — 6-analytics §6-7 개정이 짝).
+    # host는 가입 리전마다 다르다(us: cloud / eu: eu.cloud / jp: jp.cloud) — 기본값 us를 .env로 덮는다.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
 
 settings = Settings()

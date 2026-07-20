@@ -16,7 +16,8 @@ import re
 import time
 from collections.abc import AsyncIterator
 
-from openai import AsyncOpenAI, OpenAIError
+from langfuse.openai import AsyncOpenAI  # 드롭인 계측 — 키 미설정 시 no-op(KNK-624)
+from openai import OpenAIError
 
 from src.core.config import settings
 from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
