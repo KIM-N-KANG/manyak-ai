@@ -4,7 +4,6 @@ import pytest
 
 from src.api.v1 import chat as chat_module
 from src.schemas.chat_turn import TargetMainEventOut
-from src.services.chat_choices import ChoicesResult
 from src.services.chat_judgement import JudgementResult
 
 
@@ -43,19 +42,6 @@ def mock_events(monkeypatch):
 
 
 @pytest.fixture
-def mock_next_actions(monkeypatch):
-    """선택지 호출(generate_choices)을 고정 결과로 바꾼다(선택지 LLM 회피)."""
-
-    def _set(result: ChoicesResult) -> None:
-        async def _fake(req, ai_output):
-            return result
-
-        monkeypatch.setattr(chat_module, "generate_choices", _fake)
-
-    return _set
-
-
-@pytest.fixture
 def mock_judgement(monkeypatch):
     """판정 호출(generate_judgement)을 고정 결과로 바꾼다(판정 LLM 회피)."""
 
@@ -77,22 +63,14 @@ def _data_of(body: str, event: str) -> dict:
     raise AssertionError(f"event {event} 없음:\n{body}")
 
 
-async def test_chat_turn_sse_token_and_completed(client, mock_events, mock_next_actions) -> None:
-    # 본문 스트림은 choices를 싣지 않는다. 엔드포인트가 선택지 호출 결과를 합쳐 completed로 낸다.
+async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
+    # 선택지 분리(KNK-625) 후: completed는 선택지 호출 없이 본문·판정만으로 발행되고,
+    # choices는 하위호환 빈 배열 고정이다(백엔드는 '빈 배열이면 저장하지 않음').
     mock_events(
         [
             {"event": "token", "text": "안녕"},
             {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash"},
         ]
-    )
-    mock_next_actions(
-        ChoicesResult(
-            choices=["가", "나", "다"],
-            input_tokens=None,
-            output_tokens=None,
-            retry_count=0,
-            model="deepseek-v4-flash",
-        )
     )
     resp = await client.post("/api/v1/chat/turns", json=_payload())
 
@@ -108,17 +86,17 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events, mock_next_
 
     completed = _data_of(body, "completed")
     assert completed["aiOutput"] == "안녕"
-    assert completed["choices"] == ["가", "나", "다"]  # 선택지 호출 결과가 합쳐진다
+    assert completed["choices"] == []  # 선택지는 /chat/choices로 분리 — 빈 배열 고정
     assert _data_of(body, "token") == {"text": "안녕"}
 
     # 로깅 메타(KNK-243): chat은 camelCase 와이어
     meta = completed["meta"]
     assert meta["provider"] == "deepseek"
-    assert meta["retryCount"] == 0
+    assert meta["retryCount"] == 0  # 본문·판정은 재호출 없음 — 0 고정
     assert meta["promptVersions"]["SAFETY"] >= 1  # 6레이어 버전 객체
-    assert meta["promptVersions"]["NEXT_ACTIONS"] >= 1  # 선택지 프롬프트 버전 합류
+    assert "NEXT_ACTIONS" not in meta["promptVersions"]  # 선택지 버전 키는 /chat/choices로 이동
     assert meta["model"]  # 이벤트에 model 없으면 설정값으로 폴백
-    # mock 이벤트·선택지 모두 토큰이 없어 null
+    # mock 이벤트에 토큰이 없어 null
     assert meta["inputTokenCount"] is None
     assert meta["outputTokenCount"] is None
     assert "input_token_count" not in body  # snake_case 아님(chat은 camel)
@@ -131,23 +109,18 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events, mock_next_
     assert meta["promptVersions"]["JUDGEMENT"] >= 1
 
 
-async def test_chat_turn_merges_tokens_and_retry(client, mock_events, mock_next_actions) -> None:
-    # 본문·선택지 토큰은 합산되고, retryCount는 선택지 재호출 횟수가 실린다.
+async def test_chat_turn_meta_body_tokens_and_fixed_retry(client, mock_events) -> None:
+    # 선택지 분리 후 토큰 합산은 본문(+판정)만이고, retryCount는 0 고정이다 —
+    # 선택지 몫(토큰·재호출 횟수)이 completed meta에 섞이지 않는지 고정하는 회귀 그물.
     mock_events(
         [{"event": "completed", "ai_output": "장면", "model": "deepseek-v4-flash",
           "input_tokens": 100, "output_tokens": 40}]
     )
-    mock_next_actions(
-        ChoicesResult(
-            choices=["가", "나", "다"], input_tokens=30, output_tokens=12,
-            retry_count=2, model="deepseek-v4-flash",
-        )
-    )
     resp = await client.post("/api/v1/chat/turns", json=_payload())
     meta = _data_of(resp.text, "completed")["meta"]
-    assert meta["inputTokenCount"] == 130  # 100 + 30
-    assert meta["outputTokenCount"] == 52  # 40 + 12
-    assert meta["retryCount"] == 2
+    assert meta["inputTokenCount"] == 100  # 본문만(판정은 재료 없어 스킵)
+    assert meta["outputTokenCount"] == 40
+    assert meta["retryCount"] == 0
 
 
 async def test_chat_turn_sse_error(client, mock_events) -> None:
@@ -160,15 +133,11 @@ async def test_chat_turn_sse_error(client, mock_events) -> None:
 
 
 async def test_chat_turn_completed_serializes_judgement_meta(
-    client, mock_events, mock_next_actions, mock_judgement
+    client, mock_events, mock_judgement
 ) -> None:
     # 재료가 실린 턴: 판정 3필드가 completed까지 camelCase로 직렬화되고, meta.promptVersions에
     # JUDGEMENT 키가 실리며, 판정 토큰이 합산되는지 엔드포인트 전체 흐름으로 확인한다(#3 리뷰 반영).
     mock_events([{"event": "completed", "ai_output": "장면", "model": "deepseek-v4-flash"}])
-    mock_next_actions(
-        ChoicesResult(choices=["가", "나", "다"], input_tokens=None,
-                      output_tokens=None, retry_count=0, model="deepseek-v4-flash")
-    )
     mock_judgement(
         JudgementResult(
             target_main_event=TargetMainEventOut(name="반란의 증거", progress_turns=2),
@@ -202,7 +171,7 @@ async def test_chat_turn_completed_serializes_judgement_meta(
     assert completed["endingName"] == "왕좌를 되찾다"
     assert "progress_turns" not in body  # snake_case 누출 없음
 
-    # meta.promptVersions에 JUDGEMENT 키가 실리고, 판정 토큰이 합산된다(본문·선택지 토큰 없음 → 15/5)
+    # meta.promptVersions에 JUDGEMENT 키가 실리고, 판정 토큰이 합산된다(본문 토큰 없음 → 15/5)
     meta = completed["meta"]
     assert meta["promptVersions"]["JUDGEMENT"] >= 1
     assert meta["inputTokenCount"] == 15

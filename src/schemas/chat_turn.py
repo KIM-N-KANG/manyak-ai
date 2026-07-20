@@ -175,16 +175,14 @@ class TargetMainEventOut(BaseModel):
 
 
 class CompletedData(BaseModel):
-    """event: completed — 한 턴 응답 완료.
+    """event: completed — 한 턴 응답 완료(본문 + 판정 메타).
 
-    엔드포인트가 본문 호출(상황·대사)과, 본문과 분리된 선택지 호출(다음 행동 3개)의 결과를 합쳐 두 필드로 담는다.
-
-    - aiOutput: 본문(상황 묘사 + 인물 대사)만. **선택지는 제외**한다. 백엔드가
-      chatId·turnId를 더해 이 값만 DB(history)에 저장한다 — 선택지는 '제안된
-      가능성'이라 실제 진행만 담는 History에 남기지 않는다(실제 진행은 사용자가 고른
-      다음 user 입력이다).
-    - choices: 다음 행동 선택지 3개(본문과 분리된 별도 호출이 코드로 정확히 3개 보장). UI
-      버튼용이며 History에는 들어가지 않는다.
+    - aiOutput: 본문(상황 묘사 + 인물 대사)만. 백엔드가 chatId·turnId를 더해 이 값만
+      DB(history)에 저장한다.
+    - choices: **하위호환 빈 배열 고정**(KNK-625). 선택지 생성은 전용 엔드포인트
+      `/chat/choices`로 분리됐다 — completed가 선택지를 기다리지 않아 본문 확정이
+      밀리지 않는다. 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3)이라
+      선행 배포에 안전하며, 전환 완료 후 필드 제거를 검토한다.
     """
 
     # aiOutput은 manyak-server SSE 와이어 계약 키(camelCase, server ChatService가 SSOT)라
