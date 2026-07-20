@@ -20,10 +20,13 @@ disabled"를 stderr에 찍는다(LLM 호출 자체는 정상 동작한다). 로�
 """
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 
-from langfuse import Langfuse, get_client
+from langfuse import Langfuse, get_client, propagate_attributes
 
 from src.core.config import settings
+from src.core.request_context import get_correlation_ids
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,35 @@ def init_langfuse() -> None:
     logger.info(
         "Langfuse 활성 — host=%s env=%s", settings.langfuse_host, settings.sentry_environment
     )
+
+
+@contextmanager
+def observe_request(name: str) -> Iterator[None]:
+    """요청 하나를 트레이스 하나로 묶는다 — 엔드포인트가 본 작업을 이 블록으로 감싼다.
+
+    이 블록 안에서 일어난 LLM 호출은 전부 하위 관측으로 들어간다. 그래서 compile의 부분
+    재호출(최대 3회)이나 선택지 누적 재호출도 흩어지지 않고 한 트레이스에 모인다.
+
+    상관관계 헤더(X-Manyak-*)를 Langfuse 축으로 옮긴다 — session_id는 대화 묶음 검색,
+    user_id는 사용자별 집계, request_id는 백엔드 로그·Sentry와의 교차 조회에 쓴다. 값이
+    없으면(로컬 호출 등) 그 축만 빠지고 트레이스는 정상 생성된다.
+
+    propagate_attributes는 **루트 스팬을 감싸는 시점**에 불러야 한다 — 늦게 부르면 그 전에
+    만들어진 하위 스팬에 속성이 안 붙어 집계에서 누락된다(SDK 문서 경고).
+
+    비활성 모드(키 미설정)에서도 안전하다: tracing_enabled=False라 스팬이 만들어지지 않고
+    호출은 그대로 통과한다.
+    """
+    request_id, session_id, device_id_hash = get_correlation_ids()
+    client = get_client()
+    with client.start_as_current_observation(name=name, as_type="span"):
+        with propagate_attributes(
+            session_id=session_id,
+            user_id=device_id_hash,  # 원본 기기 식별자가 아니라 해시다(AN-4-10)
+            trace_name=name,
+            tags=[f"request_id:{request_id}"] if request_id else None,
+        ):
+            yield
 
 
 def shutdown_langfuse() -> None:
