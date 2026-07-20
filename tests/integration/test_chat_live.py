@@ -11,7 +11,6 @@ from src.schemas.chat_turn import (
 )
 from src.services.chat_assembler import assemble
 from src.services.chat_llm import stream_chat_turn
-from src.services.chat_choices import generate_choices
 
 
 def _sse_data(body: str, event: str) -> dict:
@@ -80,11 +79,8 @@ async def test_chat_turn_live() -> None:
     assert completed["input_tokens"] and completed["input_tokens"] > 0
     assert completed["output_tokens"] and completed["output_tokens"] > 0
     assert completed["model"]
-
-    # 분리된 전용 호출(/chat/choices와 동일 흐름)이 항상 정확히 3개를 보장한다(KNK-625).
-    next_actions = await generate_choices(req, completed["ai_output"])
-    assert len(next_actions.choices) == 3
-    assert all(c.strip() for c in next_actions.choices)
+    # 선택지 생성기 직접 호출은 두지 않는다 — 생성기 분기는 유닛(test_chat_choices.py)이
+    # 전부 덮고, 실 LLM 검증은 전용 엔드포인트 테스트(아래 full_path)가 담당한다(중복 과금 제거).
 
 
 async def test_chat_turn_full_path_live(client) -> None:
@@ -129,7 +125,11 @@ async def test_chat_choices_full_path_live(client) -> None:
     data = resp.json()
     assert len(data["choices"]) == 3
     assert all(c.strip() for c in data["choices"])
+    # meta(snake_case 계약)가 실 usage로 채워진다 — 백엔드 choice_generation 행 적재 재료.
     meta = data["meta"]
-    assert meta["input_token_count"] and meta["input_token_count"] > 0  # snake_case 계약
+    assert meta["input_token_count"] and meta["input_token_count"] > 0
+    assert meta["output_token_count"] and meta["output_token_count"] > 0
+    assert meta["model"]
+    assert meta["provider"] == "deepseek"
+    assert 0 <= meta["retry_count"] <= 2  # 누적 재호출 상한(_MAX_REFILL)
     assert meta["prompt_versions"]["NEXT_ACTIONS"] >= 1
-    assert meta["retry_count"] >= 0
