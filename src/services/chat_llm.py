@@ -99,8 +99,9 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
             yield {"event": EVENT_TOKEN, "text": delta}
 
         ai_output = _strip_speaker_bold(full.strip())  # 화자 라벨의 볼드 제거(저장·표시값)
-        # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가 선택지 호출 메타를 합산하고
+        # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가 판정 호출 메타를 합산하고
         # prompt_versions·provider를 더해 completed의 meta로 조립한다(KNK-243).
+        # 선택지 몫 메타는 KNK-625로 /chat/choices 응답 meta에 분리됐다.
         yield {
             "event": EVENT_COMPLETED,
             "ai_output": ai_output,
