@@ -12,7 +12,7 @@
   페이로드만의 공식 예외(5-ai-server §5-1)라 여기로 넓히지 않는다.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.schemas.chat_turn import ChatTurnRequest
 from src.schemas.response_meta import StoryResponseMeta
@@ -36,10 +36,11 @@ class ChatChoicesResponse(BaseModel):
 
     choices는 항상 정확히 3개다 — 부족·실패는 generate_choices가 재호출·폴백으로
     흡수하므로 유효한 요청에서 이 응답은 실패하지 않는다(백엔드는 스키마 위반 422와
-    타임아웃 외 에러 처리가 필요 없다).
+    타임아웃 외 에러 처리가 필요 없다). 개수는 스키마 제약(min/max 3)으로도 강제한다 —
+    코드 버그로 3개가 깨지면 조용히 나가는 대신 응답 검증에서 시끄럽게 실패한다.
     meta는 백엔드 ai_call_logs의 choice_generation 행 적재 재료다(retry_count는
     선택지 재호출 횟수, prompt_versions 키는 레거시 연속성으로 NEXT_ACTIONS 유지).
     """
 
-    choices: list[str]
+    choices: list[str] = Field(min_length=3, max_length=3)
     meta: StoryResponseMeta

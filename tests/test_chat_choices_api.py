@@ -1,13 +1,17 @@
 """선택지 전용 엔드포인트(/chat/choices) API 테스트 — KNK-626.
 
 /chat/turns에서 분리된 동기 REST 호출의 계약을 검증한다: 요청은 턴 재료 + ai_output,
-응답은 choices 3개 + snake_case meta(항상 200 — 실패는 generate_choices가 흡수).
-LLM 호출은 monkeypatch로 회피한다(생성 로직 자체는 tests/unit/test_chat_choices.py 소유).
+응답은 choices 3개 + snake_case meta(유효한 요청이면 LLM 생성 실패도 폴백으로 흡수해
+200 — 스키마 위반 요청은 422). LLM 호출은 monkeypatch로 회피한다(생성 로직 자체는
+tests/unit/test_chat_choices.py 소유).
 """
 
 import pytest
+from pydantic import ValidationError
 
 from src.api.v1 import chat as chat_module
+from src.schemas.chat_choices import ChatChoicesResponse
+from src.schemas.response_meta import StoryResponseMeta
 from src.services.chat_choices import ChoicesResult
 
 
@@ -101,6 +105,19 @@ async def test_chat_choices_fallback_result_is_still_200(client, mock_choices) -
     assert len(data["choices"]) == 3
     assert data["meta"]["retry_count"] == 2
     assert data["meta"]["input_token_count"] is None
+
+
+def test_chat_choices_response_schema_enforces_exactly_three() -> None:
+    # '정확히 3개'는 주석이 아니라 스키마 제약(min/max 3)이다 — 코드 버그로 2개·4개가
+    # 만들어지면 조용히 나가는 대신 응답 검증에서 시끄럽게 실패한다.
+    meta = StoryResponseMeta(
+        model="m", prompt_versions={"NEXT_ACTIONS": 1}, provider="deepseek",
+        input_token_count=None, output_token_count=None, retry_count=0,
+    )
+    with pytest.raises(ValidationError):
+        ChatChoicesResponse(choices=["가", "나"], meta=meta)
+    with pytest.raises(ValidationError):
+        ChatChoicesResponse(choices=["가", "나", "다", "라"], meta=meta)
 
 
 async def test_chat_choices_requires_ai_output(client, mock_choices) -> None:
