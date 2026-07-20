@@ -21,6 +21,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from src.core.config import settings
+from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
 from src.schemas.chat_turn import (
     EVENT_COMPLETED,
     EVENT_ERROR,
@@ -30,7 +31,7 @@ from src.schemas.chat_turn import (
     ErrorData,
     TokenData,
 )
-from src.schemas.response_meta import ChatResponseMeta
+from src.schemas.response_meta import ChatResponseMeta, StoryResponseMeta
 from src.services.chat_assembler import LAYER_VERSIONS, assemble
 from src.services.chat_llm import stream_chat_turn
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
@@ -106,3 +107,23 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
 async def chat_turn(request: ChatTurnRequest) -> StreamingResponse:
     """채팅 한 턴을 SSE로 스트리밍한다(완전 stateless — 받은 재료로 조립·응답만)."""
     return StreamingResponse(_event_stream(request), media_type="text/event-stream")
+
+
+@router.post("/chat/choices", response_model=ChatChoicesResponse)
+async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
+    """다음 행동 선택지 3개를 생성한다 — /chat/turns에서 분리된 전용 호출(KNK-625).
+
+    generate_choices가 부족·실패를 재호출·폴백으로 흡수해 정확히 3개를 보장하므로
+    이 엔드포인트는 항상 200이다. 동기 REST라 표기는 snake_case(story 계열과 동일 —
+    camelCase는 chat SSE completed만의 공식 예외라 넓히지 않는다).
+    """
+    result = await generate_choices(request, request.ai_output)
+    meta = StoryResponseMeta(
+        model=result.model,
+        prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
+        provider=settings.llm_provider,
+        input_token_count=result.input_tokens,
+        output_token_count=result.output_tokens,
+        retry_count=result.retry_count,
+    )
+    return ChatChoicesResponse(choices=result.choices, meta=meta)
