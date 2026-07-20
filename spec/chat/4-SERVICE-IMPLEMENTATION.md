@@ -496,8 +496,9 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 > **선택지 흐름 (전용 엔드포인트 `POST /chat/choices`, KNK-625).** 백엔드가 completed 이후
 > (턴 저장 뒤) 턴 요청과 같은 재료 + 방금 본문(`ai_output`)으로 호출하는 **동기 REST**다.
 > CHOICES 프롬프트로 별도 LLM 호출(비스트리밍 JSON) → 다음 행동 3개. 코드가 개수를 검증해
-> 보충(최대 2회)·패딩으로 항상 정확히 3개를 보장하고(2.5) 호출 실패도 흡수하므로 **응답은
-> 항상 200**이다. 응답 meta(snake_case — camelCase는 SSE completed만의 공식 예외)에 선택지
+> 보충(최대 2회)·패딩으로 항상 정확히 3개를 보장하고(2.5) 호출 실패도 흡수하므로 **유효한
+> 요청이면 LLM 생성 실패도 항상 200**이다(스키마 위반 요청은 422 검증 오류 — "항상 200"은
+> 생성 실패 흡수에 한정). 응답 meta(snake_case — camelCase는 SSE completed만의 공식 예외)에 선택지
 > 몫 토큰·재호출 횟수(`retry_count`)·`NEXT_ACTIONS` 버전을 싣는다(백엔드 `ai_call_logs`의
 > `choice_generation` 행 재료). ⚠️ 요청 history는 **메인 턴과 동일한 스냅샷(이번 턴 제외)**
 > 이어야 한다 — 선택지 호출 시점엔 이번 턴이 이미 DB에 있어 그대로 재조립하면 방금 장면이
