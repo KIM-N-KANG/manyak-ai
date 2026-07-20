@@ -81,7 +81,7 @@ async def test_chat_turn_live() -> None:
     assert completed["output_tokens"] and completed["output_tokens"] > 0
     assert completed["model"]
 
-    # 분리된 2번째 호출이 항상 정확히 3개를 보장한다(엔드포인트와 동일 흐름).
+    # 분리된 전용 호출(/chat/choices와 동일 흐름)이 항상 정확히 3개를 보장한다(KNK-625).
     next_actions = await generate_choices(req, completed["ai_output"])
     assert len(next_actions.choices) == 3
     assert all(c.strip() for c in next_actions.choices)
@@ -91,7 +91,9 @@ async def test_chat_turn_full_path_live(client) -> None:
     """전 구간 결합(HTTP → 조립 → 실 LLM → SSE 직렬화)을 ASGI client로 최소 1개 확보한다.
 
     다른 라이브 테스트가 서비스 함수를 직접 부르는 것과 달리, 여기서는 실제 엔드포인트를
-    거쳐 '실 LLM × 와이어 계약'을 검증한다(aiOutput camelCase·choices 3개·합산 meta 토큰).
+    거쳐 '실 LLM × 와이어 계약'을 검증한다(aiOutput camelCase·빈 choices·본문 meta 토큰).
+    선택지 분리(KNK-625) 후 completed는 선택지를 기다리지 않는다 — 전용 엔드포인트의
+    전 구간 검증은 test_chat_choices_full_path_live가 담당한다.
     """
     payload = _request().model_dump(mode="json")
     resp = await client.post("/api/v1/chat/turns", json=payload)
@@ -104,6 +106,30 @@ async def test_chat_turn_full_path_live(client) -> None:
 
     completed = _sse_data(body, "completed")
     assert completed["aiOutput"].strip()  # 와이어 계약 키는 camelCase
-    assert len(completed["choices"]) == 3
-    # 합산 meta 토큰(본문+선택지+판정)이 실 usage로 채워진다.
+    assert completed["choices"] == []  # 선택지는 /chat/choices로 분리 — 하위호환 빈 배열
+    # meta 토큰(본문, 재료 없어 판정 스킵)이 실 usage로 채워진다.
     assert completed["meta"]["inputTokenCount"] and completed["meta"]["inputTokenCount"] > 0
+    assert completed["meta"]["retryCount"] == 0  # 본문·판정은 재호출 없음
+
+
+async def test_chat_choices_full_path_live(client) -> None:
+    """선택지 전용 엔드포인트(/chat/choices)의 전 구간 결합(HTTP → 실 LLM → 계약) 검증.
+
+    턴 재료 + 방금 본문(ai_output)을 실어 호출하면 실 LLM으로 정확히 3개가 오고,
+    snake_case meta(토큰·재호출 횟수)가 실 usage로 채워지는지 확인한다(KNK-625).
+    """
+    payload = _request().model_dump(mode="json")
+    payload["ai_output"] = (
+        "*레이가 촛불 앞에 멈춰 서서 당신을 바라본다.*\n\n"
+        "레이: 선왕의 침소에서 마지막 밤에 무엇을 보셨는지, 이제는 말씀해 주셔야겠습니다."
+    )
+    resp = await client.post("/api/v1/chat/choices", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["choices"]) == 3
+    assert all(c.strip() for c in data["choices"])
+    meta = data["meta"]
+    assert meta["input_token_count"] and meta["input_token_count"] > 0  # snake_case 계약
+    assert meta["prompt_versions"]["NEXT_ACTIONS"] >= 1
+    assert meta["retry_count"] >= 0
