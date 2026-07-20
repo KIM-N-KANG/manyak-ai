@@ -182,14 +182,15 @@ class CompletedData(BaseModel):
     - choices: **하위호환 빈 배열 고정**(KNK-625). 선택지 생성은 전용 엔드포인트
       `/chat/choices`로 분리됐다 — completed가 선택지를 기다리지 않아 본문 확정이
       밀리지 않는다. 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3)이라
-      선행 배포에 안전하며, 전환 완료 후 필드 제거를 검토한다.
+      선행 배포에 안전하며, 전환 완료 후 필드 제거를 검토한다. 빈 배열은 스키마
+      제약(max_length=0)으로 강제한다 — 선택지가 다시 섞이는 회귀를 스키마가 막는다.
     """
 
     # aiOutput은 manyak-server SSE 와이어 계약 키(camelCase, server ChatService가 SSOT)라
     # 유지하되, 스타일 가이드(.gemini/styleguide.md:42 snake_case)에 맞춰 필드명은 ai_output으로
     # 둔다. ⚠️ 직렬화 시 반드시 model_dump(by_alias=True)를 써야 와이어가 aiOutput이 된다(T3).
     ai_output: str = Field(serialization_alias="aiOutput")
-    choices: list[str]
+    choices: list[str] = Field(default_factory=list, max_length=0)
     # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
     meta: ChatResponseMeta | None = None
     # ── 주요 사건·엔딩 판정 메타 (KNK-483, §5-3-4·D11) ─────────────────────────
