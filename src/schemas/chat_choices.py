@@ -6,7 +6,8 @@
 
 - 입력: 백엔드 → AI. 턴 요청과 같은 재료 전체 + 방금 생성된 본문(ai_output).
   AI는 무상태라 백엔드가 턴 요청 조립 로직을 재사용해 재료를 다시 실어 보낸다.
-- 출력: AI → 백엔드. 항상 정확히 3개(생성 실패는 흡수되어 폴백으로 채워진다 → 항상 200).
+- 출력: AI → 백엔드. 항상 정확히 3개 — 유효한 요청이면 LLM 생성 실패도 폴백으로
+  흡수해 200이다(스키마 위반 요청은 422 검증 오류 — "항상 200"은 생성 실패에 한정).
 - 표기: 동기 REST라 story 계열과 같은 snake_case다 — camelCase는 chat SSE completed
   페이로드만의 공식 예외(5-ai-server §5-1)라 여기로 넓히지 않는다.
 """
@@ -34,7 +35,8 @@ class ChatChoicesResponse(BaseModel):
     """선택지 생성 출력.
 
     choices는 항상 정확히 3개다 — 부족·실패는 generate_choices가 재호출·폴백으로
-    흡수하므로 이 응답은 실패하지 않는다(백엔드는 타임아웃 외 에러 처리가 필요 없다).
+    흡수하므로 유효한 요청에서 이 응답은 실패하지 않는다(백엔드는 스키마 위반 422와
+    타임아웃 외 에러 처리가 필요 없다).
     meta는 백엔드 ai_call_logs의 choice_generation 행 적재 재료다(retry_count는
     선택지 재호출 횟수, prompt_versions 키는 레거시 연속성으로 NEXT_ACTIONS 유지).
     """

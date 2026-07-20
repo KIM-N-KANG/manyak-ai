@@ -107,9 +107,10 @@ async def chat_turn(request: ChatTurnRequest) -> StreamingResponse:
 async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
     """다음 행동 선택지 3개를 생성한다 — /chat/turns에서 분리된 전용 호출(KNK-625).
 
-    generate_choices가 부족·실패를 재호출·폴백으로 흡수해 정확히 3개를 보장하므로
-    이 엔드포인트는 항상 200이다. 동기 REST라 표기는 snake_case(story 계열과 동일 —
-    camelCase는 chat SSE completed만의 공식 예외라 넓히지 않는다).
+    generate_choices가 부족·실패를 재호출·폴백으로 흡수해 정확히 3개를 보장하므로,
+    **유효한 요청이면 LLM 생성 실패도 항상 200**이다(스키마 위반 요청은 FastAPI 422).
+    동기 REST라 표기는 snake_case(story 계열과 동일 — camelCase는 chat SSE
+    completed만의 공식 예외라 넓히지 않는다).
     """
     result = await generate_choices(request, request.ai_output)
     meta = StoryResponseMeta(
