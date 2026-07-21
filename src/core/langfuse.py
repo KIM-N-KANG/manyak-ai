@@ -22,6 +22,13 @@ experiment·scripts에는 계측이 아예 실리지 않는다. 뒤늦은 import
 **켜고 끄기.** 키가 비면 no-op이라 로컬·CI는 관측 때문에 외부 의존이 생기지 않는다. no-op일
 때는 계측 import 자체를 하지 않으므로, 순정 openai가 그대로 남아 경고 소음도 없다.
 
+**활성화 가드 (KNK-652).** 원문 수집은 6-analytics §6-7이 "prod 전용·JP 리전 저장" 조건 아래
+허용한 예외다. 키 유무만 보고 켜면 키가 다른 환경에 흘러들거나 HOST를 빠뜨렸을 때(기본값이
+JP가 아님) 허용 조건 밖에서 원문이 수집되므로, 키가 있어도 host가 JP 엔드포인트이고 환경이
+prod일 때만 켠다(5-ai-server §5-6). 미충족이면 기동을 막지 않고 no-op + 오류 로그 — 관측
+실패가 서비스를 깨면 안 된다는 원칙과 같다. 로컬 통합 검증이 필요하면 로컬 `.env`의
+환경값을 의식적으로 prod로 바꿔 켠다(기본은 차단).
+
 **스트리밍 이탈과 Sentry(중요).** chat 턴은 async generator로 SSE를 흘리는데, 사용자가 스트림
 도중 연결을 끊으면 Starlette가 제너레이터를 yield에 매단 채 버리고, asyncio가 나중에 **다른
 태스크**에서 파이널라이즈한다. 그때 OTel이 "다른 컨텍스트에서 만든 토큰"이라며 context detach에
@@ -40,6 +47,10 @@ from src.core.request_context import get_correlation_ids
 
 logger = logging.getLogger(__name__)
 
+# 원문 수집이 허용된 유일한 저장 리전(JP)과 환경(prod) — 6-analytics §6-7 예외 조건.
+_ALLOWED_HOST = "https://jp.cloud.langfuse.com"
+_ALLOWED_ENVIRONMENT = "prod"
+
 # 계측이 켜졌는지(init_langfuse가 활성 분기를 탔는지). observe_request가 이 값으로 분기해,
 class _LangfuseState:
     """계측 활성 여부를 담는 상태 객체.
@@ -56,13 +67,33 @@ _state = _LangfuseState()
 
 
 def init_langfuse() -> None:
-    """앱 시작 시 Langfuse를 초기화하고 openai 계측을 건다. 키가 비면 no-op.
+    """앱 시작 시 Langfuse를 초기화하고 openai 계측을 건다. 키가 비거나 JP·prod 조건 미충족이면 no-op.
 
     계측 import(`langfuse.openai`)를 이 함수 안에서만 하는 이유는 모듈 docstring 참조 —
     서버 기동 경로에서만 계측이 실리고 experiment·scripts에는 실리지 않게 하기 위함이다.
     """
     if not settings.langfuse_public_key or not settings.langfuse_secret_key:
         logger.info("LANGFUSE_PUBLIC_KEY/SECRET_KEY 미설정 — Langfuse 비활성(no-op)")
+        return
+
+    # 활성화 가드(KNK-652): 키가 있어도 JP·prod가 아니면 켜지 않는다(모듈 docstring).
+    # 기동은 막지 않는다 — 관측 설정 오류가 서비스를 죽이면 안 된다.
+    # 후행 슬래시는 여기서 한 번 정규화해 비교·SDK 전달에 같은 값을 쓴다(비대칭 방지).
+    host = settings.langfuse_host.rstrip("/")
+    if host != _ALLOWED_HOST:
+        logger.error(
+            "Langfuse 비활성 — LANGFUSE_HOST가 JP 엔드포인트(%s)가 아님: %s "
+            "(원문 수집은 JP 리전만 허용, 5-ai-server §5-6)",
+            _ALLOWED_HOST,
+            settings.langfuse_host,
+        )
+        return
+    if settings.sentry_environment != _ALLOWED_ENVIRONMENT:
+        logger.error(
+            "Langfuse 비활성 — 환경이 prod가 아님: %s "
+            "(원문 수집은 prod 전용, 5-ai-server §5-6. 로컬 검증은 .env 환경값을 의식적으로 변경)",
+            settings.sentry_environment,
+        )
         return
 
     from langfuse import Langfuse
@@ -76,35 +107,31 @@ def init_langfuse() -> None:
     Langfuse(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
-        host=settings.langfuse_host,
+        host=host,  # 가드가 검증한 정규화 값 — 비교와 전달이 같은 값이어야 한다
         # 환경 구분은 Sentry와 같은 값을 쓴다 — 관측 도구 간 환경 이름이 갈리지 않게 한다.
         environment=settings.sentry_environment,
         release=settings.app_version,
     )
     _state.enabled = True
-    logger.info(
-        "Langfuse 활성 — host=%s env=%s", settings.langfuse_host, settings.sentry_environment
-    )
+    logger.info("Langfuse 활성 — host=%s env=%s", host, settings.sentry_environment)
 
 
 def dimension_tags(
     *,
-    genre: str | None = None,
     genre_tags: list[str] | None = None,
 ) -> list[str]:
     """선호 분석용 저카디널리티 태그를 만든다 — **장르만**. 접두사로 축을 구분한다.
 
-    장르(chat `genre`·story `genre_tags`)는 제공 태그라 커스텀 입력이 400으로 막혀(4-backend
-    §4 제작 폼) 팀 관리 값·유한 집합이다. 반면 주인공·조연 태그(protagonist_tags·supporting_tags)는
-    사용자가 직접 키워드를 입력해 추가할 수 있어(US-3-3, 4-backend §4-4) **원문이 섞이고
-    카디널리티가 폭발**한다 — 그래서 인자 자체를 두지 않아 트레이스 태그로 새어 나갈 경로를 없앴다
-    (AN-4-10·§6-7 원문 비수집, KNK-640 리뷰). 사용자 자유입력(user_input·additional_info)도 마찬가지.
+    장르는 스토리 제작 시점에만 선택되므로 **스토리 제작 트레이스(스토리라인·컴파일)에만**
+    싣는다 — 채팅 턴·선택지의 단일 `genre` 인자는 KNK-652에서 제거했다(채팅 트레이스 장르는
+    후속, 5-ai-server §5-6). story `genre_tags`는 키워드 단계 개편(KNK-621)이 커스텀 장르
+    입력을 400으로 차단하면 사전 정의만 남는다 — 켜기는 그 배포 이후로 순서를 잡는다.
+    주인공·조연 태그(protagonist_tags·supporting_tags)는 사용자가 직접 키워드를 입력해
+    추가할 수 있어(US-3-3, 4-backend §4-4) **원문이 섞이고 카디널리티가 폭발**한다 — 그래서
+    인자 자체를 두지 않아 트레이스 태그로 새어 나갈 경로를 없앴다(AN-4-10·§6-7 원문 비수집,
+    KNK-640 리뷰). 사용자 자유입력(user_input·additional_info)도 마찬가지.
     """
-    tags: list[str] = []
-    if genre:
-        tags.append(f"genre:{genre}")
-    tags += [f"genre:{g}" for g in (genre_tags or [])]
-    return tags
+    return [f"genre:{g}" for g in (genre_tags or [])]
 
 
 class _Trace:
@@ -153,8 +180,8 @@ def observe_request(
     관측에 1회 기록한다(위치·타입 일관·update 1회 — _Trace 참조). 값이 없으면 그 축만 빠지고
     트레이스는 정상 생성된다.
 
-    비활성(키 미설정)이면 아무 스팬도 만들지 않고 그대로 통과한다 — Langfuse SDK를 import조차
-    하지 않은 상태이므로 여기서 건드리면 안 된다.
+    비활성(키 미설정 또는 JP·prod 조건 미충족)이면 아무 스팬도 만들지 않고 그대로 통과한다 —
+    Langfuse SDK를 import조차 하지 않은 상태이므로 여기서 건드리면 안 된다.
     """
     if not _state.enabled:
         yield _Trace()

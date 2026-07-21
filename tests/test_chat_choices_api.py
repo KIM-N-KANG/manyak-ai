@@ -131,3 +131,36 @@ async def test_chat_choices_requires_ai_output(client, mock_choices) -> None:
     resp = await client.post("/api/v1/chat/choices", json=payload)
 
     assert resp.status_code == 422
+
+
+async def test_chat_choices_trace_receives_no_tags(client, mock_choices, monkeypatch) -> None:
+    """선택지 트레이스에 태그(장르)가 실리지 않음을 호출부에서 고정한다(KNK-652 적대 리뷰).
+
+    헬퍼(dimension_tags) 시그니처만 지키면 인라인 태그 재유입을 놓친다 — 엔드포인트가
+    observe_request에 tags 인자 자체를 넘기지 않음을 본다(장르 태그는 스토리 제작
+    트레이스에만 — 5-ai-server §5-6).
+    """
+    from contextlib import contextmanager
+
+    captured: dict = {}
+
+    @contextmanager
+    def _fake_observe(name, **kwargs):
+        captured["name"] = name
+        captured.update(kwargs)
+
+        class _Trace:
+            def set_metadata(self, **kw) -> None: ...
+
+        yield _Trace()
+
+    monkeypatch.setattr(chat_module, "observe_request", _fake_observe)
+    mock_choices(
+        ChoicesResult(choices=["가", "나", "다"], input_tokens=1,
+                      output_tokens=1, retry_count=0, model="m")
+    )
+    resp = await client.post("/api/v1/chat/choices", json=_payload())
+
+    assert resp.status_code == 200
+    assert captured["name"] == "채팅 선택지"
+    assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패

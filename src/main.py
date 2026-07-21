@@ -9,7 +9,7 @@ from src.core.middleware import RequestContextMiddleware
 from src.core.sentry import init_sentry
 
 init_sentry()  # 앱 생성 전에 Sentry를 켠다(DSN 미설정 시 no-op).
-init_langfuse()  # Langfuse도 앱 생성 전에 켠다(키 미설정 시 no-op) — KNK-624.
+init_langfuse()  # Langfuse도 앱 생성 전에 켠다(키 미설정·JP·prod 미충족 시 no-op) — KNK-624·652.
 
 
 @asynccontextmanager
