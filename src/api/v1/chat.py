@@ -24,7 +24,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from src.core.config import settings
-from src.core.langfuse import observe_request
+from src.core.langfuse import dimension_tags, observe_request
 from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
 from src.schemas.chat_turn import (
     EVENT_COMPLETED,
@@ -65,7 +65,15 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
     열린 뒤에 본 작업이 돌기 때문에, 핸들러가 반환하는 시점에는 아직 LLM 호출 전이다. 블록이
     스트림 전체를 감싸므로 본문·판정 두 호출이 한 트레이스에 묶인다.
     """
-    with observe_request("채팅 턴"):
+    # 분석 차원 부착(KNK-640): 장르·6레이어+판정 버전을 싣는다. 채팅 턴은 재호출이 없어 retry_count=0.
+    with observe_request(
+        "채팅 턴",
+        tags=dimension_tags(genre=req.genre),
+        metadata={
+            "prompt_versions": {**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
+            "retry_count": 0,
+        },
+    ):
         messages = assemble(req)
         async for ev in stream_chat_turn(messages):
             name = ev["event"]
@@ -118,8 +126,15 @@ async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
     동기 REST라 표기는 snake_case(story 계열과 동일 — camelCase는 chat SSE
     completed만의 공식 예외라 넓히지 않는다).
     """
-    with observe_request("채팅 선택지"):  # 누적 재호출(최대 3회)까지 한 트레이스로 묶인다
+    # 누적 재호출(최대 3회)까지 한 트레이스로 묶인다(KNK-624). 분석 차원 부착(KNK-640):
+    # 장르·프롬프트 버전은 미리, 재호출 횟수는 생성 결과에서 사후에 싣는다.
+    with observe_request(
+        "채팅 선택지",
+        tags=dimension_tags(genre=request.genre),
+        metadata={"prompt_versions": {"NEXT_ACTIONS": NEXT_ACTIONS_VERSION}},
+    ) as trace:
         result = await generate_choices(request, request.ai_output)
+        trace.set_metadata(retry_count=result.retry_count)
         meta = StoryResponseMeta(
             model=result.model,
             prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},

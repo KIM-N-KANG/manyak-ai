@@ -87,39 +87,99 @@ def init_langfuse() -> None:
     )
 
 
+def dimension_tags(
+    *,
+    genre: str | None = None,
+    genre_tags: list[str] | None = None,
+) -> list[str]:
+    """선호 분석용 저카디널리티 태그를 만든다 — **장르만**. 접두사로 축을 구분한다.
+
+    장르(chat `genre`·story `genre_tags`)는 제공 태그라 커스텀 입력이 400으로 막혀(4-backend
+    §4 제작 폼) 팀 관리 값·유한 집합이다. 반면 주인공·조연 태그(protagonist_tags·supporting_tags)는
+    사용자가 직접 키워드를 입력해 추가할 수 있어(US-3-3, 4-backend §4-4) **원문이 섞이고
+    카디널리티가 폭발**한다 — 그래서 인자 자체를 두지 않아 트레이스 태그로 새어 나갈 경로를 없앴다
+    (AN-4-10·§6-7 원문 비수집, KNK-640 리뷰). 사용자 자유입력(user_input·additional_info)도 마찬가지.
+    """
+    tags: list[str] = []
+    if genre:
+        tags.append(f"genre:{genre}")
+    tags += [f"genre:{g}" for g in (genre_tags or [])]
+    return tags
+
+
+class _Trace:
+    """observe_request가 넘기는 핸들. 트레이스에 실을 분석 metadata를 모아 블록 끝에서 한 번에 기록한다.
+
+    장르는 tags로 미리 싣지만, 프롬프트 버전·재호출 횟수는 metadata로 이 핸들에 모은다. 재호출
+    횟수는 compile·choices에서 작업이 끝나야 확정되므로, 미리 아는 값과 사후 값을 **한 버퍼에 모아
+    루트 관측 metadata로 1회 기록**한다 — 경로마다 위치·타입이 갈리지 않게 하고(트레이스 metadata는
+    모든 값을 문자열로 뭉개지만 관측 metadata는 int·JSON을 보존한다), update 호출도 1회로 줄인다.
+
+    비활성이면 span이 None이라 아무 일도 하지 않는다.
+    """
+
+    def __init__(self, span: object | None = None) -> None:
+        self._span = span
+        self._metadata: dict[str, object] = {}
+
+    def set_metadata(self, **kwargs: object) -> None:
+        """분석 metadata를 버퍼에 모은다. 실제 기록은 블록 종료 시 _flush가 1회 수행한다."""
+        self._metadata.update(kwargs)
+
+    def _flush(self) -> None:
+        if self._span is None or not self._metadata:
+            return
+        try:
+            self._span.update(metadata=self._metadata)
+        except Exception:  # noqa: BLE001 — 관측 기록 실패가 서비스 응답을 깨면 안 된다
+            logger.warning("Langfuse metadata 기록 실패 — 트레이스만 누락, 응답에는 영향 없음", exc_info=True)
+
+
 @contextmanager
-def observe_request(name: str) -> Iterator[None]:
+def observe_request(
+    name: str,
+    *,
+    tags: list[str] | None = None,
+    metadata: dict[str, object] | None = None,
+) -> Iterator[_Trace]:
     """요청 하나를 트레이스 하나로 묶는다 — 엔드포인트가 본 작업을 이 블록으로 감싼다.
 
     이 블록 안에서 일어난 LLM 호출은 전부 하위 관측으로 들어간다. 그래서 compile의 부분
     재호출(최대 3회)이나 선택지 누적 재호출도 흩어지지 않고 한 트레이스에 모인다.
 
-    상관관계 헤더(X-Manyak-*)를 Langfuse 축으로 옮긴다 — session_id는 대화 묶음 검색,
-    user_id는 사용자별 집계, request_id는 백엔드 로그·Sentry와의 교차 조회에 쓴다(SDK가
-    상관관계 식별자는 tags가 아니라 metadata에 두라고 명시한다). 값이 없으면(로컬 호출 등)
-    그 축만 빠지고 트레이스는 정상 생성된다.
+    트레이스 정체성(session_id·user_id·tags·trace_name)은 propagate_attributes로 싣는다 —
+    session_id는 대화 묶음 검색, user_id는 사용자별 집계(원본 아닌 기기 해시), tags는 장르 필터.
+    request_id·프롬프트 버전·재호출 횟수 같은 분석 metadata는 핸들 버퍼에 모아 블록 끝에서 루트
+    관측에 1회 기록한다(위치·타입 일관·update 1회 — _Trace 참조). 값이 없으면 그 축만 빠지고
+    트레이스는 정상 생성된다.
 
     비활성(키 미설정)이면 아무 스팬도 만들지 않고 그대로 통과한다 — Langfuse SDK를 import조차
     하지 않은 상태이므로 여기서 건드리면 안 된다.
     """
     if not _state.enabled:
-        yield
+        yield _Trace()
         return
 
     from langfuse import get_client, propagate_attributes
 
     request_id, session_id, device_id_hash = get_correlation_ids()
     client = get_client()
-    with client.start_as_current_observation(name=name, as_type="span"):
+    with client.start_as_current_observation(name=name, as_type="span") as span:
         with propagate_attributes(
             session_id=session_id,
             user_id=device_id_hash,  # 원본 기기 식별자가 아니라 해시다(AN-4-10)
             trace_name=name,
-            # 상관관계 식별자는 metadata에 둔다 — tags는 저카디널리티 분류축이라 요청마다
-            # 유일한 값을 넣으면 필터 목록이 폭발한다(SDK docstring 권고).
-            metadata={"request_id": request_id} if request_id else None,
+            tags=tags or None,
         ):
-            yield
+            trace = _Trace(span)
+            if request_id:
+                trace.set_metadata(request_id=request_id)
+            if metadata:
+                trace.set_metadata(**metadata)
+            try:
+                yield trace
+            finally:
+                trace._flush()  # 미리 값 + 사후 값(retry_count)을 모아 1회 기록
 
 
 def shutdown_langfuse() -> None:
