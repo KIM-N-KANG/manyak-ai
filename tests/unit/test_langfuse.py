@@ -10,17 +10,17 @@ from src.core.langfuse import observe_request, shutdown_langfuse
 
 
 def test_init_langfuse_noop_without_keys(monkeypatch) -> None:
-    # 키가 없으면 활성화되지 않는다(_enabled=False) — 계측 import·SDK 생성이 일어나지 않는다.
+    # 키가 없으면 활성화되지 않는다(_state.enabled=False) — 계측 import·SDK 생성이 일어나지 않는다.
     monkeypatch.setattr(lf.settings, "langfuse_public_key", "")
     monkeypatch.setattr(lf.settings, "langfuse_secret_key", "")
-    monkeypatch.setattr(lf, "_enabled", False)
+    monkeypatch.setattr(lf._state, "enabled", False)
     lf.init_langfuse()
-    assert lf._enabled is False
+    assert lf._state.enabled is False
 
 
 def test_observe_request_passthrough_when_disabled(monkeypatch) -> None:
     # 비활성이면 observe_request는 Langfuse SDK를 건드리지 않고 블록을 그대로 통과시킨다.
-    monkeypatch.setattr(lf, "_enabled", False)
+    monkeypatch.setattr(lf._state, "enabled", False)
     ran = False
     with observe_request("테스트"):
         ran = True
@@ -29,5 +29,5 @@ def test_observe_request_passthrough_when_disabled(monkeypatch) -> None:
 
 def test_shutdown_langfuse_safe_when_disabled(monkeypatch) -> None:
     # 비활성이면 flush 대상이 없다 — SDK를 import조차 하지 않으므로 예외 없이 반환해야 한다.
-    monkeypatch.setattr(lf, "_enabled", False)
+    monkeypatch.setattr(lf._state, "enabled", False)
     shutdown_langfuse()  # 예외가 나면 실패

@@ -41,8 +41,18 @@ from src.core.request_context import get_correlation_ids
 logger = logging.getLogger(__name__)
 
 # 계측이 켜졌는지(init_langfuse가 활성 분기를 탔는지). observe_request가 이 값으로 분기해,
-# 비활성일 때는 Langfuse SDK를 건드리지 않는다(스팬 생성·flush 모두 생략).
-_enabled = False
+class _LangfuseState:
+    """계측 활성 여부를 담는 상태 객체.
+
+    모듈 전역 가변 변수(`global`)는 스타일 가이드 §7 금지 패턴이라, 상태를 객체 속성으로
+    캡슐화한다. observe_request·shutdown_langfuse가 이 값으로 분기해, 비활성일 때는 Langfuse
+    SDK를 건드리지 않는다(스팬 생성·flush 모두 생략).
+    """
+
+    enabled: bool = False
+
+
+_state = _LangfuseState()
 
 
 def init_langfuse() -> None:
@@ -51,7 +61,6 @@ def init_langfuse() -> None:
     계측 import(`langfuse.openai`)를 이 함수 안에서만 하는 이유는 모듈 docstring 참조 —
     서버 기동 경로에서만 계측이 실리고 experiment·scripts에는 실리지 않게 하기 위함이다.
     """
-    global _enabled
     if not settings.langfuse_public_key or not settings.langfuse_secret_key:
         logger.info("LANGFUSE_PUBLIC_KEY/SECRET_KEY 미설정 — Langfuse 비활성(no-op)")
         return
@@ -72,7 +81,7 @@ def init_langfuse() -> None:
         environment=settings.sentry_environment,
         release=settings.app_version,
     )
-    _enabled = True
+    _state.enabled = True
     logger.info(
         "Langfuse 활성 — host=%s env=%s", settings.langfuse_host, settings.sentry_environment
     )
@@ -93,7 +102,7 @@ def observe_request(name: str) -> Iterator[None]:
     비활성(키 미설정)이면 아무 스팬도 만들지 않고 그대로 통과한다 — Langfuse SDK를 import조차
     하지 않은 상태이므로 여기서 건드리면 안 된다.
     """
-    if not _enabled:
+    if not _state.enabled:
         yield
         return
 
@@ -120,7 +129,7 @@ def shutdown_langfuse() -> None:
     컨테이너 재시작·배포마다 공백이 생기지 않도록 lifespan 종료 훅에서 부른다. 비활성이면
     Langfuse SDK를 import하지 않았으므로 아무것도 하지 않는다.
     """
-    if not _enabled:
+    if not _state.enabled:
         return
     from langfuse import get_client
 
