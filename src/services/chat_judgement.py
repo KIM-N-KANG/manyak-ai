@@ -20,8 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from langfuse.openai import AsyncOpenAI  # 드롭인 계측 — 키 미설정 시 no-op(KNK-624)
-from openai import OpenAIError
+from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
 from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception

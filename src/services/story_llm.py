@@ -4,8 +4,7 @@ import time
 from dataclasses import dataclass
 
 from fastapi import HTTPException, status
-from langfuse.openai import AsyncOpenAI  # 드롭인 계측 — 키 미설정 시 no-op(KNK-624)
-from openai import OpenAIError
+from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
 from src.core.sentry import (
