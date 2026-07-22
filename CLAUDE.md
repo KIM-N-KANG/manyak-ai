@@ -32,6 +32,8 @@
   - `experiment/` — 프롬프트·모델 변경의 품질·시간·비용을 baseline과 비교하는 실험 환경.
     사용법은 `experiment/README.md`, 설계 정본은 `scripts/spec/spec-docs/experiment-spec.md`.
   - `references/` — 정제되지 않은 참고 원천 자료(크롤·발췌).
+  - `.agents/skills/release-deploy/`(+ `.claude/` 심링크) — 배포 절차 정본. AWS 계정번호·역할 ARN 등
+    인프라 식별자를 담고 있고 **이 레포는 PUBLIC**이라 커밋하지 않습니다(KNK-664).
   - `.env`·`.env.jira` — 시크릿. 절대 커밋하거나 문서·예시에 값을 옮기지 않습니다.
 
 ### 설계·아키텍처
@@ -56,7 +58,9 @@
 
 ### 스킬 배치(.agents/skills)
 - 스킬 정본은 `.agents/skills/`입니다(여러 에이전트 공통 표준). Codex는 이 디렉터리를 직접 읽고, Claude Code는 `.claude/skills/*`가 `.agents/skills/*`를 가리키는 심링크로 같은 스킬을 읽습니다(한 소스, 두 에이전트 공유).
-- 구분 규칙은 구조로 판단합니다: `.agents/skills/<이름>`이 **실디렉터리면 프로젝트 스킬**(이 레포가 정본, git 추적 — 예: create-jira-subtasks, planning, prompt-authoring, sync-ai-spec, request-codex-review, readability-audit, release-deploy), **심링크면 하네스 공용 스킬**(→ `../../../knk-harness/.agents/skills/<이름>`, 예: create-branch, create-commit, create-pr, karpathy-guidelines, technical-writing).
+- 구분 규칙은 구조로 판단합니다: `.agents/skills/<이름>`이 **실디렉터리면 프로젝트 스킬**(이 레포가 정본 — 예: create-jira-subtasks, planning, prompt-authoring, sync-ai-spec, request-codex-review, readability-audit), **심링크면 하네스 공용 스킬**(→ `../../../knk-harness/.agents/skills/<이름>`, 예: create-branch, create-commit, create-pr, karpathy-guidelines, technical-writing).
+- 프로젝트 스킬은 대개 git 추적이지만 **전부는 아닙니다.** `release-deploy`·`genre-lorebook`은 실디렉터리인데도 gitignore 대상입니다(각각 인프라 식별자·로컬 산출물 의존). 추적 여부는 목록이 아니라 `git check-ignore`로 확인합니다.
+- 스킬은 파일 하나가 아니라 **폴더 전체**입니다. `SKILL.md`는 짧게 유지하고, 긴 설명은 `reference.md`, 실행 코드는 `scripts/`로 뺍니다 — Claude가 참고 문서는 필요할 때만 읽고 스크립트는 내용 대신 실행만 하므로 컨텍스트를 아낍니다. 선례: `release-deploy`(SKILL.md + reference.md·history.md·scripts/).
 - 하네스 공용 스킬은 복사하지 않습니다 — 정본은 하네스이고, 복사하면 하네스 개정을 못 따라갑니다. 수정도 하지 않습니다(하네스 수정 금지 규칙과 동일).
 - `.claude/skills/<이름>`은 전부 `../../.agents/skills/<이름>` 심링크입니다. 새 스킬을 추가할 때는 `.agents/skills/<이름>/SKILL.md`를 만들고 `.claude/skills/<이름>` 심링크를 겁니다.
 - 하네스 스킬과 세션 시작 스펙 로드는 형제 레포 `../knk-harness`가 함께 체크아웃돼 있어야 동작합니다. 이 레포만 클론하면 프로젝트 스킬만 로드되고, 하네스 스킬·제품 명세는 빠집니다.

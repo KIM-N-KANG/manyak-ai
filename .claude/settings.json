@@ -6,7 +6,10 @@
       "mcp__claude_ai_Notion__notion-update-data-source",
       "mcp__claude_ai_Notion__notion-search",
       "Bash(gh api *)",
-      "Bash(claude plugin *)"
+      "Bash(claude plugin *)",
+      "Bash(bash .agents/skills/release-deploy/scripts/qa.sh*)",
+      "Bash(bash .agents/skills/release-deploy/scripts/prod-health.sh*)",
+      "Bash(bash .agents/skills/release-deploy/scripts/infra-check.sh*)"
     ]
   },
   "hooks": {

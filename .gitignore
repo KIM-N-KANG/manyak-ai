@@ -11,6 +11,7 @@ build/
 # Env
 .env
 .env.jira
+.env.bak-*
 
 # Test / coverage
 .pytest_cache/
@@ -46,3 +47,7 @@ references/
 # 로컬 전용 스킬 (로컬 도구 scripts/·산출물 references/에만 의존 — genre-lorebook)
 .agents/skills/genre-lorebook/
 .claude/skills/genre-lorebook
+
+# 로컬 전용 스킬 (AWS 계정·역할 ARN·EC2 등 인프라 식별자를 담아 공개 레포에 올리지 않음 — release-deploy)
+.agents/skills/release-deploy/
+.claude/skills/release-deploy
