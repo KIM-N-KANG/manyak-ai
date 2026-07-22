@@ -18,6 +18,7 @@ src/
 ├── core/
 │   └── config.py          # pydantic-settings 기반 환경 설정
 ├── schemas/               # 공유 Pydantic 모델
+├── services/              # LLM 호출·프롬프트 조립 등 도메인 로직
 └── main.py                # FastAPI 앱 진입점
 tests/
 └── conftest.py            # pytest fixture
@@ -32,7 +33,10 @@ tests/
 ## 2. 언어·런타임
 
 - Python 3.11+, FastAPI, Pydantic v2, pydantic-settings
-- 모든 함수는 `async def`로 선언한다 (I/O 없는 순수 유틸 제외).
+- 라우터 핸들러는 `async def`로 통일한다(FastAPI 관례).
+- 그 아래 서비스·유틸 함수는 **기다림이 있을 때만** `async`로 만든다 — LLM 호출처럼 바깥 응답을
+  기다리는 경로다. 기다릴 것이 없는 함수(프롬프트 조립·파싱·조건 판단)에 붙이면 이득 없이
+  호출부에 `await`만 늘어난다.
 - 타입 힌트는 필수. `Any`는 피하고 `TypeAlias` / `TypeVar`를 적극 활용한다.
 
 ---
@@ -66,6 +70,8 @@ from src.core.config import settings
 ### 응답 모델
 
 - 엔드포인트마다 `response_model=` 을 명시한다.
+  단 **SSE 스트리밍 엔드포인트는 예외다** — 완성된 응답 한 덩어리가 없어 못 박을 모양이 없다
+  (`/chat/turns`). 이때는 이벤트 페이로드 스키마로 모양을 지킨다.
 - 응답 스키마 클래스는 `{도메인}Response`, 요청 바디는 `{도메인}Request` 접미사.
 
 ```python
