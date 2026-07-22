@@ -51,3 +51,7 @@ references/
 # 로컬 전용 스킬 (AWS 계정·역할 ARN·EC2 등 인프라 식별자를 담아 공개 레포에 올리지 않음 — release-deploy)
 .agents/skills/release-deploy/
 .claude/skills/release-deploy
+
+# 로컬 전용 스킬 (형제 레포 knk-harness의 내부 스펙 구조에 의존 — sync-ai-spec)
+.agents/skills/sync-ai-spec/
+.claude/skills/sync-ai-spec
