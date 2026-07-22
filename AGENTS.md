@@ -51,13 +51,11 @@
   - `experiment/` — 프롬프트·모델 변경의 품질·시간·비용을 baseline과 비교하는 실험 환경.
     사용법은 `experiment/README.md`, 설계 정본은 `scripts/spec/spec-docs/experiment-spec.md`.
   - `references/` — 정제되지 않은 참고 원천 자료(크롤·발췌).
-  - `.agents/skills/release-deploy/`(+ `.claude/` 심링크) — 배포 절차 정본. AWS 계정번호·역할 ARN 등
-    인프라 식별자를 담고 있고 이 레포는 PUBLIC이라 커밋하지 않습니다(KNK-664).
-  - `.agents/skills/sync-ai-spec/`(+ `.claude/` 심링크) — 스펙 동기화 절차. 형제 레포
-    knk-harness의 내부 스펙 구조에 의존해 로컬 전용으로 둡니다(KNK-662).
-  - `.agents/skills/create-jira-subtasks/`(+ `.claude/` 심링크) — Jira 서브태스크 관리 절차.
-    팀원 실명과 팀 Jira 워크플로 상태 이름을 담고 있어 커밋하지 않습니다(KNK-660).
   - `.env`·`.env.jira` — 시크릿. 절대 커밋하거나 문서·예시에 값을 옮기지 않습니다.
+- **스킬은 폴더째 gitignore하지 않습니다.** 브랜치를 오갈 때 git이 조용히 지우고 복구해주는 것이
+  없습니다(2026-07-22에 `SKILL.md` 3개가 그렇게 사라졌습니다, KNK-668). 비밀은 폴더가 아니라
+  값 단위로 막습니다 — AWS 계정번호 같은 식별자는 스킬 문서에 적지 말고
+  `../manyak-terraform`(비공개)이나 GitHub Variables를 가리킵니다.
 - **`git clean`에 `-x`나 `-X`를 절대 쓰지 않습니다.** 위 로컬 전용 자산이 한 번에 사라지는데
   git에 없어 복구 수단이 아예 없습니다(2026-07-22 기준 삭제 대상 50개). 무엇이 지워질지 볼 때는
   `git clean -ndX`(dry-run)만 쓰고, 빌드 찌꺼기는 `rm -rf .pytest_cache .coverage`로 지웁니다.
@@ -102,6 +100,9 @@
 ### 실측·실험 (로컬 도구)
 - 라이브 LLM 호출은 과금됩니다. 실측을 실행하기 전에 예상 호출 규모를 보고하고 승인받습니다
   (`experiment/` CLI의 `max_calls_without_confirm` 승인 게이트와 같은 원칙).
+  - **예외: 릴리스 배포 QA는 상시 승인입니다**(사용자 결정). `release-deploy` 스킬의 `qa.sh`가 돌리는
+    라이브 호출은 다시 묻지 않습니다 — 배포 전에 반드시 확인해야 하는 것이라 묻는 게 의미가 없습니다.
+    QA 밖의 실측(프롬프트 A/B, 실험 러너)은 종전대로 승인이 필요합니다.
 - 단발 실측·미리보기: `scripts/`의 로컬 스크립트를 씁니다 — 예: `preview_chat_prompt.py`(프롬프트 조립 확인, 무과금),
   `simulate_chat_ending.py`(판정·엔딩 시나리오), `verify_*.py`(판정·선택지·멀티턴 라이브 검증).
 - 조건 비교 실험(프롬프트 A/B, 모델·파라미터 변경): `experiment/` 러너를 씁니다.
