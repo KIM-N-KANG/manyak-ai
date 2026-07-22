@@ -20,31 +20,14 @@
 
 하네스 공용 스킬은 복사하지도, 수정하지도 않는다. 복사하면 하네스 개정을 못 따라간다.
 
-## 추적 여부는 목록이 아니라 명령으로 확인한다
+## 스킬은 폴더째 gitignore하지 않는다
 
-프로젝트 스킬이라고 다 git 추적은 아니다. `release-deploy`·`genre-lorebook`·`sync-ai-spec`·
-`create-jira-subtasks`는 실디렉터리인데도 gitignore 대상이다(각각 인프라 식별자·로컬 산출물·
-형제 레포 내부 스펙 구조 의존·팀원 실명과 Jira 워크플로 상태 이름).
+전부 git으로 추적한다. 폴더째 무시하면 브랜치를 오갈 때 git이 파일을 지우는데, 무시 대상이라
+다시 만들어주지도 없어졌다고 알려주지도 않는다 — 2026-07-22에 `SKILL.md` 3개가 그렇게
+사라졌다(KNK-668).
 
-목록을 외우지 말고 `git check-ignore <경로>`로 확인한다.
-
-### gitignore된 스킬은 브랜치를 옮기면 심링크가 사라진다
-
-`.claude/skills/<이름>` 심링크도 함께 gitignore되므로, 그 심링크를 아직 추적하던
-옛 브랜치·커밋을 체크아웃했다가 돌아오면 git이 심링크를 지운다. 그 뒤로는 무시 대상이라
-다시 만들어주지도, 없어졌다고 알려주지도 않는다. `.agents/skills/<이름>/` 내용은
-그대로인데 Claude만 스킬을 못 찾는 상태가 조용히 된다.
-
-없어졌으면 다시 건다.
-
-```bash
-ln -s ../../.agents/skills/release-deploy       .claude/skills/release-deploy
-ln -s ../../.agents/skills/sync-ai-spec         .claude/skills/sync-ai-spec
-ln -s ../../.agents/skills/create-jira-subtasks .claude/skills/create-jira-subtasks
-ln -s ../../.agents/skills/genre-lorebook       .claude/skills/genre-lorebook
-```
-
-`ls .claude/skills/`로 네 개가 다 보이는지 확인한다.
+비밀이 걸리면 폴더가 아니라 **값 단위로 막는다.** AWS 계정번호 같은 식별자는 스킬 문서에 적지 말고
+`../manyak-terraform`(비공개)이나 GitHub Variables를 가리킨다. 선례: `release-deploy/reference.md`.
 
 ## 스킬은 파일 하나가 아니라 폴더 전체다
 
