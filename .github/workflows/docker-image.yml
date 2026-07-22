@@ -88,6 +88,35 @@ jobs:
           echo "::error::health 스모크 실패 — 컨테이너 로그:"; docker logs ai-smoke
           docker rm -f ai-smoke; exit 1
 
+      # Langfuse 활성 경로 스모크(KNK-652 리뷰 P2). 유닛 테스트의 활성 경로는 가짜 SDK를 쓰고
+      # (전역 openai 패치 부작용 격리), 위 기본 스모크는 키 없이 no-op 경로만 지난다 — 실제 설치된
+      # langfuse SDK(lock 파일 없는 4.x 범위)로 초기화가 깨지는 회귀를 여기서 잡는다. 더미 키라
+      # 과금·실데이터 전송 없음(백그라운드 인증 실패만 무해하게 남음). health에 더해 "Langfuse 활성"
+      # 로그까지 확인해 가드(JP·prod) 통과 + 실 SDK 초기화 성공을 함께 고정한다.
+      - name: Run container with Langfuse enabled (dummy keys) and check health
+        run: |
+          docker run -d --name ai-smoke-lf \
+            -e DEEPSEEK_API_KEY=dummy-key-for-ci \
+            -e LANGFUSE_PUBLIC_KEY=pk-lf-dummy-ci \
+            -e LANGFUSE_SECRET_KEY=sk-lf-dummy-ci \
+            -e LANGFUSE_HOST=https://jp.cloud.langfuse.com \
+            -e SENTRY_ENVIRONMENT=prod \
+            -p 8001:8000 manyak-ai:smoke
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/health-lf.json -w '%{http_code}' http://localhost:8001/api/v1/health || true)
+            if [ "$code" = "200" ] && grep -q '"status":"ok"' /tmp/health-lf.json; then
+              if docker logs ai-smoke-lf 2>&1 | grep -q "Langfuse 활성"; then
+                echo "✅ health 200 ok + Langfuse 활성(실 SDK 초기화·가드 통과)"
+                docker rm -f ai-smoke-lf; exit 0
+              fi
+              echo "::error::health는 통과했으나 'Langfuse 활성' 로그 없음 — 가드/초기화 회귀:"; docker logs ai-smoke-lf
+              docker rm -f ai-smoke-lf; exit 1
+            fi
+            echo "health 대기 $i/30 (code=$code)"; sleep 2
+          done
+          echo "::error::Langfuse 활성 스모크 실패 — 컨테이너 로그:"; docker logs ai-smoke-lf
+          docker rm -f ai-smoke-lf; exit 1
+
   docker:
     name: Docker build and publish
     runs-on: ubuntu-latest

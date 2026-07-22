@@ -39,8 +39,9 @@ prod일 때만 켠다(5-ai-server §5-6). 미충족이면 기동을 막지 않�
 """
 
 import logging
+import sys
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 from src.core.config import settings
 from src.core.request_context import get_correlation_ids
@@ -96,22 +97,29 @@ def init_langfuse() -> None:
         )
         return
 
-    from langfuse import Langfuse
+    # 초기화 실패가 서비스 기동을 막으면 안 된다(P1 리뷰) — SDK가 여기서 무슨 예외를 내든
+    # 오류 로그만 남기고 비활성(no-op)으로 기동한다. init은 main.py 모듈 로드 시점에 불리므로
+    # 여기가 뚫려 있으면 관측 도구 고장이 앱 부팅 실패가 된다.
+    try:
+        from langfuse import Langfuse
 
-    import langfuse.openai  # noqa: F401 — import 부작용으로 openai를 전역 계측(위 docstring)
-    from sentry_sdk.integrations.logging import ignore_logger
+        import langfuse.openai  # noqa: F401 — import 부작용으로 openai를 전역 계측(위 docstring)
+        from sentry_sdk.integrations.logging import ignore_logger
 
-    # 스트리밍 이탈 시 OTel detach 실패 ERROR가 Sentry에 잡히는 것을 막는다(위 docstring F1).
-    ignore_logger("opentelemetry.context")
+        # 스트리밍 이탈 시 OTel detach 실패 ERROR가 Sentry에 잡히는 것을 막는다(위 docstring F1).
+        ignore_logger("opentelemetry.context")
 
-    Langfuse(
-        public_key=settings.langfuse_public_key,
-        secret_key=settings.langfuse_secret_key,
-        host=host,  # 가드가 검증한 정규화 값 — 비교와 전달이 같은 값이어야 한다
-        # 환경 구분은 Sentry와 같은 값을 쓴다 — 관측 도구 간 환경 이름이 갈리지 않게 한다.
-        environment=settings.sentry_environment,
-        release=settings.app_version,
-    )
+        Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            host=host,  # 가드가 검증한 정규화 값 — 비교와 전달이 같은 값이어야 한다
+            # 환경 구분은 Sentry와 같은 값을 쓴다 — 관측 도구 간 환경 이름이 갈리지 않게 한다.
+            environment=settings.sentry_environment,
+            release=settings.app_version,
+        )
+    except Exception:  # noqa: BLE001 — 관측 초기화 실패는 서비스보다 중요하지 않다
+        logger.error("Langfuse 초기화 실패 — 비활성(no-op)으로 기동", exc_info=True)
+        return
     _state.enabled = True
     logger.info("Langfuse 활성 — host=%s env=%s", host, settings.sentry_environment)
 
@@ -187,26 +195,54 @@ def observe_request(
         yield _Trace()
         return
 
-    from langfuse import get_client, propagate_attributes
+    # 트레이스 시작(클라이언트 조회·스팬 열기·정체성 전파)이 실패해도 본작업을 막으면 안 된다
+    # (P1 리뷰 — 이 블록은 모든 엔드포인트에서 LLM 호출보다 먼저 돈다). ExitStack으로 스팬·전파
+    # 컨텍스트를 모아, 시작 실패 시 정리 후 빈 핸들로 우회한다. 단 **본작업이 낸 예외는 삼키지
+    # 않는다** — 보호 대상은 SDK 호출뿐이다.
+    stack = ExitStack()
+    try:
+        from langfuse import get_client, propagate_attributes
 
-    request_id, session_id, device_id_hash = get_correlation_ids()
-    client = get_client()
-    with client.start_as_current_observation(name=name, as_type="span") as span:
-        with propagate_attributes(
-            session_id=session_id,
-            user_id=device_id_hash,  # 원본 기기 식별자가 아니라 해시다(AN-4-10)
-            trace_name=name,
-            tags=tags or None,
-        ):
-            trace = _Trace(span)
-            if request_id:
-                trace.set_metadata(request_id=request_id)
-            if metadata:
-                trace.set_metadata(**metadata)
-            try:
-                yield trace
-            finally:
-                trace._flush()  # 미리 값 + 사후 값(retry_count)을 모아 1회 기록
+        request_id, session_id, device_id_hash = get_correlation_ids()
+        client = get_client()
+        span = stack.enter_context(client.start_as_current_observation(name=name, as_type="span"))
+        stack.enter_context(
+            propagate_attributes(
+                session_id=session_id,
+                user_id=device_id_hash,  # 원본 기기 식별자가 아니라 해시다(AN-4-10)
+                trace_name=name,
+                tags=tags or None,
+            )
+        )
+    except Exception:  # noqa: BLE001 — 관측 시작 실패가 사용자 요청을 500으로 만들면 안 된다
+        logger.warning("Langfuse 트레이스 시작 실패 — 관측 없이 본작업 진행", exc_info=True)
+        try:
+            stack.close()  # 부분 진입한 컨텍스트 정리
+        except Exception:  # noqa: BLE001
+            logger.warning("Langfuse 트레이스 정리 실패 — 무시", exc_info=True)
+        yield _Trace()
+        return
+
+    trace = _Trace(span)
+    if request_id:
+        trace.set_metadata(request_id=request_id)
+    if metadata:
+        trace.set_metadata(**metadata)
+    try:
+        yield trace
+    finally:
+        trace._flush()  # 미리 값 + 사후 값(retry_count)을 모아 1회 기록(내부 자체 보호)
+        # 스팬 종료 실패가 응답을 깨면 안 된다. 본작업 예외가 진행 중이면 exc_info를 넘겨
+        # SDK가 스팬에 오류 상태를 기록할 수 있게 하되(기존 with 문과 동일 의미), SDK의
+        # 예외 억제 반환값은 무시한다 — 본작업 예외 전파는 제너레이터가 결정한다.
+        exc = sys.exc_info()
+        try:
+            if exc[0] is not None:
+                stack.__exit__(*exc)
+            else:
+                stack.close()
+        except Exception:  # noqa: BLE001
+            logger.warning("Langfuse 트레이스 종료 실패 — 응답에는 영향 없음", exc_info=True)
 
 
 def shutdown_langfuse() -> None:
@@ -218,6 +254,9 @@ def shutdown_langfuse() -> None:
     """
     if not _state.enabled:
         return
-    from langfuse import get_client
+    try:
+        from langfuse import get_client
 
-    get_client().flush()
+        get_client().flush()
+    except Exception:  # noqa: BLE001 — 종료 flush 실패가 종료 절차를 깨면 안 된다(P1 리뷰)
+        logger.warning("Langfuse 종료 flush 실패 — 마지막 구간 트레이스만 유실", exc_info=True)

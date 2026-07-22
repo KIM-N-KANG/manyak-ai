@@ -83,6 +83,96 @@ def test_init_langfuse_enabled_with_jp_prod_and_keys(monkeypatch) -> None:
     assert captured["environment"] == "prod"
 
 
+def test_init_langfuse_survives_sdk_failure(monkeypatch, caplog) -> None:
+    """초기화 보호(P1 리뷰): SDK 생성자가 예외를 내도 앱 기동이 죽지 않고 no-op으로 넘어간다.
+
+    init_langfuse는 main.py 모듈 로드 시점에 불리므로, 여기가 뚫려 있으면 관측 도구
+    고장이 서비스 부팅 실패가 된다 — 오류 로그 + enabled=False로 격리돼야 한다."""
+    import sys
+    import types
+
+    monkeypatch.setattr(lf.settings, "langfuse_public_key", "pk-test")
+    monkeypatch.setattr(lf.settings, "langfuse_secret_key", "sk-test")
+    monkeypatch.setattr(lf.settings, "langfuse_host", "https://jp.cloud.langfuse.com")
+    monkeypatch.setattr(lf.settings, "sentry_environment", "prod")
+    monkeypatch.setattr(lf._state, "enabled", False)
+
+    class _BoomLangfuse:
+        def __init__(self, **kwargs) -> None:
+            raise RuntimeError("SDK 초기화 실패 시뮬레이션")
+
+    monkeypatch.setattr(langfuse_pkg, "Langfuse", _BoomLangfuse)
+    monkeypatch.setitem(sys.modules, "langfuse.openai", types.ModuleType("langfuse.openai"))
+
+    with caplog.at_level("ERROR"):
+        lf.init_langfuse()  # 예외가 새면 실패
+    assert lf._state.enabled is False
+    assert any("초기화 실패" in r.message for r in caplog.records)
+
+
+def test_observe_request_survives_trace_start_failure(monkeypatch, caplog) -> None:
+    """트레이스 시작 보호(P1 리뷰): get_client 등 SDK 시작 호출이 예외를 내도 본작업은
+    관측 없이 진행된다 — 이 블록은 모든 엔드포인트에서 LLM 호출보다 먼저 돌기 때문에,
+    보호가 없으면 관측 도구 고장이 모든 요청의 500이 된다(리뷰 재현 시나리오 고정)."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+
+    def _boom():
+        raise RuntimeError("simulated Langfuse client failure")
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", _boom, raising=False)
+
+    ran = False
+    with caplog.at_level("WARNING"):
+        with observe_request("채팅 턴", metadata={"retry_count": 0}) as trace:
+            ran = True
+            trace.set_metadata(retry_count=1)  # 빈 핸들 — 예외 없이 통과해야 한다
+    assert ran is True
+    assert any("트레이스 시작 실패" in r.message for r in caplog.records)
+
+
+def test_shutdown_langfuse_survives_flush_failure(monkeypatch, caplog) -> None:
+    """종료 flush 보호(P1 리뷰): flush가 예외를 내도 종료 절차가 깨지지 않는다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+
+    class _BoomClient:
+        def flush(self) -> None:
+            raise RuntimeError("flush 실패 시뮬레이션")
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", lambda: _BoomClient(), raising=False)
+
+    with caplog.at_level("WARNING"):
+        shutdown_langfuse()  # 예외가 새면 실패
+    assert any("flush 실패" in r.message for r in caplog.records)
+
+
+def test_observe_request_propagates_business_exception(monkeypatch) -> None:
+    """보호의 경계 고정(P1 리뷰): SDK 실패는 삼키되 **본작업이 낸 예외는 그대로 전파**된다 —
+    관측 보호가 실제 오류(LLM·비즈니스 예외)까지 숨기면 안 된다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+    monkeypatch.setattr(lf, "get_correlation_ids", lambda: (None, None, None))
+
+    @contextmanager
+    def fake_current_observation(*, name, as_type):
+        yield _FakeSpan()
+
+    @contextmanager
+    def fake_propagate(**kwargs):
+        yield
+
+    class _FakeClient:
+        def start_as_current_observation(self, *, name, as_type):
+            return fake_current_observation(name=name, as_type=as_type)
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", lambda: _FakeClient(), raising=False)
+    monkeypatch.setattr(langfuse_pkg, "propagate_attributes", fake_propagate, raising=False)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="본작업 실패"):
+        with observe_request("스토리 컴파일"):
+            raise ValueError("본작업 실패")
+
+
 def test_observe_request_passthrough_when_disabled(monkeypatch) -> None:
     # 비활성이면 observe_request는 Langfuse SDK를 건드리지 않고 블록을 그대로 통과시킨다.
     # 차원 인자(tags·metadata)를 줘도 no-op이어야 하고, 핸들의 set_metadata도 안전해야 한다.
