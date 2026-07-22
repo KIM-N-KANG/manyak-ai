@@ -112,6 +112,41 @@ def test_init_langfuse_survives_sdk_failure(monkeypatch, caplog) -> None:
     assert "langfuse.openai" not in sys.modules
 
 
+def test_init_failure_after_client_leaves_no_instrumentation(monkeypatch, caplog) -> None:
+    """초기화 순서 보호(후속 P2): 클라이언트 생성 **뒤** 단계(ignore_logger)가 실패해도
+    계측 패치가 설치되지 않은 깨끗한 비활성으로 남아야 한다.
+
+    계측 import는 되돌릴 수 없으므로 실패 가능한 단계들 전부보다 뒤(맨 마지막)여야 한다 —
+    순서가 뒤집히면 "비활성" 로그를 찍고도 LLM 호출이 Langfuse 래퍼를 계속 지나는,
+    상태 표시와 실제 동작이 어긋난 상태가 된다(리뷰 재현: enabled=False + 계측 모듈 로드됨)."""
+    import sys
+
+    import sentry_sdk.integrations.logging as sentry_logging
+
+    monkeypatch.setattr(lf.settings, "langfuse_public_key", "pk-test")
+    monkeypatch.setattr(lf.settings, "langfuse_secret_key", "sk-test")
+    monkeypatch.setattr(lf.settings, "langfuse_host", "https://jp.cloud.langfuse.com")
+    monkeypatch.setattr(lf.settings, "sentry_environment", "prod")
+    monkeypatch.setattr(lf._state, "enabled", False)
+
+    class _FakeLangfuse:
+        def __init__(self, **kwargs) -> None:
+            pass  # 생성은 성공 — 실패 지점은 그 뒤의 ignore_logger다
+
+    def _boom(name: str) -> None:
+        raise RuntimeError("ignore_logger 실패 시뮬레이션")
+
+    monkeypatch.setattr(langfuse_pkg, "Langfuse", _FakeLangfuse)
+    monkeypatch.setattr(sentry_logging, "ignore_logger", _boom)
+
+    with caplog.at_level("ERROR"):
+        lf.init_langfuse()  # 예외가 새면 실패
+    assert lf._state.enabled is False
+    assert any("초기화 실패" in r.message for r in caplog.records)
+    # 핵심: 실패가 계측 import보다 앞서 일어나므로 패치가 설치되지 않아야 한다.
+    assert "langfuse.openai" not in sys.modules
+
+
 def test_observe_request_survives_trace_start_failure(monkeypatch, caplog) -> None:
     """트레이스 시작 보호(P1 리뷰): get_client 등 SDK 시작 호출이 예외를 내도 본작업은
     관측 없이 진행된다 — 이 블록은 모든 엔드포인트에서 LLM 호출보다 먼저 돌기 때문에,

@@ -113,13 +113,15 @@ def init_langfuse() -> None:
             release=settings.app_version,
         )
 
-        # 계측 import(openai 전역 몽키패치)는 **클라이언트 생성이 성공한 뒤에만** 건다(Codex P2).
-        # 먼저 걸었다가 뒤 단계가 실패하면, 비활성(no-op)인데 계측 패치만 남아 LLM 호출이
-        # 미설정 상태의 Langfuse 래퍼를 지나는 어정쩡한 상태가 된다.
-        import langfuse.openai  # noqa: F401 — import 부작용으로 openai를 전역 계측(위 docstring)
-
         # 스트리밍 이탈 시 OTel detach 실패 ERROR가 Sentry에 잡히는 것을 막는다(위 docstring F1).
+        # 계측 import보다 먼저 부른다 — 여기가 실패해도 아직 아무것도 설치되지 않은 상태다.
         ignore_logger("opentelemetry.context")
+
+        # 계측 import(openai 전역 몽키패치)는 **되돌릴 수 없으므로 맨 마지막에** 건다(Codex P2).
+        # 앞 단계가 하나라도 실패하면 계측이 걸리지 않은 깨끗한 비활성(no-op)으로 남는다 —
+        # 반대로 계측을 먼저 걸었다가 뒤 단계가 실패하면, "비활성" 로그를 찍고도 LLM 호출이
+        # Langfuse 래퍼를 계속 지나는 어긋난 상태가 된다.
+        import langfuse.openai  # noqa: F401 — import 부작용으로 openai를 전역 계측(위 docstring)
     except Exception:  # noqa: BLE001 — 관측 초기화 실패는 서비스보다 중요하지 않다
         logger.error("Langfuse 초기화 실패 — 비활성(no-op)으로 기동", exc_info=True)
         return
