@@ -12,9 +12,11 @@
 - **호출은 PR 본문이 아니라 코멘트 `@codex review`로만 트리거된다.**
 - **리뷰는 즉시 오지 않는다**(보통 수 분~20분). 폴링으로 도착을 감지해야 한다.
 - **봇 계정 이름이 두 형태로 온다.** `chatgpt-codex-connector[bot]`이 기본이지만 환경·이벤트에 따라
-  접미사 없이 `chatgpt-codex-connector`로도 보고된다. 그래서 필터는 `==`가 아니라
-  `.user.login|contains("codex-connector")`다. 한 형태로만 매칭하면 응답이 왔는데도 카운트가
-  0에 머물러 timeout이 난다.
+  접미사 없이 `chatgpt-codex-connector`로도 보고된다. 한 형태로만 매칭하면 응답이 왔는데도 카운트가
+  0에 머물러 timeout이 난다. 그래서 **두 이름을 각각 정확히 비교**한다.
+  `contains("codex-connector")` 같은 부분 일치는 쓰지 않는다 — 공개 레포라 누구나
+  `evil-codex-connector-fan` 같은 계정으로 코멘트·리액션을 남길 수 있고, 그러면 남의 글을
+  Codex 응답으로 오판한다.
 - **지적이 없으면 정식 리뷰가 아예 안 생긴다.** Codex는 지적이 있을 때만 `pulls/{n}/reviews`를
   만들고, 없으면 "Didn't find any major issues" 같은 이슈 코멘트(`issues/{n}/comments`)나 호출
   코멘트의 thumbs-up 리액션으로만 답한다. 그래서 리뷰 수만 폴링하면 "지적 없음"을 놓쳐 timeout이

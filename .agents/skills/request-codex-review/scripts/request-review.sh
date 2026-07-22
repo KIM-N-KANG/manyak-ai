@@ -18,7 +18,8 @@ PR="$1"
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) \
   || { echo "FAIL: 레포를 확인할 수 없습니다 — 'gh auth status'를 보세요." >&2; exit 1; }
 STATE="${TMPDIR:-/tmp}/codex-review-$PR.env"
-BOT_FILTER='select(.user.login|contains("codex-connector"))'
+# 부분 일치로 보면 `evil-codex-connector-fan` 같은 계정도 봇으로 세어 응답 도착을 오판한다.
+BOT_FILTER='select(.user.login=="chatgpt-codex-connector[bot]" or .user.login=="chatgpt-codex-connector")'
 
 # 전 페이지를 훑어 Codex 봇 응답 수를 합산한다.
 # gh 실패를 0으로 삼키면 기준선이 거짓 0으로 깔려 옛 코멘트를 새 응답으로 오인하므로, 실패는 그대로 전파한다.
@@ -53,8 +54,11 @@ CMTID=${CMT_URL##*-}   # .../pull/<PR>#issuecomment-<id> -> <id>
 HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid) \
   || { echo "FAIL: head SHA 조회 실패" >&2; exit 1; }
 
-# 5) 다음 스크립트가 새 셸이라 변수를 못 물려받는다 — 파일로 넘긴다
-cat > "$STATE" <<EOF
+# 5) 다음 스크립트가 새 셸이라 변수를 못 물려받는다 — 파일로 넘긴다.
+#    코멘트는 이미 달린 뒤라, 저장 실패를 성공으로 넘기면 다음 단계가 상태를 못 찾고
+#    재실행해서 같은 PR에 리뷰 요청이 중복으로 달린다. 반드시 쓰기 성공을 확인한다.
+TMP="$STATE.tmp.$$"
+if ! (umask 077; cat > "$TMP" <<EOF
 REPO=$REPO
 PR=$PR
 PREV_REVIEWS=$PREV_REVIEWS
@@ -62,6 +66,12 @@ PREV_COMMENTS=$PREV_COMMENTS
 CMTID=$CMTID
 HEAD_SHA=$HEAD_SHA
 EOF
+) || ! mv "$TMP" "$STATE"; then
+  rm -f "$TMP"
+  echo "FAIL: 상태 파일을 쓰지 못했습니다($STATE). 리뷰 코멘트는 이미 달렸으니," >&2
+  echo "      TMPDIR을 확인한 뒤 wait-review.sh를 쓰려면 이 스크립트를 다시 실행하세요." >&2
+  exit 1
+fi
 
 echo ">>> 호출했습니다. 기준선 reviews=$PREV_REVIEWS comments=$PREV_COMMENTS / 호출코멘트=$CMTID / head=${HEAD_SHA:0:7}"
 echo ">>> 이어서: bash .agents/skills/request-codex-review/scripts/wait-review.sh $PR"
