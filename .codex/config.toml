@@ -1,0 +1,19 @@
+# 리뷰 모델은 이 레포에 고정하지 않는다. 레포(.codex) 설정은 개인 ~/.codex/config.toml을
+# 덮어써(project-scoped override) 개인별 로컬 리뷰 모델을 못 쓰게 만들고, PR(클라우드) 리뷰는
+# 이 파일을 읽지 않는다(review_model은 로컬 `codex review` 전용). 로컬 리뷰 모델은 각자
+# ~/.codex/config.toml의 review_model로 정한다.
+
+# 이미지를 :latest가 아니라 digest로 고정한다 — 업스트림이 :latest를 갱신해도 팀 전체
+# Jira MCP 동작이 예고 없이 바뀌지 않게(서드파티 이미지가 .env.jira 크리덴셜을 받으므로 공급망
+# 경계상 버전 고정 필요). 업데이트가 필요하면 아래 명령으로 새 digest를 뽑아 교체한다:
+#   docker buildx imagetools inspect ghcr.io/sooperset/mcp-atlassian:latest --format '{{.Manifest.Digest}}'
+# git rev-parse 실패(저장소 밖·git 없음) 시 --env-file "/.env.jira"로 조용히 깨지지 않도록 먼저 가드한다.
+[mcp_servers.atlassian-jira]
+command = "/bin/bash"
+args = [
+    "-lc",
+    'ROOT=$(git rev-parse --show-toplevel) || { echo "Jira MCP: git 저장소 밖 — 중단" >&2; exit 1; }; exec docker run -i --rm --env-file "$ROOT/.env.jira" ghcr.io/sooperset/mcp-atlassian@sha256:288251e6b2f67352d1955d0762a1e60ac33ffca1ceb878e4f617406d87a5a5e8',
+]
+# 첫 실행 땐 digest 이미지를 새로 받아야 해서 시작이 오래 걸린다. Codex 기본 대기(10초)로는
+# 콜드 풀이 안 끝나 "MCP 실패"로 잘못 뜨므로 대기를 넉넉히 준다.
+startup_timeout_sec = 120

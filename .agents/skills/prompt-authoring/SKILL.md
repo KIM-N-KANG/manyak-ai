@@ -88,4 +88,6 @@ description: 프롬프트(system/LLM 프롬프트)를 새로 만들거나 기존
 ## 이 레포(manyak)에서 쓸 때
 
 manyak `prompt/` 작업의 고유 규칙(레이어 책임 분리·frontmatter·LF 줄바꿈·버전 저장 등)은
-`CLAUDE.md`와 `spec/`를 따른다.
+`CLAUDE.md`와 `spec/`를 따른다. 수정한 프롬프트의 동작은 유닛 테스트로 검증되지 않는다 —
+실측 검증(로컬 `scripts/` 스크립트·`experiment/` 러너, 과금이라 승인 선행)은 `CLAUDE.md`의
+"실측·실험" 절을 따르고, 실측하지 않았으면 보고에 "실측 미실시"를 명시한다.

@@ -28,6 +28,7 @@ from src.core.request_context import (
     KEY_REQUEST_ID,
     KEY_SESSION_ID,
     clean_identifier,
+    set_correlation_ids,
 )
 
 
@@ -59,5 +60,9 @@ class RequestContextMiddleware:
             identity[KEY_DEVICE_ID_HASH] = device_id_hash
         if identity:
             sentry_scope.set_context("identity", identity)
+
+        # Langfuse 트레이스용 — 엔드포인트가 읽을 수 있게 contextvar에도 담는다(KNK-624).
+        # Sentry scope 경로는 위 그대로 두고 갈래만 추가한다(F1 회귀 방지 — request_context 참조).
+        set_correlation_ids(request_id, session_id, device_id_hash)
 
         await self.app(scope, receive, send)

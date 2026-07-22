@@ -2,7 +2,11 @@ import sentry_sdk
 from httpx import ASGITransport, AsyncClient
 
 from src.api.v1 import story as story_module
-from src.core.request_context import clean_identifier
+from src.core.request_context import (
+    clean_identifier,
+    get_correlation_ids,
+    set_correlation_ids,
+)
 from src.main import app
 
 
@@ -106,3 +110,41 @@ async def test_middleware_sets_scope_even_on_unhandled_500(monkeypatch) -> None:
         )
     assert resp.status_code == 500
     assert fake.tags["request_id"] == "req_500"  # 500에도 request_id가 scope에 살아 있다
+
+
+# ── contextvar 갈래: 미들웨어 → 엔드포인트가 읽는 상관관계 식별자(KNK-624) ──────
+def test_correlation_contextvar_roundtrip() -> None:
+    set_correlation_ids("req_1", "sess_1", "hash_1")
+    assert get_correlation_ids() == ("req_1", "sess_1", "hash_1")
+
+
+def test_correlation_contextvar_overwrites_with_none() -> None:
+    # set이 항상 세 값을 덮어써야 이전 요청 값이 재사용 컨텍스트로 새지 않는다.
+    set_correlation_ids("req_1", "sess_1", "hash_1")
+    set_correlation_ids(None, None, None)
+    assert get_correlation_ids() == (None, None, None)
+
+
+async def test_middleware_populates_correlation_contextvar(client, monkeypatch) -> None:
+    # 미들웨어가 Sentry scope와 별개로 contextvar에도 실어, 엔드포인트가 읽을 수 있어야 한다.
+    monkeypatch.setattr(sentry_sdk, "get_isolation_scope", lambda: _FakeScope())
+    seen: dict = {}
+
+    async def _spy(*_a, **_k):
+        seen["ids"] = get_correlation_ids()
+        raise RuntimeError("stop")  # LLM 호출 전에 멈춘다(무과금)
+
+    monkeypatch.setattr(story_module.story_llm, "generate_storylines", _spy)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as c:
+        await c.post(
+            "/api/v1/story/storylines",
+            json={"genre_tags": ["무협"], "protagonist_tags": ["천마"], "supporting_tags": ["x"]},
+            headers={
+                "X-Manyak-Request-Id": "req_ctx",
+                "X-Manyak-Session-Id": "sess_ctx",
+                "X-Manyak-Device-Id-Hash": "hash_ctx",
+            },
+        )
+    assert seen["ids"] == ("req_ctx", "sess_ctx", "hash_ctx")

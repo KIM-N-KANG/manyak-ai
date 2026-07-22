@@ -106,7 +106,7 @@ def test_ending_candidate_has_no_min_turns_field() -> None:
 # ── completed 판정 메타 직렬화 (KNK-483) ────────────────────────────────────
 def test_completed_judgement_meta_defaults_to_null_camel_case() -> None:
     # 재료 없는 턴(현행 트래픽)에서는 3필드가 camelCase 키의 null로 나가야 한다.
-    payload = CompletedData(ai_output="본문", choices=["a", "b", "c"]).model_dump(by_alias=True)
+    payload = CompletedData(ai_output="본문").model_dump(by_alias=True)
     assert payload["aiOutput"] == "본문"
     assert payload["targetMainEvent"] is None
     assert payload["occurredMainEventName"] is None
@@ -116,7 +116,6 @@ def test_completed_judgement_meta_defaults_to_null_camel_case() -> None:
 def test_completed_judgement_meta_serializes_camel_case() -> None:
     payload = CompletedData(
         ai_output="본문",
-        choices=["a", "b", "c"],
         target_main_event=TargetMainEventOut(name="반란의 서막", progress_turns=4),
         occurred_main_event_name="선왕의 죽음",
         ending_name="왕좌를 되찾다",
@@ -124,3 +123,12 @@ def test_completed_judgement_meta_serializes_camel_case() -> None:
     assert payload["targetMainEvent"] == {"name": "반란의 서막", "progressTurns": 4}
     assert payload["occurredMainEventName"] == "선왕의 죽음"
     assert payload["endingName"] == "왕좌를 되찾다"
+
+
+# ── completed choices 빈 배열 강제 (KNK-625 선택지 분리) ────────────────────
+def test_completed_choices_defaults_to_empty_and_rejects_items() -> None:
+    # 선택지는 /chat/choices로 분리됐다 — completed의 choices는 하위호환 빈 배열 고정이며,
+    # 스키마(max_length=0)가 강제한다. 선택지가 다시 섞이는 회귀를 여기서 잡는다.
+    assert CompletedData(ai_output="본문").choices == []
+    with pytest.raises(ValidationError):
+        CompletedData(ai_output="본문", choices=["가"])

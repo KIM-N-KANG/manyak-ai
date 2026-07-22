@@ -12,7 +12,7 @@ from src.schemas.story_compile import (
     StorySpec,
 )
 from src.services import story_llm
-from src.services.prompt import build_compile_prompt
+from src.services.prompt import build_compile_prompt, build_refill_prompt
 from src.services.story_compile_render import spec_to_response
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -252,6 +252,42 @@ def test_spec_to_response_renders_nested_markdown() -> None:
     assert len(res.story_suggested_inputs) == 3
 
 
+def test_spec_to_response_render_equality() -> None:
+    # 동타입 필드가 뒤바뀌어도(prologue↔start_situation·description↔key_sentence) truthy
+    # 단언은 통과하므로, 픽스처 실값과 '정확히 일치'로 못박아 필드 뒤바뀜·렌더 형식 회귀를 잡는다.
+    data = _load("spec_valid.json")
+    res = spec_to_response(StorySpec(**data))
+    ps = data["prompt_settings"]
+
+    # pass-through 필드 — 원본과 정확히 일치
+    assert res.story_start_settings.prologue == data["start"]["prologue"]
+    assert res.story_start_settings.start_situation == data["start"]["start_situation"]
+    assert res.stories.one_line_intro == data["meta"]["one_line_intro"]
+    assert res.stories.description == data["meta"]["description"]
+
+    # 사건·엔딩 — 항목별 필드 정확 일치(description↔key_sentence 뒤바뀜 방지)
+    for got, src in zip(res.story_main_events, data["main_events"], strict=True):
+        assert (got.name, got.description, got.key_sentence) == (
+            src["name"], src["description"], src["key_sentence"]
+        )
+    for got, src in zip(res.story_endings, data["endings"], strict=True):
+        assert (got.name, got.min_turns, got.achievement_condition, got.epilogue) == (
+            src["name"], src["min_turns"], src["achievement_condition"], src["epilogue"]
+        )
+
+    # 렌더 통글 — f-string 산출물 전체 문자열 등가로 고정
+    assert res.story_settings.world_setting == (
+        f"# 세계관\n{ps['world_setting']}\n\n"
+        f"# 전제\n{ps['plot_setting']['premise']}\n\n"
+        f"# 갈등\n{ps['plot_setting']['conflict']}"
+    )
+    assert res.story_settings.rule_setting == (
+        f"# 전개 규칙\n{ps['rule_setting']}\n\n"
+        f"# 문체 톤\n{ps['tone_setting']}\n\n"
+        f"# 분량 배분\n{ps['length_ratio']}"
+    )
+
+
 # ── compile_story 통합 ──────────────────────────────────────────────────────
 async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_complete(system: str, user: str, **_kwargs: object):
@@ -317,6 +353,13 @@ async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPat
     res = await story_llm.compile_story(_request())
     assert len(calls) == 2  # 최초 1 + 부분 재호출 1
     assert "복구된 세계관 설정" in res.story_settings.world_setting
+    # 재호출 프롬프트에 '무엇을 보냈는가'도 계약이다 — 누락 블록명·직전 JSON·"해당 블록만"
+    # 지시가 실려야 정밀 회복(빈 블록만 재요청)이 전체 재시도로 퇴화하는 회귀를 잡는다.
+    refill_prompt = calls[1]
+    assert "world_setting" in refill_prompt  # 누락 블록명
+    assert "직전 생성 결과" in refill_prompt  # 직전 JSON 맥락
+    assert "해당 블록만" in refill_prompt  # 그 블록만 채우라는 지시
+    assert "다른 블록은 절대 포함하지 말 것" in refill_prompt
     # retry_count=재호출 횟수, 토큰은 본호출+재호출 합산
     assert res.meta.retry_count == 1
     assert res.meta.input_token_count == 110  # 100 + 10
@@ -324,16 +367,71 @@ async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPat
 
 
 async def test_compile_story_502_after_max_refill(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
     async def fake_complete(system: str, user: str, **_kwargs: object):
+        calls.append(user)
         data = _load("spec_valid.json")
         data["start"]["prologue"] = ""  # 매번 빈 채 → 재호출로도 못 채움
         return data, story_llm.LlmUsage("m", 1, 1)
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    captured: list = []
+    monkeypatch.setattr(story_llm, "capture_ai_exception", lambda *a, **k: captured.append(k))
 
     with pytest.raises(HTTPException) as exc:
         await story_llm.compile_story(_request())
     assert exc.value.status_code == 502
+    # 회복의 한계도 계약이다 — 총 3회 호출(최초 1 + 재호출 상한 2)에서 멈추고,
+    # 소진 캡처의 retry_count가 상한값이다(루프 조건이 <=로 바뀌어 3회 재호출되면 깨진다).
+    assert len(calls) == 3
+    assert captured[-1]["retry_count"] == 2
+
+
+# ── 재호출 프롬프트 내용·토큰 합산·경계값 (KNK-574 감사 1-4) ──────────────────
+def test_build_refill_prompt_contains_context() -> None:
+    # 재호출 프롬프트는 원본 맥락 + 누락 블록명 + 직전 JSON + "해당 블록만" 지시를 담는다.
+    system, user = build_refill_prompt(
+        "원본 유저 프롬프트", '{"world_setting": ""}', ["world_setting", "start"]
+    )
+    assert system  # COMPILE 시스템 프롬프트 재사용(비어 있지 않음)
+    assert "원본 유저 프롬프트" in user
+    assert "world_setting, start" in user  # 누락 블록명 나열
+    assert '{"world_setting": ""}' in user  # 직전 생성 결과(JSON)
+    assert "해당 블록만" in user
+    assert "다른 블록은 절대 포함하지 말 것" in user
+
+
+def test_add_tokens_mixed_none() -> None:
+    # 재호출 토큰 합산 — 둘 다 None이면 None, (None,int) 혼합은 누락을 0으로 본다.
+    assert story_llm._add_tokens(None, None) is None
+    assert story_llm._add_tokens(5, None) == 5
+    assert story_llm._add_tokens(None, 7) == 7
+    assert story_llm._add_tokens(3, 4) == 7
+
+
+async def test_compile_story_refill_boundary_retry_two(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1·2차는 빈 채, 3차(2번째 재호출)에 채워 성공 — retry_count가 상한 2에 정확히 닿고,
+    # 토큰은 3회 합산되며 (None,int) 혼합도 올바로 더해진다.
+    calls: list[str] = []
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        calls.append(user)
+        if len(calls) == 1:
+            data = _load("spec_valid.json")
+            data["prompt_settings"]["world_setting"] = ""
+            return data, story_llm.LlmUsage("m", 100, 200)
+        if len(calls) == 2:
+            return {"world_setting": ""}, story_llm.LlmUsage("m", None, 20)  # 혼합: input None
+        return {"world_setting": "채움"}, story_llm.LlmUsage("m", 10, 30)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request())
+    assert len(calls) == 3  # 최초 1 + 재호출 2(상한)
+    assert res.meta.retry_count == 2
+    assert res.meta.input_token_count == 110  # 100 + 0(None) + 10
+    assert res.meta.output_token_count == 250  # 200 + 20 + 30
 
 
 # ── Sentry 캡처 경계(KNK-262) — 성공은 조용, 실패만 보고 ──────────────────────

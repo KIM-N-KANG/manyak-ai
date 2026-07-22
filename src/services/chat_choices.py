@@ -1,14 +1,15 @@
-"""다음 행동 선택지 생성 (시점 B, 본문과 분리된 2번째 호출).
+"""다음 행동 선택지 생성 (시점 B, 전용 엔드포인트 /chat/choices의 호출 — KNK-625).
 
-본문 스트림이 끝난 뒤, 방금 생성된 장면(ai_output)을 이어 주인공이 취할 다음 행동
-선택지 3개를 별도 LLM 호출로 만든다. 본문 호출과 토큰을 다투지 않게 분리했고, json
-출력이라 마커 파싱이 없다.
+방금 생성된 장면(ai_output)을 이어 주인공이 취할 다음 행동 선택지 3개를 별도 LLM
+호출로 만든다. 본문 호출과 토큰을 다투지 않게 분리했고(json 출력이라 마커 파싱 없음),
+처음엔 /chat/turns 내부 2번째 호출이었으나 KNK-625에서 전용 엔드포인트로 승격됐다 —
+completed가 선택지 생성을 기다리지 않는다.
 
 **항상 정확히 3개를 보장**한다(본문에 선택지 블록이 끼어 안 나오던 '빈 추천창' 문제 해결):
 1) 프롬프트가 3개 요청 → 2) `len<3`이면 "이미 가진 것 제외, 모자란 개수만" 누적 재호출
 (최대 _MAX_REFILL회) → 3) 그래도 모자라면 준비된 폴백으로 채워 정확히 3개로 보정.
-호출이 통째로 실패해도(타임아웃·파싱오류) 흡수해 폴백으로 3개를 채운다 — 선택지 때문에
-턴이 실패하지 않는다.
+호출이 통째로 실패해도(타임아웃·파싱오류) 흡수해 폴백으로 3개를 채운다 — 유효한
+요청에서 /chat/choices 응답은 실패하지 않는다.
 
 CHOICES-TEMPLATE.md는 6레이어 조립에 들어가지 않는 독립 프롬프트다(STORYLINES/
 COMPILE 템플릿과 같은 위상).
@@ -169,7 +170,7 @@ def _accumulate(collected: list[str], seen: set[str], raw: object) -> None:
 async def _call(system: str, user: str) -> tuple[list, str, int | None, int | None]:
     """선택지 호출 1회 → (choices 리스트, model, in_tokens, out_tokens). 실패 시 예외."""
     response = await _client.chat.completions.create(
-        model=settings.deepseek_chat_model,
+        model=settings.chat_model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -188,7 +189,7 @@ async def _call(system: str, user: str) -> tuple[list, str, int | None, int | No
     usage = response.usage
     return (
         choices,
-        response.model or settings.deepseek_chat_model,
+        response.model or settings.chat_model,
         getattr(usage, "prompt_tokens", None),
         getattr(usage, "completion_tokens", None),
     )
@@ -205,7 +206,7 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
     seen: set[str] = set()
     input_tokens: int | None = None
     output_tokens: int | None = None
-    model = settings.deepseek_chat_model
+    model = settings.chat_model
     attempt = 0  # 0=첫 호출, 1·2=재호출. 종료 시 값이 곧 재호출 횟수다.
 
     while True:
@@ -218,14 +219,14 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
             output_tokens = _add_tokens(output_tokens, out_tok)
             _accumulate(collected, seen, raw)
         except (OpenAIError, json.JSONDecodeError, ValueError, IndexError, AttributeError) as e:
-            # 한 번의 호출이 터져도 턴을 깨지 않는다 — Sentry로만 보고하고 다음 시도/폴백으로 간다.
-            # IndexError(빈 choices)·AttributeError(message=None)도 흡수한다(F2 — 판정과 대칭,
-            # 같은 asyncio.gather라 어느 쪽 예외든 completed 없이 턴을 깨뜨릴 수 있음).
+            # 한 번의 호출이 터져도 선택지 응답을 깨지 않는다 — Sentry로만 보고하고 다음
+            # 시도/폴백으로 간다. IndexError(빈 choices)·AttributeError(message=None)도
+            # 흡수한다(F2 — 예외가 밖으로 새면 폴백 보정을 못 거쳐 /chat/choices가 500이 된다).
             logger.warning("선택지 호출 실패(시도 %d): %s", attempt, e)
             capture_ai_exception(
                 e,
                 feature=FEATURE_CHOICE_GENERATION,
-                model=settings.deepseek_chat_model,
+                model=settings.chat_model,
                 prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
                 retry_count=attempt,  # 0=첫 호출, 1·2=재호출
                 latency_ms=int((time.monotonic() - t0) * 1000),

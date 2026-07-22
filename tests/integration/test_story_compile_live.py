@@ -38,3 +38,18 @@ async def test_compile_story_live() -> None:
     assert "# 분량 배분" in res.story_settings.rule_setting
     assert res.story_start_settings.prologue.strip()
     assert len(res.story_suggested_inputs) == 3
+
+    # 주요 사건 3~5개(KNK-417/465 산출물) — 유닛은 mock이라 실 LLM만 이 계약을 관측한다.
+    assert 3 <= len(res.story_main_events) <= 5
+    assert all(ev.name.strip() and ev.key_sentence.strip() for ev in res.story_main_events)
+
+    # 엔딩은 "0개(폴백) 또는 정확히 3개" 계약. 3개면 min_turns는 하한 1 이상.
+    assert len(res.story_endings) in (0, 3)
+    if res.story_endings:
+        assert all(e.min_turns >= 1 for e in res.story_endings)
+        assert all(e.achievement_condition.strip() and e.epilogue.strip() for e in res.story_endings)
+
+    # 로깅 meta(KNK-243) — usage 토큰이 실제로 채워지는지는 라이브만 검증할 수 있다.
+    assert res.meta is not None
+    assert res.meta.input_token_count and res.meta.input_token_count > 0
+    assert res.meta.output_token_count and res.meta.output_token_count > 0

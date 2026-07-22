@@ -188,7 +188,7 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
     start = time.monotonic()
     try:
         response = await _client.chat.completions.create(
-            model=settings.deepseek_chat_model,
+            model=settings.chat_model,
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": _build_user(req, ai_output)},
@@ -217,7 +217,7 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
         capture_ai_exception(
             e,
             feature=FEATURE_CHAT_RESPONSE,
-            model=settings.deepseek_chat_model,
+            model=settings.chat_model,
             prompt_versions={"JUDGEMENT": JUDGEMENT_VERSION},
             retry_count=0,  # 단일 호출 — 재호출 없음(D12)
             latency_ms=int((time.monotonic() - start) * 1000),

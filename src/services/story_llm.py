@@ -118,7 +118,7 @@ async def _complete_json(
 ) -> tuple[dict, LlmUsage]:
     """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
-    model이 None이면 컴파일용 deepseek_model(pro)로 폴백한다. 기본 인자에 settings 값을
+    model이 None이면 컴파일용 story_compile_model(pro)로 폴백한다. 기본 인자에 settings 값을
     직접 두면 import 시점에 고정돼 런타임 오버라이드(테스트 등)가 반영되지 않으므로 호출
     시점에 해석한다. 응답 속도가 중요한 경로(스토리라인)는 호출 측에서 flash 모델을 넘겨
     덮어쓴다(KNK-215). label은 진단 로깅에서 호출 종류를 구분하는 용도다(KNK-222).
@@ -126,7 +126,7 @@ async def _complete_json(
     로깅용 메타는 응답에서 직접 뽑는다 — model은 response.model(실제 쓴 모델), 토큰은
     response.usage(없으면 None). 이 한 곳이 메타의 출처라 모델을 바꿔도 따로 손댈 게 없다.
     """
-    resolved_model = model if model is not None else settings.deepseek_model
+    resolved_model = model if model is not None else settings.story_compile_model
     start = time.monotonic()
     try:
         response = await _client.chat.completions.create(
@@ -165,12 +165,15 @@ async def _complete_json(
             output_tokens=getattr(response.usage, "completion_tokens", None),
         )
         return parsed, usage
-    except (OpenAIError, json.JSONDecodeError, _InvalidAiResponse) as exc:
+    except (OpenAIError, json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError) as exc:
         # 실패를 한 곳에서 모아 Sentry에 보고하고(AN-4) error_code별 502로 바꾼다. 502 detail에는
         # provider 원문(str(e))을 싣지 않는다 — 내부 상세는 Sentry로만 보낸다(AN-4-7·4-10).
+        # IndexError(빈 choices)·AttributeError(message=None)도 잡아 응답 모양이 깨진 malformed
+        # SDK 응답을 500이 아니라 정제 502(invalid_ai_response)로 수렴시킨다(§5-5 준수 —
+        # chat_choices·chat_judgement가 이미 하는 방어와 대칭, story만 빠져 있었다).
         error_code = (
             ERROR_INVALID_AI_RESPONSE
-            if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse))
+            if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError))
             else classify_error_code(exc)
         )
         capture_ai_exception(
@@ -196,7 +199,7 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
     return await _complete_json(
         system_prompt,
         user_prompt,
-        model=settings.deepseek_chat_model,
+        model=settings.storylines_model,
         label="storylines",
         feature=FEATURE_STORYLINE_GENERATION,
         prompt_versions={"STORYLINES": STORYLINES_VERSION},

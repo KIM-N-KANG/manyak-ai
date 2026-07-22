@@ -157,3 +157,30 @@ async def test_stream_error_captures(monkeypatch) -> None:
     # AN-4-8 컨텍스트 — 실패 캡처에 재호출 횟수·소요 시간이 실린다(KNK-529)
     assert calls[0]["retry_count"] == 0
     assert isinstance(calls[0]["latency_ms"], int) and calls[0]["latency_ms"] >= 0
+
+
+# ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
+# 가짜가 kwargs를 버리면 model·stream·thinking 설정 회귀를 못 잡는다. 넘긴 인자를
+# 통째로 붙잡아, 본문 경로가 스트리밍·usage 동봉·비추론으로 호출하는지 고정한다.
+async def test_stream_call_contract(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def _agen():
+        yield _FakeChunk("본문")
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _agen()
+
+    monkeypatch.setattr(chat_llm._client.chat.completions, "create", _create)
+    msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
+    _ = [e async for e in stream_chat_turn(msgs)]
+
+    assert captured["model"] == chat_llm.settings.chat_model
+    assert captured["messages"] is msgs  # 조립한 messages를 가공 없이 그대로 넘긴다
+    assert captured["stream"] is True
+    assert captured["stream_options"] == {"include_usage": True}  # 토큰 로깅용
+    assert captured["extra_body"] == chat_llm._THINKING_DISABLED
+    # 본문은 지문·대사를 자유 생성하므로 json 모드·출력 상한을 걸지 않는다.
+    assert "response_format" not in captured
+    assert "max_tokens" not in captured
