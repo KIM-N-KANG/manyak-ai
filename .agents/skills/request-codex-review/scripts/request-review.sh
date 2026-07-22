@@ -9,7 +9,7 @@
 set -uo pipefail
 
 case "${1:-}" in
-  -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+  -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
 esac
 [ $# -eq 1 ] || { echo "FAIL: 인자는 PR 번호 하나입니다. 예: request-review.sh 57" >&2; exit 2; }
 PR="$1"

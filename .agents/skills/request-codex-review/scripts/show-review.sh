@@ -9,7 +9,7 @@
 set -uo pipefail
 
 case "${1:-}" in
-  -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+  -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
 esac
 [ $# -eq 1 ] || { echo "FAIL: 인자는 PR 번호 하나입니다. 예: show-review.sh 57" >&2; exit 2; }
 PR="$1"
@@ -35,6 +35,19 @@ done < "$STATE"
 
 # 부분 일치로 보면 `evil-codex-connector-fan` 같은 계정의 글도 Codex 결과로 읽게 된다.
 BOT_FILTER='select(.user.login=="chatgpt-codex-connector[bot]" or .user.login=="chatgpt-codex-connector")'
+
+# 상태 파일의 head가 PR의 현재 head와 어긋나면 정식·인라인 리뷰가 전부 걸러져 빈 화면이 나온다.
+# 그런데 "지적 없음"일 때도 똑같이 빈 화면이라, 경고가 없으면 통과로 오독한다.
+# 리뷰를 요청한 뒤 커밋을 하나 더 push하면 바로 이 상황이 된다.
+CUR_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid) || CUR_SHA=""
+if [ -z "$CUR_SHA" ]; then
+  echo "!!! 주의: PR의 현재 head를 조회하지 못했습니다. 아래 결과가 최신 커밋 것인지 확인하지 못했습니다." >&2
+elif [ "$CUR_SHA" != "$HEAD_SHA" ]; then
+  echo "!!! 경고: 리뷰를 요청한 커밋과 PR의 현재 커밋이 다릅니다." >&2
+  echo "      요청 당시: ${HEAD_SHA:0:7} / 현재: ${CUR_SHA:0:7}" >&2
+  echo "      아래 '정식 리뷰'와 '인라인 코멘트'가 비어 보여도 지적이 없다는 뜻이 아닙니다." >&2
+  echo "      request-review.sh $PR 를 다시 실행해 현재 커밋으로 리뷰를 받으세요." >&2
+fi
 
 echo "############ 정식 리뷰 (head ${HEAD_SHA:0:7} 기준) ############"
 gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" \

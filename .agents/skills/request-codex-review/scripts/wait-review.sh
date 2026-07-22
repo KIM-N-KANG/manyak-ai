@@ -3,7 +3,9 @@
 #
 #   bash .agents/skills/request-codex-review/scripts/wait-review.sh <PR번호> [--max-wait <초>]
 #
-# 기본 대기 540초(9분). Bash 도구 상한이 10분이라 그 안에 끝나게 잡았다.
+# 기본 대기 720초(12분). Codex 실측이 9분 36초·9분 54초였다(PR #61, 2026-07-22) —
+# 예전 기본 540초(9분)로는 매번 NOT_YET이 먼저 떴다.
+# 앞에서 돌리면 Bash 도구 10분 상한에 잘리므로 **백그라운드로 실행한다**.
 # 아직 안 왔으면(3) 같은 명령을 그대로 다시 실행하면 이어서 기다린다.
 #
 # 종료코드: 0  = 봇 thumbs-up (추가 지적 없음, 확정)
@@ -13,11 +15,11 @@
 # 왜 세 신호를 다 보는지는 ../reference.md §1
 set -uo pipefail
 
-MAX_WAIT=540
+MAX_WAIT=720
 PR=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     --max-wait) MAX_WAIT="${2:-}"; shift 2 || { echo "FAIL: --max-wait 뒤에 초를 주세요." >&2; exit 2; } ;;
     -*) echo "FAIL: 모르는 인자 '$1'. 쓸 수 있는 것: --max-wait, --help" >&2; exit 2 ;;
     *) [ -z "$PR" ] || { echo "FAIL: PR 번호는 하나만 받습니다." >&2; exit 2; }; PR="$1"; shift ;;

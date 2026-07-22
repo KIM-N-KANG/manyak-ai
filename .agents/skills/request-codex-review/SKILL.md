@@ -37,7 +37,7 @@ description: 이미 올라간 PR을 ready로 전환하고 `@codex review` 코멘
 ## 2단계 — 도착 대기
 
 - [ ] `bash .agents/skills/request-codex-review/scripts/wait-review.sh <PR번호>`
-      **Bash 도구 timeout을 600000으로 준다.** 기본 2분이라 그냥 돌리면 중간에 끊긴다.
+      **백그라운드로 돌린다.** 12분을 기다리는데 Bash 도구는 앞에서 10분까지만 버틴다 → §2
 - [ ] 종료코드로 갈린다 → 상세는 `reference.md` §2
       - `0` — 추가 지적 없음(확정). 4단계로
       - `10`·`11` — 리뷰나 코멘트가 왔다. 3단계로
