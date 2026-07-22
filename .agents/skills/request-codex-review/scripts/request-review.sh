@@ -45,14 +45,17 @@ PREV_REVIEWS=$(codex_count "repos/$REPO/pulls/$PR/reviews?per_page=100" "[.[]|$B
 PREV_COMMENTS=$(codex_count "repos/$REPO/issues/$PR/comments?per_page=100" "[.[]|$BOT_FILTER]|length") \
   || { echo "FAIL: 기준선(comments) 조회 실패 — 중단합니다." >&2; exit 1; }
 
-# 3) 호출 — 리뷰는 PR 본문이 아니라 코멘트로만 트리거된다
+# 3) 이번 라운드의 head 커밋 — show-review.sh가 옛 라운드를 걸러내는 기준.
+#    반드시 코멘트를 달기 **전에** 얻는다. 코멘트를 먼저 달면, 이 조회가 실패했을 때
+#    리뷰 요청은 이미 나간 채 상태 파일이 없어 다음 단계가 이어받지 못하고,
+#    다시 실행하면 같은 PR에 요청이 중복으로 달린다.
+HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid) \
+  || { echo "FAIL: head SHA 조회 실패 — 아직 코멘트를 달지 않았으니 그대로 다시 실행하면 됩니다." >&2; exit 1; }
+
+# 4) 호출 — 리뷰는 PR 본문이 아니라 코멘트로만 트리거된다. 여기서부터 되돌릴 수 없다.
 CMT_URL=$(gh pr comment "$PR" --body "@codex review") || { echo "FAIL: 코멘트 작성 실패" >&2; exit 1; }
 CMTID=${CMT_URL##*-}   # .../pull/<PR>#issuecomment-<id> -> <id>
 [[ "$CMTID" =~ ^[0-9]+$ ]] || { echo "FAIL: 코멘트 ID를 뽑지 못했습니다: $CMT_URL" >&2; exit 1; }
-
-# 4) 이번 라운드의 head 커밋 — show-review.sh가 옛 라운드를 걸러내는 기준
-HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid) \
-  || { echo "FAIL: head SHA 조회 실패" >&2; exit 1; }
 
 # 5) 다음 스크립트가 새 셸이라 변수를 못 물려받는다 — 파일로 넘긴다.
 #    코멘트는 이미 달린 뒤라, 저장 실패를 성공으로 넘기면 다음 단계가 상태를 못 찾고
