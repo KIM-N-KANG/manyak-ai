@@ -1,6 +1,10 @@
 # Styleguide — FastAPI AI Service
 
-이 파일은 Gemini Code Assist가 코드를 제안·리뷰할 때 따르는 팀 규칙이다.
+이 파일은 이 레포의 코드를 쓰고 리뷰할 때 따르는 팀 규칙이다. 사람과 에이전트 모두에게 해당한다.
+
+원래는 Gemini Code Assist가 읽는 `.gemini/styleguide.md`였다. 무료판 서비스가 2026-07-22에
+종료돼 그 폴더를 걷어내면서, 지금 리뷰를 맡는 에이전트가 읽는 자리(`.agents/`)로 옮겼다.
+규칙 자체는 어느 도구가 읽든 그대로 유효하다.
 
 ---
 
