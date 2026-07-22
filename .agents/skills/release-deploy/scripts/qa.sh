@@ -40,7 +40,9 @@ cleanup_injected_key() {
     exit 1
   fi
   if mv "$BACKUP" "$ROOT/.env"; then
-    echo ">>> .env를 QA 전 상태로 되돌렸습니다(주입한 prod 키 제거)."
+    # 내용은 원래대로 돌아가지만 파일 권한은 0600으로 남는다. 되돌리지 않는 게 낫다 —
+    # 이 레포의 .env는 기본이 0666(누구나 읽기)이라, 그 상태로 복원하면 다음 주입 때 또 위험해진다.
+    echo ">>> .env 내용을 QA 전 상태로 되돌렸습니다(주입한 prod 키 제거). 권한은 0600으로 유지합니다."
     return 0
   fi
   echo "!! 위험: .env 복구 실패 — 주입한 prod DEEPSEEK_API_KEY가 .env에 남아 있습니다." >&2
@@ -108,6 +110,21 @@ ensure_deepseek_key() {
 
 FAILED=""
 
+# 유닛 단계도 .env의 키를 요구한다 — conftest가 `src.main`을 import하는데 Settings의
+# deepseek_api_key가 기본값 없는 필수 필드라 import 시점에 터진다. 그래서 키 없는 머신에서는
+# 유닛이 먼저 깨지고, 정작 키를 채우려던 아래 ensure_deepseek_key까지 가지도 못했다.
+# 라이브를 돌 계획이면 키를 먼저 확보한다(어차피 곧 필요하다).
+if [ "$RUN_LIVE" = "1" ] && ! grep -q "^DEEPSEEK_API_KEY=..*" "$ROOT/.env" 2>/dev/null; then
+  echo "############ 0/2 키 확보 (유닛도 키가 있어야 import된다) ############"
+  ensure_deepseek_key || { echo ">>> 키를 확보하지 못했습니다 — QA를 진행할 수 없습니다"; exit 1; }
+fi
+# --no-live인데 키가 없으면 유닛조차 못 돈다. 원인을 유닛 실패로 뭉뚱그리지 않고 먼저 알린다.
+if ! grep -q "^DEEPSEEK_API_KEY=..*" "$ROOT/.env" 2>/dev/null; then
+  echo "FAIL: .env에 DEEPSEEK_API_KEY가 없어 테스트가 import 단계에서 실패합니다." >&2
+  echo "      --no-live 없이 실행하면 Secrets Manager에서 자동으로 가져옵니다." >&2
+  exit 1
+fi
+
 echo "############ 1/2 유닛·API 테스트 (도커 격리) ############"
 if bash "$ROOT/scripts/test.sh"; then
   echo ">>> 유닛 통과"
@@ -124,6 +141,7 @@ elif [ "$RUN_LIVE" = "0" ]; then
   echo "############ 2/2 라이브 — --no-live로 건너뜀 ############"
 else
   echo "############ 2/2 라이브 통합 테스트 (실제 LLM 호출 — 과금) ############"
+  # 위 0/2에서 이미 확보했으면 여기선 grep 한 번으로 즉시 통과한다(재조회 없음).
   if ! ensure_deepseek_key; then
     echo ">>> 라이브 건너뜀 — DEEPSEEK_API_KEY를 .env에도 Secrets에도 확보하지 못했습니다"
     FAILED="$FAILED 라이브(키없음)"

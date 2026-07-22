@@ -60,7 +60,9 @@ description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 �
 
 ## Phase C — 배포 (유일한 확인 게이트)
 
-- [ ] `gh pr create --base main --head release/vX.Y.Z --title "[KNK-xx] Release: vX.Y.Z 배포"`
+- [ ] `gh pr create --base main --head release/vX.Y.Z --title "[KNK-xx] Release: vX.Y.Z 배포" --body-file <파일>`
+      **`--body`(또는 `--body-file`)를 반드시 준다.** 없으면 gh가 본문을 물어보려고 멈춰,
+      머지 승인 게이트에 닿기도 전에 끊긴다. 본문은 배포 범위·3자 동시 배포 여부·QA 결과를 담는다
 - [ ] **여기서 멈추고 머지 승인을 받는다**
 - [ ] Merge Commit으로 머지 ← 이 순간이 배포
 - [ ] `bash .agents/skills/release-deploy/scripts/watch-deploy.sh` — 배포 워크플로를 끝까지 감시.

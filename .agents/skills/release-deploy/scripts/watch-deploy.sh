@@ -28,13 +28,16 @@ command -v gh >/dev/null || { echo "FAIL: gh CLI가 없습니다" >&2; exit 1; }
 # 숫자이기만 하면 받아주면, dev의 지난 성공 실행 ID를 넘겨도 "배포 성공"이 된다.
 # 손으로 넘긴 ID도 자동 탐색과 같은 조건(main 브랜치 + Docker 워크플로)을 만족해야 한다.
 if [ -n "$RUN_ID" ]; then
-  meta=$(gh run view "$RUN_ID" -R "$REPO" --json headBranch,name --jq '"\(.headBranch)\t\(.name)"' 2>/dev/null) \
+  meta=$(gh run view "$RUN_ID" -R "$REPO" --json headBranch,name,event \
+           --jq '"\(.headBranch)\t\(.name)\t\(.event)"' 2>/dev/null) \
     || { echo "FAIL: run $RUN_ID 을 찾을 수 없습니다" >&2; exit 1; }
-  br=${meta%%$'\t'*}; nm=${meta#*$'\t'}
+  br=${meta%%$'\t'*}; rest=${meta#*$'\t'}; nm=${rest%$'\t'*}; ev=${rest##*$'\t'}
   [ "$br" = "main" ] \
     || { echo "FAIL: run $RUN_ID 은 '$br' 브랜치입니다 — 배포는 main에서만 일어납니다" >&2; exit 2; }
   printf '%s' "$nm" | grep -qi docker \
     || { echo "FAIL: run $RUN_ID 은 '$nm' 워크플로입니다 — 배포(Docker)가 아닙니다" >&2; exit 2; }
+  [ "$ev" = "push" ] \
+    || { echo "FAIL: run $RUN_ID 은 '$ev' 실행입니다 — deploy 잡은 push에서만 돕니다" >&2; exit 2; }
 fi
 
 if [ -z "$RUN_ID" ]; then
@@ -46,8 +49,12 @@ if [ -z "$RUN_ID" ]; then
   for i in $(seq 1 20); do
     # 배포 워크플로(Docker) **만** 인정한다. 같은 커밋에 유닛 테스트 같은 다른 워크플로가
     # 먼저 등록되는데, 그걸 집으면 배포가 아직 안 끝났는데 "배포 성공"으로 보고하게 된다.
-    RUN_ID=$(gh run list -R "$REPO" --branch main -L 30 --json databaseId,headSha,name \
-      --jq "[.[] | select(.headSha==\"$WANT_SHA\") | select(.name | test(\"Docker\";\"i\"))]
+    # event까지 본다. 워크플로가 workflow_dispatch도 허용하는데, deploy 잡은
+    # `github.event_name == 'push'`로 막혀 있다 — 수동 실행분을 집으면 배포가 아예 안 돌았는데
+    # 워크플로는 success라 "배포 성공"으로 보고하게 된다.
+    RUN_ID=$(gh run list -R "$REPO" --branch main -L 30 --json databaseId,headSha,name,event \
+      --jq "[.[] | select(.headSha==\"$WANT_SHA\") | select(.event==\"push\")
+                 | select(.name | test(\"Docker\";\"i\"))]
             | .[0].databaseId // empty" 2>/dev/null)
     [ -n "$RUN_ID" ] && break
     echo "main ${WANT_SHA:0:7} 의 배포(Docker) 워크플로를 기다리는 중 ($i/20)"

@@ -32,7 +32,9 @@ IID=$(aws ec2 describe-instances --region "$REGION" \
 
 [ -n "$IID" ] && [ "$IID" != "None" ] \
   || fail "running 상태의 $TAG EC2가 없습니다. terraform apply가 선행돼야 할 수 있습니다."
-echo "EC2: $IID"
+# id를 통째로 찍으면 에이전트 대화 기록에 인프라 식별자가 남는다(레포가 PUBLIC).
+# 인스턴스를 구분할 만큼만 남긴다.
+echo "EC2: …${IID: -6}"
 
 CID=$(aws ssm send-command --region "$REGION" --instance-ids "$IID" \
   --document-name "AWS-RunShellScript" \

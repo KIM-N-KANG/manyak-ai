@@ -60,7 +60,8 @@ description: |
 
 ### 0. 사전 확인
 
-- `test -f scripts/namu_crawl.py scripts/split_raw.py`로 두 스크립트가 있는지 확인한다.
+- `test -f scripts/namu_crawl.py && test -f scripts/split_raw.py`로 두 스크립트가 있는지 확인한다.
+  (`test -f`는 경로를 하나만 받는다 — 둘을 한 번에 주면 파일이 다 있어도 종료코드 2로 죽는다.)
 - 같은 슬러그의 기존 산출물(`references/<slug>/`, `references/lore-book/<slug>.md`)이
   이미 있으면, 덮어쓰기 전 사용자에게 알린다(재실행·갱신 의도 확인 — 데이터 유실
   방지 목적이며 작업 체크포인트는 아니다).
