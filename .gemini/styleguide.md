@@ -173,7 +173,7 @@ chore/KNK-30-update-dependencies
 ```
 dev → feat/KNK-n-... → dev   (Squash and Merge)
 dev → release/vX.Y.Z → main  (Merge Commit)
-release → dev                 (Rebase and Merge)
+release → dev                 (Merge Commit)
 ```
 
 - `main`, `dev`에 직접 push 금지.
