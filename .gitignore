@@ -55,3 +55,7 @@ references/
 # 로컬 전용 스킬 (형제 레포 knk-harness의 내부 스펙 구조에 의존 — sync-ai-spec)
 .agents/skills/sync-ai-spec/
 .claude/skills/sync-ai-spec
+
+# 로컬 전용 스킬 (팀원 실명·팀 Jira 워크플로 상태 이름을 담아 공개 레포에 올리지 않음 — create-jira-subtasks)
+.agents/skills/create-jira-subtasks/
+.claude/skills/create-jira-subtasks
