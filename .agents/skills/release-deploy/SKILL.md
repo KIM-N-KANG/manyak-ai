@@ -74,11 +74,13 @@ description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 �
 
 - [ ] `git checkout main && git pull` 후 `git tag -a vX.Y.Z -m "vX.Y.Z 배포" && git push origin vX.Y.Z`
       (main을 먼저 받는 이유 → `.agents/skills/release-deploy/reference.md` §3-1)
+- [ ] `release → dev` 역류 PR(Merge Commit). release==dev면 불필요
 - [ ] `.agents/skills/release-deploy/history.md`에 이번 배포 기록. 새로 확인된 사실은
       `.agents/skills/release-deploy/reference.md`에 반영.
       **이 파일들은 git 추적 대상이다** — `main`에 직접 push할 수 없으니 `docs/KNK-xx-...` 브랜치를
-      따로 파서 `dev`로 PR을 올린다. 브랜치 삭제(아래)보다 **먼저** 한다
-- [ ] `release → dev` 역류 PR(Merge Commit). release==dev면 불필요
+      따로 파서 `dev`로 PR을 올린다. 브랜치는 **`dev`에서 딴다**(`git checkout dev && git pull` 선행 —
+      역류를 했다면 그것이 끝난 뒤의 `dev`다). 바로 위에서 `main`을 받아 둔 상태라 거기서 따면,
+      문서 PR이 릴리스 머지를 통째로 `dev`에 다시 싣는다. 브랜치 삭제(아래)보다 **먼저** 한다
 - [ ] `git push origin --delete release/vX.Y.Z`
 - [ ] 릴리스 티켓 완료 처리는 **사용자 몫** — 상태를 대신 바꾸지 말고, 배포 결과만 보고한다
 
