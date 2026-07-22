@@ -15,6 +15,10 @@ htmlcov/
 !.env.example
 .pytest_cache/
 tests/
+# 스킬 폴더는 이미지에 안 담기지만 빌드 컨텍스트로는 전송된다.
+# release-deploy에 AWS 계정번호·역할 ARN이 들어 있어, Dockerfile이 나중에 COPY 범위를
+# 넓히면 그대로 이미지에 실린다. 컨텍스트 단계에서 미리 뺀다.
+.agents/
 .claude/
 .vscode/
 .idea/
