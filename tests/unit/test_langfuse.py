@@ -175,6 +175,49 @@ def test_observe_request_propagates_business_exception(monkeypatch) -> None:
             raise ValueError("본작업 실패")
 
 
+def test_teardown_failure_log_does_not_leak_business_exception(monkeypatch, caplog) -> None:
+    """원문 유출 차단(Codex P2): 본작업 예외 진행 중 SDK 종료·metadata 기록이 실패해도,
+    경고 로그에 본작업 예외 원문이 딸려 나오지 않는다 — 파이썬 예외 연쇄(exc_info) 대신
+    예외 타입 이름만 남긴다. 본작업 예외 메시지에는 사용자 입력·LLM 응답 조각이 섞일 수
+    있어(AN-4-10 원문 비수집) 로그가 원문 유출 통로가 되면 안 된다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+    monkeypatch.setattr(lf, "get_correlation_ids", lambda: (None, None, None))
+
+    class _BoomUpdateSpan:
+        def update(self, *, metadata: dict) -> None:
+            raise RuntimeError("SDK update failure")
+
+    @contextmanager
+    def bad_span(*, name, as_type):
+        try:
+            yield _BoomUpdateSpan()
+        finally:
+            raise RuntimeError("SDK exit failure")  # 종료 시에도 SDK 실패
+
+    @contextmanager
+    def fake_propagate(**kwargs):
+        yield
+
+    class _FakeClient:
+        def start_as_current_observation(self, *, name, as_type):
+            return bad_span(name=name, as_type=as_type)
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", lambda: _FakeClient(), raising=False)
+    monkeypatch.setattr(langfuse_pkg, "propagate_attributes", fake_propagate, raising=False)
+
+    import pytest
+
+    secret = "사용자입력-원문-마커"
+    with caplog.at_level("WARNING"):
+        with pytest.raises(ValueError, match="본작업"):
+            with observe_request("채팅 턴", metadata={"retry_count": 0}) as trace:
+                trace.set_metadata(retry_count=1)
+                raise ValueError(f"본작업 실패: {secret}")
+
+    assert "기록 실패" in caplog.text or "종료 실패" in caplog.text  # 실패 자체는 로그로 감지
+    assert secret not in caplog.text  # 본작업 원문은 로그 어디에도 없다
+
+
 def test_observe_request_passthrough_when_disabled(monkeypatch) -> None:
     # 비활성이면 observe_request는 Langfuse SDK를 건드리지 않고 블록을 그대로 통과시킨다.
     # 차원 인자(tags·metadata)를 줘도 no-op이어야 하고, 핸들의 set_metadata도 안전해야 한다.

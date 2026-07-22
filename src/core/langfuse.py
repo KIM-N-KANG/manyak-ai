@@ -169,8 +169,14 @@ class _Trace:
             return
         try:
             self._span.update(metadata=self._metadata)
-        except Exception:  # noqa: BLE001 — 관측 기록 실패가 서비스 응답을 깨면 안 된다
-            logger.warning("Langfuse metadata 기록 실패 — 트레이스만 누락, 응답에는 영향 없음", exc_info=True)
+        except Exception as e:  # noqa: BLE001 — 관측 기록 실패가 서비스 응답을 깨면 안 된다
+            # exc_info를 남기지 않는다 — 이 메서드는 본작업 예외 진행 중(finally)에 불릴 수 있고,
+            # 그때 파이썬 예외 연쇄가 사용자 입력·LLM 원문이 섞인 본작업 예외까지 로그에 끌어온다
+            # (AN-4-10 원문 비수집, Codex P2). 예외 타입 이름만 남긴다.
+            logger.warning(
+                "Langfuse metadata 기록 실패(%s) — 트레이스만 누락, 응답에는 영향 없음",
+                type(e).__name__,
+            )
 
 
 @contextmanager
@@ -244,8 +250,10 @@ def observe_request(
                 stack.__exit__(*exc)
             else:
                 stack.close()
-        except Exception:  # noqa: BLE001
-            logger.warning("Langfuse 트레이스 종료 실패 — 응답에는 영향 없음", exc_info=True)
+        except Exception as e:  # noqa: BLE001
+            # 예외 타입만 기록 — exc_info는 진행 중인 본작업 예외를 연쇄로 끌어와
+            # 사용자 입력·LLM 원문이 로그로 샐 수 있다(AN-4-10, Codex P2. _flush와 동일 원칙).
+            logger.warning("Langfuse 트레이스 종료 실패(%s) — 응답에는 영향 없음", type(e).__name__)
 
 
 def shutdown_langfuse() -> None:
