@@ -87,9 +87,10 @@ def test_init_langfuse_survives_sdk_failure(monkeypatch, caplog) -> None:
     """초기화 보호(P1 리뷰): SDK 생성자가 예외를 내도 앱 기동이 죽지 않고 no-op으로 넘어간다.
 
     init_langfuse는 main.py 모듈 로드 시점에 불리므로, 여기가 뚫려 있으면 관측 도구
-    고장이 서비스 부팅 실패가 된다 — 오류 로그 + enabled=False로 격리돼야 한다."""
+    고장이 서비스 부팅 실패가 된다 — 오류 로그 + enabled=False로 격리돼야 한다.
+    또한 계측 import(openai 전역 몽키패치)는 클라이언트 생성 성공 뒤에만 걸리므로(Codex P2),
+    생성자가 실패하면 패치가 설치되지 않은 채로 남아야 한다."""
     import sys
-    import types
 
     monkeypatch.setattr(lf.settings, "langfuse_public_key", "pk-test")
     monkeypatch.setattr(lf.settings, "langfuse_secret_key", "sk-test")
@@ -102,12 +103,13 @@ def test_init_langfuse_survives_sdk_failure(monkeypatch, caplog) -> None:
             raise RuntimeError("SDK 초기화 실패 시뮬레이션")
 
     monkeypatch.setattr(langfuse_pkg, "Langfuse", _BoomLangfuse)
-    monkeypatch.setitem(sys.modules, "langfuse.openai", types.ModuleType("langfuse.openai"))
 
     with caplog.at_level("ERROR"):
         lf.init_langfuse()  # 예외가 새면 실패
     assert lf._state.enabled is False
     assert any("초기화 실패" in r.message for r in caplog.records)
+    # 실패 경로에서는 계측 패치(langfuse.openai import)가 걸리지 않아야 한다(Codex P2).
+    assert "langfuse.openai" not in sys.modules
 
 
 def test_observe_request_survives_trace_start_failure(monkeypatch, caplog) -> None:

@@ -102,12 +102,7 @@ def init_langfuse() -> None:
     # 여기가 뚫려 있으면 관측 도구 고장이 앱 부팅 실패가 된다.
     try:
         from langfuse import Langfuse
-
-        import langfuse.openai  # noqa: F401 — import 부작용으로 openai를 전역 계측(위 docstring)
         from sentry_sdk.integrations.logging import ignore_logger
-
-        # 스트리밍 이탈 시 OTel detach 실패 ERROR가 Sentry에 잡히는 것을 막는다(위 docstring F1).
-        ignore_logger("opentelemetry.context")
 
         Langfuse(
             public_key=settings.langfuse_public_key,
@@ -117,6 +112,14 @@ def init_langfuse() -> None:
             environment=settings.sentry_environment,
             release=settings.app_version,
         )
+
+        # 계측 import(openai 전역 몽키패치)는 **클라이언트 생성이 성공한 뒤에만** 건다(Codex P2).
+        # 먼저 걸었다가 뒤 단계가 실패하면, 비활성(no-op)인데 계측 패치만 남아 LLM 호출이
+        # 미설정 상태의 Langfuse 래퍼를 지나는 어정쩡한 상태가 된다.
+        import langfuse.openai  # noqa: F401 — import 부작용으로 openai를 전역 계측(위 docstring)
+
+        # 스트리밍 이탈 시 OTel detach 실패 ERROR가 Sentry에 잡히는 것을 막는다(위 docstring F1).
+        ignore_logger("opentelemetry.context")
     except Exception:  # noqa: BLE001 — 관측 초기화 실패는 서비스보다 중요하지 않다
         logger.error("Langfuse 초기화 실패 — 비활성(no-op)으로 기동", exc_info=True)
         return

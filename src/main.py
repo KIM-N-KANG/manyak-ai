@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,6 +8,12 @@ from src.core.config import settings
 from src.core.langfuse import init_langfuse, shutdown_langfuse
 from src.core.middleware import RequestContextMiddleware
 from src.core.sentry import init_sentry
+
+# 컨테이너(uvicorn)는 루트 로거에 핸들러를 달지 않아 앱 INFO 로그가 통째로 버려진다
+# (ERROR만 lastResort로 보임). "Langfuse 활성/비활성" 상태 로그는 CI 스모크와 배포 후
+# 점검(7-deployment §7-9)의 근거라 보여야 한다(Codex P1). basicConfig는 루트에 핸들러가
+# 이미 있으면 no-op이라 pytest·로컬 실행과 충돌하지 않는다.
+logging.basicConfig(level=logging.INFO)
 
 init_sentry()  # 앱 생성 전에 Sentry를 켠다(DSN 미설정 시 no-op).
 init_langfuse()  # Langfuse도 앱 생성 전에 켠다(키 미설정·JP·prod 미충족 시 no-op) — KNK-624·652.
