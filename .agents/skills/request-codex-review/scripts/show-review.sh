@@ -5,7 +5,7 @@
 #
 # 옛 라운드 리뷰와 사람 리뷰를 현재 결과로 오인하지 않도록, 상태 파일의 head 커밋으로 좁힌다.
 # "지적 없음" 응답은 이슈 코멘트로만 오므로 정식 리뷰가 비어도 코멘트를 반드시 본다.
-# 종료코드: 0 = 출력 완료 / 1 = 실패 / 2 = 사용법 오류
+# 종료코드: 0 = 출력 완료 / 4 = head 어긋남(결과 신뢰 불가) / 1 = 실패 / 2 = 사용법 오류
 set -uo pipefail
 
 case "${1:-}" in
@@ -39,10 +39,14 @@ BOT_FILTER='select(.user.login=="chatgpt-codex-connector[bot]" or .user.login=="
 # 상태 파일의 head가 PR의 현재 head와 어긋나면 정식·인라인 리뷰가 전부 걸러져 빈 화면이 나온다.
 # 그런데 "지적 없음"일 때도 똑같이 빈 화면이라, 경고가 없으면 통과로 오독한다.
 # 리뷰를 요청한 뒤 커밋을 하나 더 push하면 바로 이 상황이 된다.
+STALE=0
 CUR_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid) || CUR_SHA=""
 if [ -z "$CUR_SHA" ]; then
+  # 조회 실패는 '어긋났다'가 아니라 '확인 못 했다'다. 리뷰 데이터는 멀쩡할 수 있으므로
+  # 알리기만 하고 성공으로 끝낸다 — gh가 한 번 딸꾹질했다고 결과를 못 읽게 만들 이유는 없다.
   echo "!!! 주의: PR의 현재 head를 조회하지 못했습니다. 아래 결과가 최신 커밋 것인지 확인하지 못했습니다." >&2
 elif [ "$CUR_SHA" != "$HEAD_SHA" ]; then
+  STALE=1
   echo "!!! 경고: 리뷰를 요청한 커밋과 PR의 현재 커밋이 다릅니다." >&2
   echo "      요청 당시: ${HEAD_SHA:0:7} / 현재: ${CUR_SHA:0:7}" >&2
   echo "      아래 '정식 리뷰'와 '인라인 코멘트'가 비어 보여도 지적이 없다는 뜻이 아닙니다." >&2
@@ -74,3 +78,13 @@ echo "############ 인라인(파일 위) 코멘트 (head ${HEAD_SHA:0:7} 기준)
 gh api --paginate "repos/$REPO/pulls/$PR/comments?per_page=100" \
   --jq ".[] | $BOT_FILTER | select((.commit_id==\"$HEAD_SHA\") or (.original_commit_id==\"$HEAD_SHA\")) | {path, line, body}" \
   || { echo "FAIL: 인라인 코멘트 조회 실패" >&2; exit 1; }
+
+# 경고만 찍고 0으로 끝내면, 출력을 읽지 않는 호출자(스크립트·래퍼)는 그대로 '리뷰 확인 완료'로
+# 넘어간다. 어긋났을 때는 종료코드로도 실패를 알린다.
+if [ "$STALE" = "1" ]; then
+  echo >&2
+  echo "!!! 위 결과는 옛 커밋 ${HEAD_SHA:0:7} 기준입니다 — 현재 head ${CUR_SHA:0:7}의 리뷰가 아닙니다." >&2
+  echo "    request-review.sh $PR 부터 다시 실행하세요." >&2
+  exit 4
+fi
+exit 0

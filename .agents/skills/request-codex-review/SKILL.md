@@ -48,7 +48,8 @@ description: 이미 올라간 PR을 ready로 전환하고 `@codex review` 코멘
 ## 3단계 — 읽고 판단
 
 - [ ] `bash .agents/skills/request-codex-review/scripts/show-review.sh <PR번호>`
-      이번 라운드(현재 head 커밋) 것만 나온다
+      이번 라운드(현재 head 커밋) 것만 나온다.
+      **종료코드 4면 결과를 믿지 않는다** — 요청 뒤 커밋이 더 올라가 옛 커밋을 보고 있다. 1단계부터 다시 → §4
 - [ ] 지적을 **메이저(반영 필요)** 와 **마이너·제안(보류 가능)** 으로 나눈다 → `reference.md` §3
 - [ ] 메이저를 고쳤으면 커밋·push 후 **1단계부터 다시** — 같은 스크립트가 재리뷰도 처리한다
 
