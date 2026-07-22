@@ -176,3 +176,38 @@ async def test_chat_turn_completed_serializes_judgement_meta(
     assert meta["promptVersions"]["JUDGEMENT"] >= 1
     assert meta["inputTokenCount"] == 15
     assert meta["outputTokenCount"] == 5
+
+
+async def test_chat_turn_trace_receives_no_tags(client, mock_events, monkeypatch) -> None:
+    """채팅 턴 트레이스에 태그(장르)가 실리지 않음을 호출부에서 고정한다(KNK-652 적대 리뷰).
+
+    dimension_tags 시그니처 테스트는 헬퍼 경유 부활만 막는다 — 인라인 태그(tags=[...])로
+    되돌려도 잡히도록, 엔드포인트가 observe_request에 tags 인자 자체를 넘기지 않음을 본다
+    (장르 태그는 스토리 제작 트레이스에만 — 5-ai-server §5-6).
+    """
+    from contextlib import contextmanager
+
+    captured: dict = {}
+
+    @contextmanager
+    def _fake_observe(name, **kwargs):
+        captured["name"] = name
+        captured.update(kwargs)
+
+        class _Trace:
+            def set_metadata(self, **kw) -> None: ...
+
+        yield _Trace()
+
+    monkeypatch.setattr(chat_module, "observe_request", _fake_observe)
+    mock_events(
+        [
+            {"event": "token", "text": "안녕"},
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash"},
+        ]
+    )
+    resp = await client.post("/api/v1/chat/turns", json=_payload())
+
+    assert resp.status_code == 200
+    assert captured["name"] == "채팅 턴"
+    assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
