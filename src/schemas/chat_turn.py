@@ -187,7 +187,7 @@ class CompletedData(BaseModel):
     """
 
     # aiOutput은 manyak-server SSE 와이어 계약 키(camelCase, server ChatService가 SSOT)라
-    # 유지하되, 스타일 가이드(.gemini/styleguide.md:42 snake_case)에 맞춰 필드명은 ai_output으로
+    # 유지하되, 스타일 가이드(.agents/STYLEGUIDE.md §3 네이밍 snake_case)에 맞춰 필드명은 ai_output으로
     # 둔다. ⚠️ 직렬화 시 반드시 model_dump(by_alias=True)를 써야 와이어가 aiOutput이 된다(T3).
     ai_output: str = Field(serialization_alias="aiOutput")
     choices: list[str] = Field(default_factory=list, max_length=0)

@@ -11,6 +11,7 @@ build/
 # Env
 .env
 .env.jira
+.env.bak-*
 
 # Test / coverage
 .pytest_cache/
@@ -43,6 +44,8 @@ experiment/
 # 참고·원천 자료 창고 (정제되지 않은 크롤·발췌 등 — 로컬 전용)
 references/
 
-# 로컬 전용 스킬 (로컬 도구 scripts/·산출물 references/에만 의존 — genre-lorebook)
-.agents/skills/genre-lorebook/
-.claude/skills/genre-lorebook
+# 스킬은 전부 git으로 추적한다(KNK-668).
+# 폴더째 gitignore하면 브랜치를 오갈 때 git이 조용히 지우고 아무도 복구해주지 않는다
+# — 2026-07-22에 SKILL.md 3개가 그렇게 사라졌다. 비밀은 폴더가 아니라 값 단위로 막는다:
+# AWS 계정번호·비밀값은 스킬 문서에 적지 않고 ../manyak-terraform(비공개)이나
+# GitHub Variables를 가리킨다.

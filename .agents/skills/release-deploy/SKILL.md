@@ -1,88 +1,90 @@
 ---
 name: release-deploy
-description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 때 사용합니다. dev에서 release/vX.Y.Z 브랜치를 파고, 배포 전 적대적 리뷰와 QA를 거쳐, main에 Merge Commit으로 머지(=이 순간이 실제 배포)하고, 태그·release→dev 역류·브랜치 삭제까지 마무리합니다. "릴리즈 배포해줘", "release 브랜치 파서 배포", "v0.1.x 배포 진행", "배포 전에 문제 없는지 보고 배포까지"처럼 요청할 때 사용하세요. 절차 정본은 로컬 런북 scripts/spec/spec-docs/deploy-spec.md이며 이 스킬은 그 문서를 반드시 읽고 따릅니다. main 머지=배포라는 비가역 단계가 있으므로 단계마다 사용자 확인을 받습니다. 단, 일반 기능 PR(→create-pr), dev 머지용 커밋(→create-commit)에는 사용하지 않습니다.
+description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 때 사용합니다. dev에서 release/vX.Y.Z 브랜치를 파고, 배포 전 적대적 리뷰와 QA(유닛+라이브 LLM)를 거쳐, main에 Merge Commit으로 머지(=이 순간이 실제 배포)하고, 태그·release→dev 역류·브랜치 삭제까지 마무리합니다. "릴리즈 배포해줘", "release 브랜치 파서 배포", "v0.1.x 배포 진행", "배포 전에 문제 없는지 보고 배포까지"처럼 요청할 때 사용하세요. 사용자에게 묻는 것은 버전 번호와 main 머지 승인 두 가지뿐이고 나머지는 스킬이 알아서 수행합니다. 단, 일반 기능 PR(→create-pr), dev 머지용 커밋(→create-commit)에는 사용하지 않습니다.
 ---
 
 # 릴리즈 배포 (release-deploy)
 
-## 목적
+## 사용자에게 묻는 것은 딱 둘
 
-dev에 쌓인 변경을 운영에 배포하는 한 사이클(릴리즈 브랜치 → 배포 전 리뷰·QA →
-main 머지 → 사후 정리)을 빠뜨리는 단계 없이 진행한다. 핵심은 두 가지다 —
-**main 머지가 곧 배포**라는 비가역 지점 앞에서 반드시 멈춰 확인받는 것,
-그리고 매 배포 후 갱신되는 **로컬 런북을 정본으로 삼는 것**(이 스킬은 절차의
-뼈대만 들고, 값·명령·이력은 런북이 든다).
+1. **버전 번호** (vX.Y.Z) — 릴리스 Jira 티켓은 사용자가 직접 만드니, 그 **티켓 키**도 함께 받는다
+2. **main 머지 승인** — 이 순간이 곧 운영 배포다. 되돌리기 어렵고, AI·백엔드·웹 3자 동시 배포라 타이밍은 사용자가 안다.
 
-## 정본과 전제
+**그 밖의 것은 묻지 않고 진행한다.** 브랜치·버전 파일·적대적 리뷰·QA(라이브 LLM 포함)·
+태그·역류·브랜치 삭제·문서 갱신 전부 스킬이 한다. 중간에 확인을 구하지 말고, 결과만 보고한다.
+**단 Jira는 건드리지 않는다** — 릴리스 티켓의 생성도 완료 처리도 사용자 몫이다(§3-5).
 
-- **절차 정본: `scripts/spec/spec-docs/deploy-spec.md`** (git 무시 로컬 런북).
-  이 스킬을 시작하면 **런북을 먼저 전부 읽는다**. 스킬과 런북이 다르면 런북이 이긴다.
-  런북이 없으면(다른 머신 등) 진행하지 말고 사용자에게 알린다 — 절차를 기억으로
-  재구성하지 않는다.
-- 배포 트리거는 `main` push다: `release/vX.Y.Z → main`을 **Merge Commit**으로
-  머지하면 GitHub Actions가 ECR push → EC2 배포까지 자동으로 끝낸다.
-  사람이 따로 칠 배포 명령은 없다.
-- 브랜치 규칙(팀 합의): `feat/*→dev`와 `fix/*→release`는 Squash and Merge,
-  `release→main`과 `release→dev`(역류)는 Merge Commit. release 브랜치는 머지
-  후 삭제한다. `main` 직접 push 금지 — 보호 규칙이 기술적으로 없어 컨벤션으로만
-  지켜지므로 특히 주의한다.
+**릴리스 QA의 라이브 LLM 호출은 상시 승인이다**(2026-07-22 사용자 결정). 과금 승인을 다시 묻지 않는다 —
+배포 전에 반드시 확인해야 하는 것이라 묻는 게 의미가 없다. QA 밖의 실측(프롬프트 A/B, 실험 러너)은
+종전대로 승인이 필요하다.
+
+> `CLAUDE.md`·`AGENTS.md`의 실측 승인 원칙에도 이 예외가 명시돼 있다(KNK-668). 두 문서와 이 스킬이
+> 같은 말을 한다 — 한쪽만 고치면 어긋나므로 바꿀 때는 셋을 함께 본다.
+
+## 같이 쓰는 파일
+
+경로는 레포 루트 기준이다. 레포의 `scripts/`(테스트 러너)와 헷갈리지 않게 항상 전체 경로로 부른다.
+
+- `.agents/skills/release-deploy/reference.md` — 인프라 사실·동작 원리·브랜치 규칙·QA 상세·트러블슈팅. 해당 절만 펼쳐 본다.
+- `.agents/skills/release-deploy/history.md` — 배포 이력. Phase A(범위)와 Phase D(기록)에서 읽는다.
+- `.agents/skills/release-deploy/scripts/` — `qa.sh` · `watch-deploy.sh` · `prod-health.sh` · `infra-check.sh`.
+  **읽지 말고 실행한다.** 넷 다 **종료코드가 판정**이다.
+
+**레포가 PUBLIC이다.** AWS 계정번호·비밀값을 이 폴더 어디에도 적지 않는다 —
+`../manyak-terraform`(비공개)이나 GitHub Variables를 가리킨다.
 
 ## 하드 룰
 
-- **main 머지 전에 반드시 사용자 확인을 받는다.** 이 단계는 되돌리기 어렵다
-  (머지=운영 배포). 확인 없이 자동으로 넘어가지 않는다.
-- 배포 전 적대적 리뷰(아래 2단계)를 건너뛰지 않는다.
-- QA의 라이브 LLM 호출은 과금이다 — 실행 전 규모를 보고하고 승인받는다.
-- 시크릿 값(DEEPSEEK_API_KEY 등)을 화면·문서에 노출하지 않는다.
-  런북의 "값 미노출 주입" 방식을 따른다.
+- **main 머지 전 사용자 승인.** 유일한 비가역 지점이다.
+- 적대적 리뷰(Phase B)와 QA를 건너뛰지 않는다. 실패를 안은 채 다음으로 가지 않는다.
+- `main`·`dev`에 직접 push하지 않는다(룰셋으로도 막혀 있다). `release/*`는 룰셋이 없으니 컨벤션으로 지킨다.
+- 머지 방식을 바꾸지 않는다: `release→main`·`release→dev`는 Merge Commit, `feat/*→dev`·`fix/*→release`는 Squash.
+- 시크릿 값을 화면·문서에 남기지 않는다.
+- 실패·미실시를 숨기지 않는다. 라이브 QA를 못 돌렸으면 "실측 미실시"라고 적는다.
 
-## 작업 흐름
+## Phase A — 준비
 
-1. **준비** — 런북 통독 후: 배포 범위(dev에 쌓인 커밋)를 요약해 보고하고,
-   버전 번호(vX.Y.Z)를 합의한다. 릴리즈 Jira 티켓이 없으면 이전 릴리즈 티켓
-   제목을 참고해 만든다(`create-jira-subtasks` 스킬의 소유·확인 규칙 준수).
-   `git checkout dev && git pull` 후 `release/vX.Y.Z`를 분기·push한다.
+- [ ] `.agents/skills/release-deploy/history.md`로 직전 배포를 확인하고, dev 누적 커밋으로 배포 범위를 요약 보고
+- [ ] 릴리스 Jira 티켓 키를 사용자에게 받는다 — **티켓은 사용자가 만든다. 이 스킬은 Jira를 건드리지 않는다**
+      → `.agents/skills/release-deploy/reference.md` §3-5
+- [ ] `git checkout dev && git pull` → `release/vX.Y.Z` 분기·push
+- [ ] 패키지 버전 올리기 → `.agents/skills/release-deploy/reference.md` §3-2
 
-2. **배포 전 적대적 리뷰** — "이대로 운영에 나가면 무엇이 깨지나"를 통과
-   전제 없이 찾는다. dev↔main diff를 기준으로 크리티컬 에러 가능성(계약 불일치,
-   env·시크릿 누락, 마이그레이션·설정 미반영, 실패 경로)을 훑고, 결과를
-   **쉬운 말 리스트 + 구체 예시**로 보고한다. 차단급 문제가 있으면 배포를 멈추고
-   `fix/KNK-xx → release`(Squash)로 해소한 뒤 재검토한다.
+## Phase B — 리뷰와 QA
 
-3. **QA (release 브랜치에서)** — 런북 5절을 따른다. 뼈대:
-   자동 검사(`scripts/test.sh`) → 서버 기동·`/api/v1/health` 확인 →
-   실제 AI 기능(storylines·compile·chat) 라이브 확인(과금 승인 선행).
-   결과를 통과/실패 그대로 보고한다 — 실패를 안고 다음 단계로 가지 않는다.
+- [ ] 적대적 리뷰 3관점 → `.agents/skills/release-deploy/reference.md` §4. 차단급이면 멈추고 `fix/KNK-xx → release`로 해소 후 재검토
+- [ ] `bash .agents/skills/release-deploy/scripts/qa.sh` — 유닛과 라이브를 한 번에 돌린다.
+      **종료코드 0일 때만 진행한다.** 1=테스트 실패 / 2=인자 오류 / 3=라이브 미실시(게이트 불충분).
+      3이면 라이브를 채워 0을 받아낸 뒤 진행한다. 끝내 못 채우면 **멈추고 사용자에게 판단을 구한다**
+      — "실측 미실시"를 적었다고 통과가 되는 것이 아니다.
 
-4. **배포 (확인 게이트)** — `release/vX.Y.Z → main` PR을 만들고
-   (`[KNK-xx] Release: vX.Y.Z 배포`), 여기서 멈춰 **사용자의 머지 승인**을 받는다.
-   머지 방식은 Merge Commit. 머지 후 Actions 배포 잡을 모니터링하고,
-   운영 `/api/v1/health`가 `ok`인지 검증한다. 실패 시 런북 7절(트러블슈팅)을
-   따르고 상태를 그대로 보고한다.
+## Phase C — 배포 (유일한 확인 게이트)
 
-5. **사후 정리** — 먼저 `git checkout main && git pull`로 4단계에서 생긴 머지 커밋을
-   받는다(태그가 release 브랜치 끝이 아니라 **실제 배포된 main 머지 커밋**을 가리키게
-   하기 위함 — release 브랜치 끝과 main 머지 커밋은 내용은 같아도 다른 커밋이다).
-   그 위에서 annotated tag `vX.Y.Z`를 달아 push → `release → dev` 역류 PR
-   (Merge Commit; QA 수정이 없어 release==dev면 불필요) → release 브랜치 삭제 →
-   릴리즈 티켓 완료 처리(결과 기록 규칙은 `create-jira-subtasks` 준수).
-   **런북 갱신**: 배포 이력(9절)에 이번 배포를 기록하고, 새로 확인된 사실·주의
-   사항을 반영한다(런북은 로컬 전용이라 커밋 대상 아님).
+- [ ] `gh pr create --base main --head release/vX.Y.Z --title "[KNK-xx] Release: vX.Y.Z 배포" --body-file <파일>`
+      **`--body`(또는 `--body-file`)를 반드시 준다.** 없으면 gh가 본문을 물어보려고 멈춰,
+      머지 승인 게이트에 닿기도 전에 끊긴다. 본문은 배포 범위·3자 동시 배포 여부·QA 결과를 담는다
+- [ ] **여기서 멈추고 머지 승인을 받는다**
+- [ ] Merge Commit으로 머지 ← 이 순간이 배포
+- [ ] `bash .agents/skills/release-deploy/scripts/watch-deploy.sh` — 배포 워크플로를 끝까지 감시.
+      `gh run watch`를 맨손으로 부르지 않는다(run ID 없이는 비대화형에서 즉시 실패한다)
+- [ ] `bash .agents/skills/release-deploy/scripts/prod-health.sh <버전>` — 버전을 인자로 넘겨야 "새 이미지가 실제로 떴는지"까지 검사한다.
+      종료코드 0이 아니면 `.agents/skills/release-deploy/reference.md` §7
 
-## 금지 사항
+## Phase D — 사후
 
-- 런북을 읽지 않고 기억·추측으로 배포 절차를 진행하지 않는다.
-- 사용자 확인 없이 main PR을 머지하지 않는다(머지=배포).
-- 적대적 리뷰·QA를 건너뛰거나, 실패를 안은 채 다음 단계로 가지 않는다.
-- main·dev·release에 직접 push하지 않는다(PR로만).
-- 머지 방식을 바꾸지 않는다(release→main·release→dev는 Merge Commit, fix→release는 Squash).
-- 시크릿 값을 출력·기록하지 않는다.
-- 배포 후 런북 이력 갱신을 생략하지 않는다.
+- [ ] `git checkout main && git pull` 후 `git tag -a vX.Y.Z -m "vX.Y.Z 배포" && git push origin vX.Y.Z`
+      (main을 먼저 받는 이유 → `.agents/skills/release-deploy/reference.md` §3-1)
+- [ ] `release → dev` 역류 PR(Merge Commit). release==dev면 불필요
+- [ ] `.agents/skills/release-deploy/history.md`에 이번 배포 기록. 새로 확인된 사실은
+      `.agents/skills/release-deploy/reference.md`에 반영.
+      **이 파일들은 git 추적 대상이다** — `main`에 직접 push할 수 없으니 `docs/KNK-xx-...` 브랜치를
+      따로 파서 `dev`로 PR을 올린다. 브랜치는 **`dev`에서 딴다**(`git checkout dev && git pull` 선행 —
+      역류를 했다면 그것이 끝난 뒤의 `dev`다). 바로 위에서 `main`을 받아 둔 상태라 거기서 따면,
+      문서 PR이 릴리스 머지를 통째로 `dev`에 다시 싣는다. 브랜치 삭제(아래)보다 **먼저** 한다
+- [ ] `git push origin --delete release/vX.Y.Z`
+- [ ] 릴리스 티켓 완료 처리는 **사용자 몫** — 상태를 대신 바꾸지 말고, 배포 결과만 보고한다
 
 ## 완료 보고
 
-- 배포 버전·범위(커밋 수)·main 머지 커밋과 태그를 보고한다.
-- 적대적 리뷰에서 찾은 문제와 처리 결과(해소/보류)를 요약한다.
-- QA 결과(자동 검사·health·라이브 확인)를 통과/실패 그대로 보고한다.
-- 운영 health 검증 결과와 배포 잡 상태를 알린다.
-- 사후 정리(태그·역류 PR·브랜치 삭제·티켓·런북 갱신) 각각의 완료 여부를 명시한다.
+버전·범위·머지 커밋·태그 / 적대적 리뷰 결과(해소·보류) / QA 결과 그대로(라이브 미실시면 명시) /
+운영 health 검증과 배포 잡 상태 / 사후 정리 각 항목의 완료 여부.
