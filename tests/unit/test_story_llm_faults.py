@@ -202,3 +202,106 @@ async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
     assert captured["model"] == story_llm.settings.storylines_model  # storylines = flash
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["extra_body"] == story_llm._THINKING_DISABLED
+
+
+# ── invalid 응답 재호출 (KNK-312) ─────────────────────────────────────────────
+# 실측된 버그(Sentry PYTHON-FASTAPI-5)의 재현: 본문 속 대사 인용부호가 JSON 이스케이프
+# 없이 출력돼 파싱이 깨진다(finish_reason=stop — 잘림 아님). invalid 응답만 재호출하고,
+# provider 오류는 재호출하지 않으며, 토큰은 실패 시도분까지 합산됨을 고정한다.
+_UNESCAPED_QUOTE_JSON = (
+    '{"stories": [{"id": 1, "storyline": "그들은 속삭였다. "너는 선택받은 자다." '
+    '그 후로 꿈을 꿨다.", "recommended_infos": ["a", "b", "c"]}]}'
+)
+
+
+def _returns_sequence(contents: list):
+    """호출마다 다음 content를 돌려주는 fake. 호출 횟수를 세기 위해 리스트를 소비한다."""
+    calls = {"count": 0}
+
+    async def _create(**kwargs):
+        content = contents[calls["count"]]
+        calls["count"] += 1
+        if isinstance(content, BaseException):
+            raise content
+        return _Resp(content)
+
+    return _create, calls
+
+
+async def test_invalid_json_retries_then_succeeds(monkeypatch, captures) -> None:
+    """1차 깨진 JSON(따옴표 미이스케이프) → 2차 정상: 200 경로로 회복, 토큰 합산·재호출 횟수 기록."""
+    create, calls = _returns_sequence([_UNESCAPED_QUOTE_JSON, '{"meta": {"title": "t"}}'])
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", create)
+
+    parsed, usage = await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert parsed == {"meta": {"title": "t"}}
+    assert calls["count"] == 2
+    assert usage.retry_count == 1
+    # 실패 시도분 토큰도 합산된다(시도당 in=11/out=13)
+    assert usage.input_tokens == 22 and usage.output_tokens == 26
+    # 재호출로 회복해도 실패는 Sentry에 남는다(발생 빈도 관측)
+    assert len(captures) == 1
+    assert captures[0]["error_code"] == ERROR_INVALID_AI_RESPONSE
+    assert captures[0]["retry_count"] == 0  # 첫 시도의 실패
+
+
+async def test_invalid_json_exhausts_retries_returns_502(monkeypatch, captures) -> None:
+    """3회 전부 invalid면 502. 시도마다 Sentry 캡처가 남는다."""
+    create, calls = _returns_sequence(['{"broken', '{"broken', '{"broken'])
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", create)
+
+    with pytest.raises(HTTPException) as ei:
+        await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert ei.value.status_code == 502
+    assert "올바른 형식" in ei.value.detail
+    assert calls["count"] == 3  # 첫 호출 + 재호출 2회
+    assert [c["retry_count"] for c in captures] == [0, 1, 2]
+    # 실패 예외에 실제 재호출 횟수가 실린다 — 엔드포인트가 실패 트레이스에도 기록(Codex 리뷰 F2)
+    assert ei.value.retry_count == 2
+
+
+async def test_provider_error_is_not_retried(monkeypatch, captures) -> None:
+    """provider 오류(429)는 재호출 예산이 있어도 즉시 502 — invalid 응답만 재호출 대상."""
+    exc = RateLimitError("rate", response=httpx.Response(429, request=_req()), body=None)
+    create, calls = _returns_sequence([exc, '{"meta": {"title": "t"}}'])
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", create)
+
+    with pytest.raises(HTTPException) as ei:
+        await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert ei.value.status_code == 502
+    assert calls["count"] == 1  # 재호출 없음
+    assert captures[-1]["error_code"] == ERROR_PROVIDER_RATE_LIMITED
+    assert ei.value.retry_count == 0  # 재호출이 없었으므로 0이 사실
+
+
+async def test_generate_storylines_retries_twice_on_invalid(monkeypatch, captures) -> None:
+    """스토리라인 경로가 재호출 2회(총 3회 호출)로 배선됐는지 고정한다(KNK-312)."""
+    create, calls = _returns_sequence(['{"broken', '{"broken', '{"broken'])
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", create)
+
+    with pytest.raises(HTTPException) as ei:
+        await story_llm.generate_storylines("SYS", "USER")
+
+    assert ei.value.status_code == 502
+    assert calls["count"] == 3
+
+
+async def test_retry_gives_up_after_deadline(monkeypatch, captures) -> None:
+    """재호출 예산이 남아도 전체 경과가 상한을 넘겼으면 포기한다(백엔드 90초 대기 한도).
+
+    상한을 0초로 낮춰 '이미 시간 초과' 상황을 재현한다 — 유효하지 않은 첫 응답 후
+    재호출 없이 즉시 502가 나야 한다.
+    """
+    monkeypatch.setattr(story_llm, "_INVALID_RETRY_DEADLINE_SECONDS", 0.0)
+    create, calls = _returns_sequence(['{"broken', '{"meta": {"title": "t"}}'])
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", create)
+
+    with pytest.raises(HTTPException) as ei:
+        await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert ei.value.status_code == 502
+    assert calls["count"] == 1  # 상한 초과 — 재호출하지 않음
+    assert ei.value.retry_count == 0

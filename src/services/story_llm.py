@@ -38,11 +38,16 @@ class _InvalidAiResponse(Exception):
 
 @dataclass
 class LlmUsage:
-    """LLM 호출이 실제로 쓴 메타(로깅용). model은 응답이 돌려준 실제 모델명이다."""
+    """LLM 호출이 실제로 쓴 메타(로깅용). model은 응답이 돌려준 실제 모델명이다.
+
+    retry_count는 invalid 응답으로 같은 호출을 다시 부른 횟수(KNK-312). 토큰은 실패한
+    시도분까지 합산한다 — 실패해도 과금은 됐으므로 ai_call_logs 적재값이 실비용과 맞아야 한다.
+    """
 
     model: str
     input_tokens: int | None
     output_tokens: int | None
+    retry_count: int = 0
 
 
 def _add_tokens(a: int | None, b: int | None) -> int | None:
@@ -71,6 +76,11 @@ _TEMPERATURE = 0.75
 
 # 빈 필수 필드를 채우기 위한 부분 재호출 최대 횟수. 초과하면 502로 막는다.
 _MAX_REFILL = 2
+
+# invalid 응답 재호출(KNK-312)의 전체 시간 상한(초). 백엔드 storylines read timeout이 90초라
+# (manyak-server StoryAiClient), 이 시각을 넘긴 재호출은 성공해도 백엔드가 이미 끊은 뒤다.
+# 60초 = 90초에서 재호출 1번(평시 11~17초)의 여유를 남긴 값. 초과 시 남은 재호출을 포기한다.
+_INVALID_RETRY_DEADLINE_SECONDS = 60.0
 
 # 502 detail은 사용자 노출용 메시지만 담는다(AN-4-7) — provider 원문은 Sentry로만 보낸다(AN-4-10).
 _DETAIL_BY_CODE = {
@@ -115,6 +125,7 @@ async def _complete_json(
     label: str = "compile",
     feature: str = FEATURE_STORY_COMPLETION,
     prompt_versions: dict | None = None,
+    max_invalid_retries: int = 0,
 ) -> tuple[dict, LlmUsage]:
     """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
@@ -125,69 +136,101 @@ async def _complete_json(
 
     로깅용 메타는 응답에서 직접 뽑는다 — model은 response.model(실제 쓴 모델), 토큰은
     response.usage(없으면 None). 이 한 곳이 메타의 출처라 모델을 바꿔도 따로 손댈 게 없다.
+
+    max_invalid_retries(KNK-312): 응답이 왔지만 내용물이 못 쓸 것일 때(invalid_ai_response —
+    깨진 JSON·빈 응답·비객체)만 같은 요청을 그 횟수까지 다시 부른다. temperature 0.75라
+    재호출은 대개 다른(유효한) 출력을 낸다. provider 오류(타임아웃·429·5xx)는 여기서 다시
+    부르지 않는다 — 전송 실패는 SDK 재시도가 이미 맡고 있고, 타임아웃은 90초 예산을 이미
+    소진한 뒤라 다시 불러도 백엔드가 기다려주지 않는다.
     """
     resolved_model = model if model is not None else settings.story_compile_model
-    start = time.monotonic()
-    try:
-        response = await _client.chat.completions.create(
-            model=resolved_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=_TEMPERATURE,
-            max_tokens=_MAX_TOKENS,
-            extra_body=_THINKING_DISABLED,
-        )
-        # 진단: 호출별 소요시간·입출력 토큰·캐시 적중을 남겨 병목(재호출/출력 decode)을 실측한다.
-        usage = response.usage
-        logger.info(
-            "LLM[%s] %.1fs in=%s out=%s cache_hit=%s",
-            label,
-            time.monotonic() - start,
-            getattr(usage, "prompt_tokens", "?"),
-            getattr(usage, "completion_tokens", "?"),
-            getattr(usage, "prompt_cache_hit_tokens", "?"),
-        )
-        content = response.choices[0].message.content
-        if not content:
-            raise _InvalidAiResponse("LLM이 빈 응답을 반환했습니다.")
-        parsed = json.loads(_strip_code_fence(content))
-        if not isinstance(parsed, dict):
-            # json_object를 무시하고 배열·스칼라를 반환한 경우. dict 가정이 깨지면
-            # 호출부(compile_story 등)에서 AttributeError로 500이 나므로 여기서 막는다.
-            raise _InvalidAiResponse("LLM이 JSON 객체를 반환하지 않았습니다.")
-        usage = LlmUsage(
-            model=response.model or resolved_model,
+    attempts = 0  # invalid 응답으로 다시 부른 횟수(첫 호출은 0)
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    overall_start = time.monotonic()  # 재호출 포함 전체 경과의 기준(60초 상한 판정용)
+    while True:
+        start = time.monotonic()
+        try:
+            response = await _client.chat.completions.create(
+                model=resolved_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=_TEMPERATURE,
+                max_tokens=_MAX_TOKENS,
+                extra_body=_THINKING_DISABLED,
+            )
+            # 진단: 호출별 소요시간·입출력 토큰·캐시 적중을 남겨 병목(재호출/출력 decode)을 실측한다.
+            usage = response.usage
+            logger.info(
+                "LLM[%s] %.1fs in=%s out=%s cache_hit=%s",
+                label,
+                time.monotonic() - start,
+                getattr(usage, "prompt_tokens", "?"),
+                getattr(usage, "completion_tokens", "?"),
+                getattr(usage, "prompt_cache_hit_tokens", "?"),
+            )
+            # 토큰은 파싱 전에 합산한다 — 이 시도가 파싱에서 실패해도 과금은 됐으므로,
+            # 재호출 성공 시 메타가 실패 시도분까지 실비용을 반영해야 한다(컴파일 refill 합산과 동일 원칙).
             # 토큰 필드 누락 시에도 'null 폴백' 계약을 지키도록 getattr로 방어한다.
-            input_tokens=getattr(response.usage, "prompt_tokens", None),
-            output_tokens=getattr(response.usage, "completion_tokens", None),
-        )
-        return parsed, usage
-    except (OpenAIError, json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError) as exc:
-        # 실패를 한 곳에서 모아 Sentry에 보고하고(AN-4) error_code별 502로 바꾼다. 502 detail에는
-        # provider 원문(str(e))을 싣지 않는다 — 내부 상세는 Sentry로만 보낸다(AN-4-7·4-10).
-        # IndexError(빈 choices)·AttributeError(message=None)도 잡아 응답 모양이 깨진 malformed
-        # SDK 응답을 500이 아니라 정제 502(invalid_ai_response)로 수렴시킨다(§5-5 준수 —
-        # chat_choices·chat_judgement가 이미 하는 방어와 대칭, story만 빠져 있었다).
-        error_code = (
-            ERROR_INVALID_AI_RESPONSE
-            if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError))
-            else classify_error_code(exc)
-        )
-        capture_ai_exception(
-            exc,
-            feature=feature,
-            error_code=error_code,
-            model=resolved_model,
-            prompt_versions=prompt_versions,
-            latency_ms=int((time.monotonic() - start) * 1000),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=_DETAIL_BY_CODE.get(error_code, "LLM 처리 중 오류가 발생했습니다."),
-        ) from exc
+            input_tokens = _add_tokens(input_tokens, getattr(usage, "prompt_tokens", None))
+            output_tokens = _add_tokens(output_tokens, getattr(usage, "completion_tokens", None))
+            content = response.choices[0].message.content
+            if not content:
+                raise _InvalidAiResponse("LLM이 빈 응답을 반환했습니다.")
+            parsed = json.loads(_strip_code_fence(content))
+            if not isinstance(parsed, dict):
+                # json_object를 무시하고 배열·스칼라를 반환한 경우. dict 가정이 깨지면
+                # 호출부(compile_story 등)에서 AttributeError로 500이 나므로 여기서 막는다.
+                raise _InvalidAiResponse("LLM이 JSON 객체를 반환하지 않았습니다.")
+            return parsed, LlmUsage(
+                model=response.model or resolved_model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                retry_count=attempts,
+            )
+        except (OpenAIError, json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError) as exc:
+            # 실패를 한 곳에서 모아 Sentry에 보고하고(AN-4) error_code별 502로 바꾼다. 502 detail에는
+            # provider 원문(str(e))을 싣지 않는다 — 내부 상세는 Sentry로만 보낸다(AN-4-7·4-10).
+            # IndexError(빈 choices)·AttributeError(message=None)도 잡아 응답 모양이 깨진 malformed
+            # SDK 응답을 500이 아니라 정제 502(invalid_ai_response)로 수렴시킨다(§5-5 준수 —
+            # chat_choices·chat_judgement가 이미 하는 방어와 대칭, story만 빠져 있었다).
+            error_code = (
+                ERROR_INVALID_AI_RESPONSE
+                if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError))
+                else classify_error_code(exc)
+            )
+            # 재호출로 넘어가는 실패도 Sentry에 남긴다 — 최종 성공 여부와 무관하게
+            # invalid 응답의 발생 빈도를 계속 관측해야 프롬프트·모델 개선의 근거가 된다.
+            capture_ai_exception(
+                exc,
+                feature=feature,
+                error_code=error_code,
+                model=resolved_model,
+                prompt_versions=prompt_versions,
+                retry_count=attempts,
+                latency_ms=int((time.monotonic() - start) * 1000),
+            )
+            if error_code == ERROR_INVALID_AI_RESPONSE and attempts < max_invalid_retries:
+                elapsed = time.monotonic() - overall_start
+                if elapsed < _INVALID_RETRY_DEADLINE_SECONDS:
+                    attempts += 1
+                    logger.info(
+                        "LLM[%s] invalid 응답 — 재호출 %d/%d", label, attempts, max_invalid_retries
+                    )
+                    continue
+                # 재호출 예산이 남아도 시간이 없으면 포기 — 성공해도 백엔드(90초)가 이미 끊은 뒤다.
+                logger.info("LLM[%s] invalid 응답이나 %.0f초 경과 — 재호출 포기", label, elapsed)
+            http_exc = HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_DETAIL_BY_CODE.get(error_code, "LLM 처리 중 오류가 발생했습니다."),
+            )
+            # 실패까지의 재호출 횟수를 예외에 실어 보낸다 — 엔드포인트가 실패 트레이스에도
+            # 실제 값을 기록할 수 있게(Codex 리뷰 F2). provider 오류처럼 재호출이 없었으면 0.
+            http_exc.retry_count = attempts
+            raise http_exc from exc
 
 
 async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dict, LlmUsage]:
@@ -195,6 +238,12 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
 
     응답 속도가 사용자 체감에 직결돼 flash 모델을 쓴다(KNK-215, pro 대비 ~2배 빠름).
     label="storylines"로 진단 로깅을 구분한다(KNK-222).
+
+    invalid 응답이면 최대 2회 재호출한다(KNK-312). 실측된 주 원인은 본문 속 대사
+    인용부호를 JSON 이스케이프 없이 출력해 파싱이 깨지는 확률적 실수라(Sentry
+    PYTHON-FASTAPI-5, finish_reason=stop), 같은 요청을 다시 부르면 대부분 해소된다.
+    호출이 유난히 느렸던 요청은 재호출해도 백엔드 대기 한도(90초)를 넘기므로, 전체
+    경과 60초를 넘긴 시점부터는 재호출을 포기한다(_INVALID_RETRY_DEADLINE_SECONDS).
     """
     return await _complete_json(
         system_prompt,
@@ -203,6 +252,7 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
         label="storylines",
         feature=FEATURE_STORYLINE_GENERATION,
         prompt_versions={"STORYLINES": STORYLINES_VERSION},
+        max_invalid_retries=2,
     )
 
 

@@ -36,7 +36,7 @@ async def test_storylines_endpoint_attaches_meta(
     body = response.json()
     assert [s["id"] for s in body["stories"]] == [1, 2, 3]
 
-    # 로깅 메타(KNK-243): story는 snake_case 와이어, retry 없음(단일 호출)
+    # 로깅 메타(KNK-243): story는 snake_case 와이어, 재호출이 없었으면 retry_count=0
     meta = body["meta"]
     assert meta["model"] == "deepseek-test"
     assert meta["provider"] == "deepseek"
@@ -63,3 +63,23 @@ async def test_storylines_endpoint_tolerates_meta_key_in_llm_result(
     assert response.status_code == 200
     # 서버가 만든 메타로 덮어써지고, LLM이 보낸 잡음 문자열은 채택되지 않는다.
     assert response.json()["meta"]["provider"] == "deepseek"
+
+
+async def test_storylines_endpoint_reports_actual_retry_count(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """재호출이 있었으면 meta.retry_count가 하드코딩 0이 아니라 실제 횟수를 싣는다(KNK-312)."""
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _FAKE, story_llm.LlmUsage("deepseek-test", 100, 160, retry_count=1)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    response = await client.post("/api/v1/story/storylines", json=_REQUEST)
+
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert meta["retry_count"] == 1
+    # 합산 토큰이 그대로 실린다(실패 시도분 포함 값)
+    assert meta["input_token_count"] == 100
+    assert meta["output_token_count"] == 160
