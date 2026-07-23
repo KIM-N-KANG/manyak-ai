@@ -166,14 +166,23 @@ async def test_malformed_sdk_shape_returns_502_invalid(monkeypatch, captures, re
     assert captures[-1]["error_code"] == ERROR_INVALID_AI_RESPONSE
 
 
+# stories 계약(3편 × id·storyline·recommended_infos 3개)을 지키는 유효한 스토리라인 응답.
+_VALID_STORYLINES_JSON = (
+    '{"stories": ['
+    '{"id": 1, "storyline": "본문1", "recommended_infos": ["a", "b", "c"]},'
+    '{"id": 2, "storyline": "본문2", "recommended_infos": ["a", "b", "c"]},'
+    '{"id": 3, "storyline": "본문3", "recommended_infos": ["a", "b", "c"]}]}'
+)
+
+
 # ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
 # 가짜가 kwargs를 버리면 model·json 모드·temperature·max_tokens 회귀를 못 잡는다.
 # 넘긴 인자를 붙잡아, compile은 pro(기본)·storylines는 flash로 호출하고 나머지 인자는
 # 공통임을 고정한다(모델 오배선·인자 누락 방지).
-def _capture(store: dict):
+def _capture(store: dict, content: str = '{"meta": {"title": "t"}}'):
     async def _create(**kwargs):
         store.update(kwargs)
-        return _Resp('{"meta": {"title": "t"}}')
+        return _Resp(content)
 
     return _create
 
@@ -196,7 +205,10 @@ async def test_complete_json_call_contract_compile(monkeypatch) -> None:
 
 async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
     captured: dict = {}
-    monkeypatch.setattr(story_llm._client.chat.completions, "create", _capture(captured))
+    # storylines 경로는 stories 계약 검증(_validate_storylines)을 타므로 유효한 결과를 돌려준다.
+    monkeypatch.setattr(
+        story_llm._client.chat.completions, "create", _capture(captured, _VALID_STORYLINES_JSON)
+    )
     await story_llm.generate_storylines("SYS", "USER")
 
     assert captured["model"] == story_llm.settings.storylines_model  # storylines = flash
@@ -328,3 +340,76 @@ async def test_retry_attempt_timeout_shrinks_to_remaining_budget(monkeypatch, ca
     assert len(timeouts) == 2
     assert timeouts[0] <= story_llm._TOTAL_CALL_BUDGET_SECONDS
     assert timeouts[1] < timeouts[0]  # 재호출은 남은 예산만 사용
+
+
+# ── stories 계약 검증 → invalid 재호출 (KNK-312, Sentry PYTHON-FASTAPI-A) ─────
+# 파싱은 성공하지만 내용이 계약과 어긋나는 응답의 재현: 실제 장애에서는 LLM이
+# recommended_infos를 각 항목이 아니라 최상위에 두어, 재호출 루프를 통과한 뒤
+# 응답 조립(ValidationError)에서 500이 났다. 이제 루프 안 검증으로 재호출을 탄다.
+_SCHEMA_MISMATCH_JSON = (
+    '{"stories": ['
+    '{"id": 1, "storyline": "본문1"},'
+    '{"id": 2, "storyline": "본문2"},'
+    '{"id": 3, "storyline": "본문3"}],'
+    ' "recommended_infos": [["a"], ["b"], ["c"]]}'
+)
+
+
+async def test_storylines_schema_mismatch_retries_then_succeeds(monkeypatch, captures) -> None:
+    """1차 스키마 불일치(FASTAPI-A 모양) → 2차 정상: 500 없이 회복하고 재호출 횟수를 기록한다."""
+    create, calls = _returns_sequence([_SCHEMA_MISMATCH_JSON, _VALID_STORYLINES_JSON])
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", create)
+
+    result, usage = await story_llm.generate_storylines("SYS", "USER")
+
+    assert [s["id"] for s in result["stories"]] == [1, 2, 3]
+    assert calls["count"] == 2
+    assert usage.retry_count == 1
+    assert captures[-1]["error_code"] == ERROR_INVALID_AI_RESPONSE
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"result": "ok"}',  # stories 키 없음
+        (
+            '{"stories": ['
+            '{"id": 1, "storyline": "s", "recommended_infos": ["a", "b", "c"]},'
+            '{"id": 2, "storyline": "s", "recommended_infos": ["a", "b", "c"]}]}'
+        ),  # 3편이 아님(2편) — 개수 강제
+        '{"stories": ["문자열", "문자열", "문자열"]}',  # 항목이 객체가 아님
+        _SCHEMA_MISMATCH_JSON,  # 항목에 recommended_infos 누락(FASTAPI-A)
+        (
+            '{"stories": ['
+            '{"id": 1, "storyline": "s", "recommended_infos": ["a", "b"]},'
+            '{"id": 2, "storyline": "s", "recommended_infos": ["a", "b", "c"]},'
+            '{"id": 3, "storyline": "s", "recommended_infos": ["a", "b", "c"]}]}'
+        ),  # 추천 추가 정보가 3개가 아님
+        (
+            '{"stories": ['
+            '{"id": 1, "storyline": ["리스트"], "recommended_infos": ["a", "b", "c"]},'
+            '{"id": 2, "storyline": "s", "recommended_infos": ["a", "b", "c"]},'
+            '{"id": 3, "storyline": "s", "recommended_infos": ["a", "b", "c"]}]}'
+        ),  # 필드 타입 위반(storyline이 문자열 아님) — 얕은 키 검사로의 회귀 방지(적대 리뷰 #2)
+        (
+            '{"stories": ['
+            '{"id": 1, "storyline": "s", "recommended_infos": [1, 2, 3]},'
+            '{"id": 2, "storyline": "s", "recommended_infos": ["a", "b", "c"]},'
+            '{"id": 3, "storyline": "s", "recommended_infos": ["a", "b", "c"]}]}'
+        ),  # 필드 타입 위반(recommended_infos 원소가 문자열 아님)
+    ],
+)
+async def test_storylines_contract_violation_exhausts_to_502(
+    monkeypatch, captures, content
+) -> None:
+    """계약 위반이 3회 연속이면 500(ValidationError)이 아니라 다른 invalid와 같은 502."""
+    create, calls = _returns_sequence([content, content, content])
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", create)
+
+    with pytest.raises(HTTPException) as ei:
+        await story_llm.generate_storylines("SYS", "USER")
+
+    assert ei.value.status_code == 502
+    assert "올바른 형식" in ei.value.detail
+    assert calls["count"] == 3  # 첫 호출 + 재호출 2회
+    assert ei.value.retry_count == 2

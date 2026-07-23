@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from fastapi import HTTPException, status
@@ -20,6 +21,7 @@ from src.core.sentry import (
     classify_error_code,
 )
 from src.schemas.response_meta import StoryResponseMeta
+from src.schemas.story import StoryItem
 from src.schemas.story_compile import Ending, StoryCompileRequest, StoryCompileResponse, StorySpec
 from src.services.prompt import (
     COMPILE_VERSION,
@@ -131,6 +133,7 @@ async def _complete_json(
     feature: str = FEATURE_STORY_COMPLETION,
     prompt_versions: dict | None = None,
     max_invalid_retries: int = 0,
+    validate: Callable[[dict], None] | None = None,
 ) -> tuple[dict, LlmUsage]:
     """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
@@ -147,6 +150,10 @@ async def _complete_json(
     재호출은 대개 다른(유효한) 출력을 낸다. provider 오류(타임아웃·429·5xx)는 여기서 다시
     부르지 않는다 — 전송 실패는 SDK 재시도가 이미 맡고 있고, 타임아웃은 90초 예산을 이미
     소진한 뒤라 다시 불러도 백엔드가 기다려주지 않는다.
+
+    validate: 파싱이 성공한 dict의 내용 계약을 추가 검증하는 훅. 위반 시 _InvalidAiResponse를
+    던지면 위 invalid 재호출과 같은 경로를 탄다 — 파싱은 됐지만 못 쓸 응답(스키마 불일치 등)이
+    루프 밖(응답 조립)에서 500으로 터지는 것을 루프 안에서 잡기 위함이다(Sentry PYTHON-FASTAPI-A).
     """
     resolved_model = model if model is not None else settings.story_compile_model
     attempts = 0  # invalid 응답으로 다시 부른 횟수(첫 호출은 0)
@@ -193,6 +200,8 @@ async def _complete_json(
                 # json_object를 무시하고 배열·스칼라를 반환한 경우. dict 가정이 깨지면
                 # 호출부(compile_story 등)에서 AttributeError로 500이 나므로 여기서 막는다.
                 raise _InvalidAiResponse("LLM이 JSON 객체를 반환하지 않았습니다.")
+            if validate is not None:
+                validate(parsed)  # 계약 위반이면 _InvalidAiResponse → 아래 재호출 경로
             return parsed, LlmUsage(
                 model=response.model or resolved_model,
                 input_tokens=input_tokens,
@@ -241,6 +250,28 @@ async def _complete_json(
             raise http_exc from exc
 
 
+def _validate_storylines(data: dict) -> None:
+    """스토리라인 응답의 stories 계약(정확히 3편 × 항목 스키마 × 추천 3개)을 검증한다.
+
+    JSON 파싱이 성공해도 항목이 응답 스키마와 어긋나면(예: recommended_infos 누락)
+    엔드포인트의 응답 조립에서 ValidationError(500)로 터졌다(Sentry PYTHON-FASTAPI-A).
+    _complete_json의 validate 훅으로 재호출 루프 안에서 실행돼, 위반 시 다른 invalid
+    응답과 같은 재호출 → 소진 시 502 경로를 탄다(KNK-312).
+    """
+    stories = data.get("stories")
+    if not isinstance(stories, list) or len(stories) != 3:
+        raise _InvalidAiResponse("stories가 정확히 3편이 아닙니다.")
+    for i, item in enumerate(stories):
+        if not isinstance(item, dict):
+            raise _InvalidAiResponse(f"stories[{i}]가 JSON 객체가 아닙니다.")
+        try:
+            parsed = StoryItem(**item)
+        except (TypeError, ValueError) as exc:
+            raise _InvalidAiResponse(f"stories[{i}]가 응답 스키마와 맞지 않습니다.") from exc
+        if len(parsed.recommended_infos) != 3:
+            raise _InvalidAiResponse(f"stories[{i}]의 recommended_infos가 3개가 아닙니다.")
+
+
 async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dict, LlmUsage]:
     """스토리라인 생성 — (결과 dict, 사용 메타)를 반환한다. 메타 조립은 엔드포인트가 한다.
 
@@ -250,6 +281,7 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
     invalid 응답이면 최대 2회 재호출한다(KNK-312). 실측된 주 원인은 본문 속 대사
     인용부호를 JSON 이스케이프 없이 출력해 파싱이 깨지는 확률적 실수라(Sentry
     PYTHON-FASTAPI-5, finish_reason=stop), 같은 요청을 다시 부르면 대부분 해소된다.
+    파싱이 성공해도 stories 계약 위반(_validate_storylines)이면 같은 재호출을 탄다.
     호출이 유난히 느렸던 요청은 재호출해도 백엔드 대기 한도(90초)를 넘기므로, 전체
     경과 60초를 넘긴 시점부터는 재호출을 포기한다(_INVALID_RETRY_DEADLINE_SECONDS).
     """
@@ -261,6 +293,7 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
         feature=FEATURE_STORYLINE_GENERATION,
         prompt_versions={"STORYLINES": STORYLINES_VERSION},
         max_invalid_retries=2,
+        validate=_validate_storylines,
     )
 
 
