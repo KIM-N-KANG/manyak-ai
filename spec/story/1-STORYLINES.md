@@ -1,6 +1,6 @@
 ---
-version: 3
-updated: 2026-07-10
+version: 4
+updated: 2026-07-23
 ---
 
 # 스토리라인 생성 시스템 명세
@@ -99,14 +99,18 @@ LLM의 응답은 텍스트(String)이므로, 이를 JSON 객체로 파싱해야 
 
 다만 JSON 모드는 최선 노력(best-effort)일 뿐이라, LLM이 JSON 앞뒤에 코드 펜스(` ```json ` ... ` ``` `)를 붙이는 경우가 있습니다. 이 상태에서 파싱을 시도하면 오류가 발생하므로, 파싱 전에 코드 펜스가 있으면 제거하는 방어 처리가 필요합니다. 또한 빈 응답이거나 파싱 결과가 객체(dict)가 아니면 유효하지 않은 응답으로 간주합니다.
 
+파싱이 성공해도 내용이 응답 계약과 어긋나면 유효하지 않은 응답으로 간주합니다. 검증 기준은 §5-2의 응답 계약과 같습니다 — stories가 정확히 3편이고, 각 항목이 id·storyline·recommended_infos를 갖추며, recommended_infos가 정확히 3개여야 합니다. 이 검증이 없으면 계약 위반 응답이 파싱을 통과한 뒤 응답 조립 단계에서 500으로 터집니다(실제 장애: Sentry PYTHON-FASTAPI-A, LLM이 recommended_infos를 각 항목이 아닌 최상위에 둠).
+
+유효하지 않은 응답이면 같은 요청을 **최대 2회 재호출**합니다(KNK-312). 실제 장애 사례에서 확인된 주 원인은 이야기 본문 속 대사 인용부호(`"`)를 JSON 이스케이프 없이 출력하는 확률적 실수라, 다시 요청하면 대부분 유효한 출력이 나옵니다. 재호출까지 모두 실패하면 502를 반환합니다. 타임아웃·rate limit 같은 공급자 오류는 재호출 대상이 아닙니다(전송 계층 재시도는 SDK가 이미 수행).
+
 ### 4-3. 에러 처리
 
 아래 상황에 대한 처리가 필요합니다.
 
 | 상황 | 요구 동작 |
 |---|---|
-| LLM API 호출 실패(타임아웃·rate limit·요청 거부·연동 오류) | 게이트웨이 오류(502)를 클라이언트에 반환 |
-| LLM 응답이 빈 응답이거나 유효하지 않은 JSON | 파싱 실패로 간주하고 게이트웨이 오류(502) 반환 |
+| LLM API 호출 실패(타임아웃·rate limit·요청 거부·연동 오류) | 게이트웨이 오류(502)를 클라이언트에 반환(재호출 없음) |
+| LLM 응답이 빈 응답·유효하지 않은 JSON·응답 계약 위반(3편 아님·항목 스키마 불일치·추천 3개 아님) | 최대 2회 재호출(§4-2), 그래도 실패하면 게이트웨이 오류(502) 반환 |
 
 502 응답 본문에는 사용자에게 보일 안내 메시지만 담고, 공급자 원문 오류는 Sentry로만 보냅니다(KNK-262). LLM 호출은 90초 타임아웃을 두어 무한 대기를 막고, 초과 시 502로 변환합니다.
 
@@ -181,7 +185,7 @@ POST /api/v1/story/storylines
   ],
   "meta": {
     "model": "deepseek-v4-flash",
-    "prompt_versions": { "STORYLINES": 3 },
+    "prompt_versions": { "STORYLINES": 4 },
     "provider": "deepseek",
     "input_token_count": 2100,
     "output_token_count": 1450,
@@ -192,17 +196,17 @@ POST /api/v1/story/storylines
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| stories | object[] | 항상 3편 고정 — 편수는 프롬프트가 담보하며 코드는 검증하지 않음(상위 `5-ai-server.md` D7의 부분 적용 예외) |
-| stories[].id | number | 이야기 식별자 (1, 2, 3) |
+| stories | object[] | 항상 3편 고정 — 코드가 검증하며, 위반 시 invalid 재호출을 거쳐 502로 수렴(§4-2, KNK-312) |
+| stories[].id | number | 이야기 식별자 (1, 2, 3) — LLM 출력을 쓰지 않고 코드가 등장 순서대로 1·2·3을 박아 담보(genre 덮어쓰기와 같은 원칙). 값 어긋남은 재호출 없이 교정 |
 | stories[].storyline | string | 이야기 본문 (6~9문장) |
-| stories[].recommended_infos | string[] | 해당 이야기의 추천 추가 정보 (항상 3개 — 편수와 마찬가지로 프롬프트가 담보하며 코드는 검증하지 않음) |
+| stories[].recommended_infos | string[] | 해당 이야기의 추천 추가 정보 (항상 3개 — 편수와 마찬가지로 코드가 검증) |
 | meta | object | 응답 로깅 메타(백엔드 `ai_call_logs` 적재용, KNK-243) |
 | meta.model | string | 실제 응답에 쓰인 모델명 |
-| meta.prompt_versions | object | 프롬프트 버전 (예: `{"STORYLINES": 3}`) |
+| meta.prompt_versions | object | 프롬프트 버전 (예: `{"STORYLINES": 4}`) |
 | meta.provider | string | LLM 공급자 (`"deepseek"`) |
 | meta.input_token_count | number\|null | 입력 토큰 수 |
 | meta.output_token_count | number\|null | 출력 토큰 수 |
-| meta.retry_count | number | 부분 재호출 횟수(storylines는 항상 0) |
+| meta.retry_count | number | 유효하지 않은 응답으로 재호출한 횟수(0~2, KNK-312). 토큰 수는 실패 시도분을 합산한 값 |
 
 stories와 recommended_infos의 개수를 항상 고정으로 정의하는 이유는, 클라이언트가 배열 길이를 매번 확인하지 않고 안전하게 렌더링할 수 있게 하기 위해서입니다.
 
@@ -313,15 +317,15 @@ LLM의 출력은 순수 JSON 텍스트여야 합니다. 설명, 머리말, 코�
 
 | 항목 | 기준 |
 |---|---|
-| 이야기 개수 | 응답에 항상 3편 포함 |
-| 추가 정보 개수 | 각 이야기마다 정확히 3개 |
+| 이야기 개수 | 응답에 항상 3편 포함(코드 검증 — 위반 시 재호출 대상) |
+| 추가 정보 개수 | 각 이야기마다 정확히 3개(코드 검증 — 위반 시 재호출 대상) |
 | 이야기 문장 수 | 각 이야기 6~9문장 |
 | 다양성 | 3편의 서술 초점·갈등·정서가 서로 다른지 확인 |
 | 태그 반영 | 입력 태그가 이야기에 자연스럽게 반영됐는지 확인 |
 | 추가 정보 특화성 | 추천 추가 정보가 해당 이야기의 고유 설정을 언급하는지 확인 |
 | 응답 형식 | 응답이 유효한 JSON인지 파싱 성공 여부로 확인 |
 | 응답 메타 | `meta`에 model·prompt_versions·provider·토큰 수·retry_count가 실리는지 확인 |
-| 에러 처리 | LLM 호출 실패·빈 응답·파싱 실패 시 502 반환 |
+| 에러 처리 | 공급자 오류는 즉시 502, 유효하지 않은 응답은 최대 2회 재호출(60초 상한) 후에도 실패하면 502 반환 |
 
 ---
 
