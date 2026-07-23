@@ -82,6 +82,11 @@ _MAX_REFILL = 2
 # 60초 = 90초에서 재호출 1번(평시 11~17초)의 여유를 남긴 값. 초과 시 남은 재호출을 포기한다.
 _INVALID_RETRY_DEADLINE_SECONDS = 60.0
 
+# 재호출을 포함한 전체 호출 예산(초) = 백엔드 read timeout. 각 시도의 호출 타임아웃을
+# "예산의 남은 시간"으로 줄여, 60초 직전에 시작한 재호출이 자체 90초 타임아웃으로 총
+# 149초까지 끌지 못하게 한다(Codex 리뷰 P2). 첫 시도는 남은 시간=90초라 기존과 동일하다.
+_TOTAL_CALL_BUDGET_SECONDS = 90.0
+
 # 502 detail은 사용자 노출용 메시지만 담는다(AN-4-7) — provider 원문은 Sentry로만 보낸다(AN-4-10).
 _DETAIL_BY_CODE = {
     ERROR_PROVIDER_TIMEOUT: "LLM 응답 시간이 초과되었습니다.",
@@ -161,6 +166,9 @@ async def _complete_json(
                 temperature=_TEMPERATURE,
                 max_tokens=_MAX_TOKENS,
                 extra_body=_THINKING_DISABLED,
+                # 시도별 타임아웃 = 전체 예산(90초)의 남은 시간 — 60초 직전에 시작한 재호출이
+                # 총 90초를 넘겨 끌지 못하게 한다(Codex P2). 첫 시도는 남은 시간이 90초라 종전과 같다.
+                timeout=max(1.0, _TOTAL_CALL_BUDGET_SECONDS - (start - overall_start)),
             )
             # 진단: 호출별 소요시간·입출력 토큰·캐시 적중을 남겨 병목(재호출/출력 decode)을 실측한다.
             usage = response.usage

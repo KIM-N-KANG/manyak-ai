@@ -305,3 +305,26 @@ async def test_retry_gives_up_after_deadline(monkeypatch, captures) -> None:
     assert ei.value.status_code == 502
     assert calls["count"] == 1  # 상한 초과 — 재호출하지 않음
     assert ei.value.retry_count == 0
+
+
+async def test_retry_attempt_timeout_shrinks_to_remaining_budget(monkeypatch, captures) -> None:
+    """재호출 시도의 호출 타임아웃은 전체 예산(90초)의 남은 시간으로 줄어든다(Codex P2).
+
+    60초 직전에 시작한 재호출이 자체 90초 타임아웃으로 총 149초까지 끌지 못하게 하는
+    방어다. 첫 시도 타임아웃은 90초 이하, 재호출 시도는 첫 시도보다 반드시 작아야 한다.
+    """
+    timeouts: list[float] = []
+
+    async def _create(**kwargs):
+        timeouts.append(kwargs["timeout"])
+        if len(timeouts) == 1:
+            return _Resp('{"broken')  # 1차: 깨진 JSON → 재호출 유도
+        return _Resp('{"meta": {"title": "t"}}')  # 2차: 정상
+
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", _create)
+
+    await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert len(timeouts) == 2
+    assert timeouts[0] <= story_llm._TOTAL_CALL_BUDGET_SECONDS
+    assert timeouts[1] < timeouts[0]  # 재호출은 남은 예산만 사용
