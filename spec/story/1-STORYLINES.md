@@ -197,7 +197,7 @@ POST /api/v1/story/storylines
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | stories | object[] | 항상 3편 고정 — 코드가 검증하며, 위반 시 invalid 재호출을 거쳐 502로 수렴(§4-2, KNK-312) |
-| stories[].id | number | 이야기 식별자 (1, 2, 3) |
+| stories[].id | number | 이야기 식별자 (1, 2, 3) — LLM 출력을 쓰지 않고 코드가 등장 순서대로 1·2·3을 박아 담보(genre 덮어쓰기와 같은 원칙). 값 어긋남은 재호출 없이 교정 |
 | stories[].storyline | string | 이야기 본문 (6~9문장) |
 | stories[].recommended_infos | string[] | 해당 이야기의 추천 추가 정보 (항상 3개 — 편수와 마찬가지로 코드가 검증) |
 | meta | object | 응답 로깅 메타(백엔드 `ai_call_logs` 적재용, KNK-243) |

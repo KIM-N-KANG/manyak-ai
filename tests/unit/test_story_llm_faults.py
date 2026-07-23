@@ -355,6 +355,29 @@ _SCHEMA_MISMATCH_JSON = (
 )
 
 
+async def test_storylines_ids_normalized_to_sequence(monkeypatch, captures) -> None:
+    """id가 중복·범위 밖(예: [1,1,99])이어도 재호출·502 없이 순서대로 1·2·3으로 교정한다.
+
+    id 값은 표시·정렬용이라(선택은 본문 텍스트로) 어긋나도 무해 — 장르 덮어쓰기와 같은
+    '계약 값은 코드가 담보' 패턴(적대 리뷰 #3, 코덱스 P2). 200으로 통과하되 id만 교정.
+    """
+    weird_ids = (
+        '{"stories": ['
+        '{"id": 1, "storyline": "본문1", "recommended_infos": ["a", "b", "c"]},'
+        '{"id": 1, "storyline": "본문2", "recommended_infos": ["a", "b", "c"]},'
+        '{"id": 99, "storyline": "본문3", "recommended_infos": ["a", "b", "c"]}]}'
+    )
+    create, calls = _returns_sequence([weird_ids])
+    monkeypatch.setattr(story_llm._client.chat.completions, "create", create)
+
+    result, usage = await story_llm.generate_storylines("SYS", "USER")
+
+    assert [s["id"] for s in result["stories"]] == [1, 2, 3]  # 순서대로 교정됨
+    assert calls["count"] == 1  # 재호출 없음(무해한 이탈)
+    assert usage.retry_count == 0
+    assert captures == []  # 실패 캡처 없음(200 경로)
+
+
 async def test_storylines_schema_mismatch_retries_then_succeeds(monkeypatch, captures) -> None:
     """1차 스키마 불일치(FASTAPI-A 모양) → 2차 정상: 500 없이 회복하고 재호출 횟수를 기록한다."""
     create, calls = _returns_sequence([_SCHEMA_MISMATCH_JSON, _VALID_STORYLINES_JSON])

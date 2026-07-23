@@ -272,6 +272,16 @@ def _validate_storylines(data: dict) -> None:
             raise _InvalidAiResponse(f"stories[{i}]의 recommended_infos가 3개가 아닙니다.")
 
 
+def _normalize_storyline_ids(data: dict) -> None:
+    """stories의 id를 등장 순서대로 1·2·3으로 덮어쓴다(스펙 §5-2 계약 값 보장).
+
+    LLM이 id를 중복·범위 밖(예: [1,1,99])으로 줘도, 재호출·502로 벌하지 않고 코드가
+    정본 값으로 교정한다 — 장르(_inject_genre)와 같은 '계약 값은 코드가 담보'(D7) 패턴.
+    _validate_storylines가 이미 stories=3편·dict를 보장한 뒤에만 호출한다."""
+    for i, item in enumerate(data["stories"]):
+        item["id"] = i + 1
+
+
 async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dict, LlmUsage]:
     """스토리라인 생성 — (결과 dict, 사용 메타)를 반환한다. 메타 조립은 엔드포인트가 한다.
 
@@ -284,8 +294,11 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
     파싱이 성공해도 stories 계약 위반(_validate_storylines)이면 같은 재호출을 탄다.
     호출이 유난히 느렸던 요청은 재호출해도 백엔드 대기 한도(90초)를 넘기므로, 전체
     경과 60초를 넘긴 시점부터는 재호출을 포기한다(_INVALID_RETRY_DEADLINE_SECONDS).
+
+    검증을 통과한 응답은 id를 순서대로 1·2·3으로 교정해 반환한다(_normalize_storyline_ids) —
+    id 값 어긋남은 무해한 이탈이라 재호출·502로 벌하지 않고 코드가 정본 값을 박는다(D7).
     """
-    return await _complete_json(
+    result, usage = await _complete_json(
         system_prompt,
         user_prompt,
         model=settings.storylines_model,
@@ -295,6 +308,8 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
         max_invalid_retries=2,
         validate=_validate_storylines,
     )
+    _normalize_storyline_ids(result)
+    return result, usage
 
 
 # ── 컴파일 결과 검증 (StorySpec 파싱 전 dict 단계) ──────────────────────────
