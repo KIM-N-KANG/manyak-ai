@@ -8,6 +8,7 @@ from src.core.config import settings
 from src.core.langfuse import init_langfuse, shutdown_langfuse
 from src.core.middleware import RequestContextMiddleware
 from src.core.sentry import init_sentry
+from src.services.llm.registry import validate_selected_models
 
 # 컨테이너(uvicorn)는 루트 로거에 핸들러를 달지 않아 앱 INFO 로그가 통째로 버려진다
 # (ERROR만 lastResort로 보임). "Langfuse 활성/비활성" 상태 로그는 CI 스모크와 배포 후
@@ -17,6 +18,10 @@ logging.basicConfig(level=logging.INFO)
 
 init_sentry()  # 앱 생성 전에 Sentry를 켠다(DSN 미설정 시 no-op).
 init_langfuse()  # Langfuse도 앱 생성 전에 켠다(키 미설정·JP·prod 미충족 시 no-op) — KNK-624·652.
+# 선택된 모델(STORYLINES_MODEL·STORY_COMPILE_MODEL·CHAT_MODEL)이 등록부에 있고 그 공급자 키가
+# 채워졌는지 기동에서 확인한다(KNK-670). 잘못 적은 모델 이름을 첫 사용자 요청의 502로 알게
+# 되는 것보다, 배포가 뜨지 않는 편이 낫다 — 오타가 조용히 운영에 남지 않는다.
+validate_selected_models()
 
 
 @asynccontextmanager

@@ -27,6 +27,15 @@ from openai import (
 
 from src.core.config import settings
 
+# 공급자 중립 예외를 AN-4-7 코드로 접기 위해 가져온다(KNK-670). base는 src 안의 다른 것을
+# 임포트하지 않아 순환이 생기지 않는다 — 여기가 이미 openai 예외 타입을 아는 자리이기도 하다.
+from src.services.llm.base import (
+    LlmBadRequest,
+    LlmError,
+    LlmRateLimited,
+    LlmTimeout,
+)
+
 logger = logging.getLogger(__name__)
 
 # AN-4-3 AI feature 식별자 — server AiCallFeature 값과 동일하게 맞춘다.
@@ -53,7 +62,20 @@ def classify_error_code(exc: BaseException) -> str:
 
     빈/비객체 응답(invalid_ai_response)과 schema 검증 실패는 호출부가 error_code를
     명시 전달하므로 여기서는 provider 오류·JSON 파싱 실패만 다룬다.
+
+    공급자 중립 예외(LlmError 계열)를 먼저 본다(KNK-670). 이 분기가 없으면 통로 이관 후
+    모든 전송 실패가 unexpected_error로 떨어져 AN-4-7 관측이 통째로 무너진다. OpenAI SDK
+    예외 분기는 이관이 끝날 때까지(KNK-672·673) 함께 남는다.
     """
+    if isinstance(exc, LlmTimeout):
+        return ERROR_PROVIDER_TIMEOUT
+    if isinstance(exc, LlmRateLimited):
+        return ERROR_PROVIDER_RATE_LIMITED
+    if isinstance(exc, LlmBadRequest):
+        return ERROR_PROVIDER_BAD_REQUEST
+    if isinstance(exc, LlmError):
+        # LlmUnavailable과, 혹시 늘어날 다른 중립 예외까지 일시 장애로 묶는다(코드를 적게 유지).
+        return ERROR_PROVIDER_UNAVAILABLE
     if isinstance(exc, APITimeoutError):
         return ERROR_PROVIDER_TIMEOUT
     if isinstance(exc, RateLimitError):

@@ -5,6 +5,13 @@ import pytest
 
 from src.core import sentry
 from src.core.sentry import capture_ai_exception, classify_error_code, init_sentry
+from src.services.llm.base import (
+    LlmBadRequest,
+    LlmError,
+    LlmRateLimited,
+    LlmTimeout,
+    LlmUnavailable,
+)
 
 
 def _req() -> httpx.Request:
@@ -42,6 +49,34 @@ def test_classify_connection_unavailable() -> None:
     from openai import APIConnectionError
 
     assert classify_error_code(APIConnectionError(request=_req())) == "provider_unavailable"
+
+
+# ── 공급자 중립 예외 분류 (KNK-670) ──────────────────────────────────────────
+# 이 분기가 없으면 통로 이관 후 모든 전송 실패가 unexpected_error로 떨어진다.
+@pytest.mark.parametrize(
+    ("exc_class", "expected"),
+    [
+        (LlmTimeout, "provider_timeout"),
+        (LlmRateLimited, "provider_rate_limited"),
+        (LlmBadRequest, "provider_bad_request"),
+        (LlmUnavailable, "provider_unavailable"),
+    ],
+)
+def test_classify_neutral_llm_errors(exc_class: type[LlmError], expected: str) -> None:
+    exc = exc_class("실패", provider="deepseek", model="deepseek-v4-flash")
+
+    assert classify_error_code(exc) == expected
+
+
+def test_classify_unknown_neutral_error_falls_back_to_unavailable() -> None:
+    """중립 예외가 늘어나도 unexpected_error로 새지 않는다 — LlmError 계열은 전부 잡힌다."""
+
+    class _FutureLlmError(LlmError):
+        pass
+
+    exc = _FutureLlmError("실패", provider="deepseek", model="deepseek-v4-flash")
+
+    assert classify_error_code(exc) == "provider_unavailable"
 
 
 def test_classify_json_decode_invalid_response() -> None:
