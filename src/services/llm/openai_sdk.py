@@ -57,6 +57,17 @@ logger = logging.getLogger(__name__)
 _clients: dict[tuple[str, str | None, str], AsyncOpenAI] = {}
 
 
+# 전송 실패(연결 끊김·시간 초과·408·409·429·5xx) 시 SDK가 다시 시도하는 횟수.
+# SDK 기본값과 같은 2다 — **같은 값이어도 적어 둔다.** 이 숫자는 호출부의 전제
+# ("전송 실패는 SDK 재시도가 맡는다" — `story_llm._complete_json`)이자 스토리 명세의
+# 서술(§4-2)이라, 라이브러리 기본값이 바뀌면 우리 계약이 조용히 바뀐다.
+#
+# 알려진 부작용: 시간 초과도 재시도 대상이라 90초 예산이 실제로는 최대 270초까지 늘어난다
+# (백엔드는 90초에 끊으므로 뒤 180초는 아무도 안 기다리는 호출). 이관 전에도 같았고,
+# 고치려면 재시도를 우리 코드로 가져와야 해서 별도 사안으로 둔다(KNK-672 리뷰 10번).
+_MAX_RETRIES = 2
+
+
 def _fingerprint(api_key: str) -> str:
     """캐시 이름표에 넣을 키 지문.
 
@@ -78,9 +89,8 @@ def _client(provider: str) -> AsyncOpenAI:
     성질상으로도 전송 실패가 아니라 설정 오류다. 공백만 있는 키는 SDK가 통과시키므로
     (`api_key=" "`) 여기서 함께 막아 기동 검사와 판정을 일치시킨다.
 
-    timeout·max_retries를 클라이언트에 박지 않는다. 타임아웃은 호출마다 다르고
-    (`LlmRequest.timeout`), 재시도는 SDK 기본값(2회)을 그대로 둬 지금 동작을 보존한다 —
-    호출부의 "전송 실패는 SDK 재시도가 맡는다"는 전제(`story_llm._complete_json`)가 이 값이다.
+    timeout은 클라이언트에 박지 않는다 — 호출마다 다르다(`LlmRequest.timeout`).
+    재시도 횟수는 `_MAX_RETRIES`로 **명시한다**(위 상수 주석 참조).
     """
     creds = registry.credentials(provider)
     if not creds.api_key.strip():
@@ -90,7 +100,9 @@ def _client(provider: str) -> AsyncOpenAI:
     key = (provider, creds.base_url, _fingerprint(creds.api_key))
     client = _clients.get(key)
     if client is None:
-        client = AsyncOpenAI(api_key=creds.api_key, base_url=creds.base_url)
+        client = AsyncOpenAI(
+            api_key=creds.api_key, base_url=creds.base_url, max_retries=_MAX_RETRIES
+        )
         _clients[key] = client
     return client
 

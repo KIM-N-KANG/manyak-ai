@@ -48,6 +48,28 @@ async def test_storylines_endpoint_attaches_meta(
     assert "promptVersions" not in meta  # camelCase 아님(story는 snake)
 
 
+async def test_storylines_endpoint_serializes_missing_tokens_as_null(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """공급자가 토큰을 안 줬을 때 응답 본문에 **null**로 나가는지 HTTP 계층까지 확인한다.
+
+    백엔드 계약이 "누락 시 null"(0이 아니다)이다. `_complete_json`이 None을 들고 오는 것만
+    확인하면 응답 조립·직렬화가 None을 거부하도록 망가져도 안 잡힌다(KNK-672 리뷰).
+    """
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _FAKE, story_llm.LlmUsage("deepseek-test", None, None)
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    response = await client.post("/api/v1/story/storylines", json=_REQUEST)
+
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert meta["input_token_count"] is None  # 0으로 뭉개지 않는다
+    assert meta["output_token_count"] is None
+
+
 async def test_storylines_endpoint_tolerates_meta_key_in_llm_result(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

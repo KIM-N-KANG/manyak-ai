@@ -588,6 +588,31 @@ def _creds(api_key: str = "test-key", base_url: str = "https://example.invalid")
     )
 
 
+def test_client_is_built_with_declared_arguments(monkeypatch, _isolated_client_cache) -> None:
+    """클라이언트 생성 인자(키·주소·재시도 횟수)를 실제로 단언한다.
+
+    특히 **재시도 횟수**가 이 테스트의 이유다. 전에는 숫자를 안 적고 SDK 기본값에 기대서,
+    0으로 바꿔도 테스트가 전부 통과했다(Codex 변이 시험). 전송 실패 재시도가 조용히 사라지면
+    일시적 연결 끊김·429의 성공률이 떨어지는데 CI가 못 잡는다.
+
+    timeout은 여기서 넣지 않는다 — 호출마다 다르고(LlmRequest.timeout) 요청 인자로 나간다.
+    """
+    built: dict = {}
+
+    class _SpyClient:
+        def __init__(self, **kwargs: object) -> None:
+            built.update(kwargs)
+
+    monkeypatch.setattr(openai_sdk, "AsyncOpenAI", _SpyClient)
+    monkeypatch.setattr(
+        registry, "credentials", lambda provider: _creds(api_key="k", base_url="https://x.invalid")
+    )
+
+    openai_sdk._client(PROVIDER_DEEPSEEK)
+
+    assert built == {"api_key": "k", "base_url": "https://x.invalid", "max_retries": 2}
+
+
 def test_client_is_reused_per_provider(monkeypatch, _isolated_client_cache) -> None:
     """호출마다 새로 만들면 커넥션 풀·TLS 세션이 매번 버려진다."""
     monkeypatch.setattr(registry, "credentials", lambda provider: _creds())
