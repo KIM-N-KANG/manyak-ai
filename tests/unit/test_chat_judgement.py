@@ -153,6 +153,7 @@ async def test_failure_capture_carries_latency_and_retry(monkeypatch, install_ll
     assert len(calls) == 1
     assert calls[0]["retry_count"] == 0
     assert isinstance(calls[0]["latency_ms"], int) and calls[0]["latency_ms"] >= 0
+    assert calls[0]["provider"] == "deepseek"  # provider 태그도 함께(KNK-674)
 
 
 # ── 보정: 목록 밖 이름·형식 위반은 무효화한다(D7) ───────────────────────────
@@ -316,3 +317,49 @@ async def test_our_own_bug_is_not_absorbed_into_nulls(monkeypatch, install_llm_s
 
     with pytest.raises(RuntimeError):
         await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+
+
+# ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674 리뷰 H2) ────
+async def test_failure_capture_provider_follows_the_selected_model(
+    monkeypatch, other_provider_model, install_llm_sdk
+) -> None:
+    """판정 실패 태그도 지금 쓰는 모델의 공급자를 가리킨다 — 상수면 구분되지 않는다."""
+    other_provider_model(chat_judgement)
+    calls: list = []
+    monkeypatch.setattr(chat_judgement, "capture_ai_exception", lambda *a, **k: calls.append(k))
+    _mock_call(install_llm_sdk, OpenAIError("boom"))
+
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+
+    assert res.target_main_event is None  # 실패는 여전히 흡수된다
+    assert calls[0]["provider"] == "not-deepseek"
+
+
+async def test_provider_is_resolved_before_the_call_not_inside_the_handler(
+    monkeypatch, install_llm_sdk
+) -> None:
+    """provider 조회는 LLM 호출 **전에** 한다 — 실패하면 헛돈이 안 나가야 한다(KNK-674 리뷰 L1).
+
+    조회가 호출 전에 있는지를 **LLM을 한 번도 부르지 않았다**로 확인한다 — try 안으로
+    돌아가면 LLM을 먼저 부른 뒤에야 이 자리에 닿으므로 호출 수가 0이 아니게 된다.
+
+    아래 `pytest.raises`가 말하듯 이 예외는 **여전히 밖으로 샌다.** 위치를 바꿔도 흡수되지
+    않는다(LlmConfigError는 LlmError가 아니다) — 그 경로는 기동 검사가 막는 몫이다.
+    """
+    calls = {"n": 0}
+
+    async def _create(**kwargs):
+        calls["n"] += 1
+        raise OpenAIError("boom")
+
+    install_llm_sdk(_create)
+
+    def _boom(_model: str) -> str:
+        raise RuntimeError("등록부 조회 실패")
+
+    monkeypatch.setattr(chat_judgement.llm, "provider_of", _boom)
+
+    with pytest.raises(RuntimeError):
+        await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+
+    assert calls["n"] == 0  # LLM을 부르기도 전에 막힌다

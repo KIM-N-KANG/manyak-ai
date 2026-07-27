@@ -220,6 +220,9 @@ def test_capture_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
     capture_ai_exception(
         err,
         feature="chat_response",
+        # 일부러 "deepseek"이 아닌 값 — 함수가 인자를 무시하고 상수를 달아도
+        # 둘 다 deepseek이면 통과해 버린다(KNK-674 리뷰 H2).
+        provider="not-deepseek",
         error_code="unexpected_error",
         model="deepseek-v4-flash",
         prompt_versions={"SAFETY": 1, "CORE": 2},
@@ -228,7 +231,8 @@ def test_capture_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert scope.tags["feature"] == "chat_response"
     assert scope.tags["error_code"] == "unexpected_error"
-    assert scope.tags["provider"] == "deepseek"
+    # provider는 이제 설정 전역값이 아니라 호출부가 넘긴 값이다(KNK-674).
+    assert scope.tags["provider"] == "not-deepseek"
     assert scope.tags["model"] == "deepseek-v4-flash"
     # prompt_versions는 dict 그대로 context에 싣는다(KNK-246 계약과 일치)
     assert scope.contexts["ai"]["prompt_versions"] == {"SAFETY": 1, "CORE": 2}
@@ -243,5 +247,27 @@ def test_capture_classifies_when_error_code_omitted(monkeypatch: pytest.MonkeyPa
 
     from openai import APITimeoutError
 
-    capture_ai_exception(APITimeoutError(request=_req()), feature="story_completion")
+    capture_ai_exception(
+        APITimeoutError(request=_req()), feature="story_completion", provider="deepseek"
+    )
     assert scope.tags["error_code"] == "provider_timeout"  # 미지정 시 타입으로 분류
+
+
+def test_capture_requires_an_explicit_provider() -> None:
+    """provider에 기본값을 두지 않는다 — 두면 새 호출부가 조용히 그 값을 물려받는다(KNK-674).
+
+    없애려던 전역 폴백이 이름만 바꿔 되살아나는 것을 막는 가드다. 값이 틀린 태그는 없는
+    태그보다 나쁘다: 다른 회사로 나간 호출이 전부 한 공급자 탓으로 보인다.
+    """
+    with pytest.raises(TypeError):
+        capture_ai_exception(ValueError("boom"), feature="chat_response")
+
+
+def test_capture_rejects_positional_feature_and_provider() -> None:
+    """feature·provider는 이름으로만 넘긴다(KNK-674 2차 리뷰 6번).
+
+    둘 다 문자열이라 순서를 바꿔 적어도 파이썬은 아무 말을 하지 않는다 — 기능 이름 자리에
+    공급자가, 공급자 자리에 기능 이름이 태그로 박힌다. 선언에서 `*`를 빼면 그 사고가 열린다.
+    """
+    with pytest.raises(TypeError):
+        capture_ai_exception(ValueError("boom"), "chat_response", "deepseek")

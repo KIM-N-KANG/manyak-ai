@@ -397,6 +397,22 @@ async def test_stream_yields_deltas_then_completed(monkeypatch) -> None:
     assert events[-1].provider == PROVIDER_DEEPSEEK
 
 
+async def test_stream_completed_provider_follows_the_model(monkeypatch) -> None:
+    """종료 신호의 provider는 그 모델의 공급자다 — 상수를 박아도 통과하면 안 된다.
+
+    윗 테스트는 `PROVIDER_DEEPSEEK`(="deepseek")와 비교하는데, 어댑터가 "deepseek"을
+    박아 넣어도 똑같이 통과한다. 지금은 이 값을 읽는 곳이 없어(`chat_llm`이 따로 구한다)
+    틀려도 아무 일이 안 일어나므로, 값이 조용히 굳는 것을 여기서 막는다.
+    다음 어댑터(KNK-675)나 채팅이 이 값을 쓰기 시작하는 날 틀린 값이 나가면 늦다.
+    """
+    completions = _FakeCompletions(result=_agen([_chunk("가")]))
+    _install(monkeypatch, completions)
+
+    events = [ev async for ev in openai_sdk.stream(_req(), _STRICT)]
+
+    assert events[-1].provider == "other"  # _STRICT의 공급자를 그대로 따라온다
+
+
 @pytest.mark.parametrize(
     "weird",
     [

@@ -22,9 +22,10 @@ class Settings(BaseSettings):
     story_compile_model: str = "deepseek-v4-pro"  # 스토리 컴파일 전용(pro)
     storylines_model: str = "deepseek-v4-flash"  # 스토리라인 생성 전용(fast, KNK-215)
     chat_model: str = "deepseek-v4-flash"  # 채팅 턴·선택지·판정 공용(fast, KNK-215)
-    # 로깅 메타 provider. 모델은 응답(response.model)에서 읽지만 provider는 응답에 없어
-    # config가 유일한 출처다 — 공급자 교체 시 여기만 바꾸면 로그가 정확해진다(KNK-243).
-    llm_provider: str = "deepseek"
+    # provider는 더 이상 설정값이 아니다(KNK-674). 위 세 모델 이름을 등록부가 해석해
+    # 호출별로 정한다(`llm.provider_of`) — 스토리와 채팅을 서로 다른 회사로 돌릴 수 있어야
+    # 하는데, 전역값 하나로는 둘 중 하나가 반드시 거짓이 되기 때문이다.
+    # 옛 LLM_PROVIDER env가 남아 있어도 무시된다(model_config의 extra="ignore").
 
     # Sentry 오류 수집 (KNK-262). DSN이 비면 비활성(no-op) — 로컬·CI는 끈다.
     # environment·표본율은 server(SENTRY_ENVIRONMENT/SENTRY_TRACES_SAMPLE_RATE) 규약을 미러링한다.

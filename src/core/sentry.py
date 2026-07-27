@@ -125,6 +125,7 @@ def capture_ai_exception(
     exc: BaseException,
     *,
     feature: str,
+    provider: str,
     error_code: str | None = None,
     model: str | None = None,
     prompt_versions: dict | None = None,
@@ -136,12 +137,17 @@ def capture_ai_exception(
     원문(프롬프트·응답)은 인자로 받지 않는다 — feature·provider·model·error_code(tag)와
     prompt_versions·retry_count·latency_ms(context)만 싣는다. error_code가 없으면
     예외 타입으로 분류한다(classify_error_code).
+
+    provider는 **기본값 없는 필수 인자**다(KNK-674). 예전에는 전역 설정값 하나를 여기서
+    직접 읽었는데, 그러면 공급자를 둘 이상 쓰는 순간 모든 실패 태그가 한 값으로 눌린다.
+    기본값을 두면 새 호출부가 조용히 그 값을 물려받으므로, 부르는 쪽이 반드시 적게 한다 —
+    호출부는 `llm.provider_of(model)`이나 중립 예외의 `.provider`로 얻는다.
     """
     if error_code is None:
         error_code = classify_error_code(exc)
     with sentry_sdk.new_scope() as scope:
         scope.set_tag("feature", feature)
-        scope.set_tag("provider", settings.llm_provider)
+        scope.set_tag("provider", provider)
         scope.set_tag("error_code", error_code)
         if model:
             scope.set_tag("model", model)

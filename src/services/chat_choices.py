@@ -19,7 +19,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.core.config import settings
@@ -83,6 +83,14 @@ class ChoicesResult:
     output_tokens: int | None
     retry_count: int  # 누적 재호출 횟수(0~_MAX_REFILL)
     model: str
+    # 이 호출이 실제로 어느 공급자로 나갔는지(KNK-674). 세 번 다 실패해 폴백으로 답할 때도
+    # 채워져야 해서, 결과가 아니라 모델 이름을 등록부가 해석한 값을 쓴다.
+    #
+    # **이름으로만 넘길 수 있게 한다(kw_only)** — LlmUsage와 같은 이유다. 지금은 맨 끝이라
+    # 순서로 넣어도 맞지만, 앞에 칸이 하나 끼는 순간 `ChoicesResult([...], 1, 2, 0, "m", "p")`가
+    # **에러 없이** 값을 한 칸씩 밀어 넣는다 — 모델도 공급자도 문자열이라 아무도 못 알아챈다
+    # (KNK-674 2차 리뷰 4번).
+    provider: str = field(kw_only=True)
 
 
 def _add_tokens(a: int | None, b: int | None) -> int | None:
@@ -202,6 +210,9 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
     input_tokens: int | None = None
     output_tokens: int | None = None
     model = settings.chat_model
+    # 이 호출이 어느 공급자로 갈지는 부르기 전에 정해진다 — 세 번 다 실패해 폴백으로 답하면
+    # 성공 결과가 하나도 없어서, 결과에서 읽는 방식으로는 meta를 채울 수 없다(KNK-674).
+    provider = llm.provider_of(model)
     attempt = 0  # 0=첫 호출, 1·2=재호출. 종료 시 값이 곧 재호출 횟수다.
 
     while True:
@@ -226,6 +237,7 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
             capture_ai_exception(
                 e,
                 feature=FEATURE_CHOICE_GENERATION,
+                provider=provider,
                 model=settings.chat_model,
                 prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
                 retry_count=attempt,  # 0=첫 호출, 1·2=재호출
@@ -255,4 +267,5 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
         output_tokens=output_tokens,
         retry_count=attempt,
         model=model,
+        provider=provider,
     )

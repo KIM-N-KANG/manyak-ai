@@ -69,7 +69,10 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash"},
+            # provider는 일부러 "deepseek"이 아닌 값을 넣는다 — 둘 다 deepseek이면
+            # "제대로 옮긴 값"과 "코드에 박아둔 상수"를 구분할 수 없다(KNK-674 리뷰 H1).
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+             "provider": "not-deepseek"},
         ]
     )
     resp = await client.post("/api/v1/chat/turns", json=_payload())
@@ -91,7 +94,7 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
 
     # 로깅 메타(KNK-243): chat은 camelCase 와이어
     meta = completed["meta"]
-    assert meta["provider"] == "deepseek"
+    assert meta["provider"] == "not-deepseek"  # 이벤트에 실린 값이 그대로 meta로
     assert meta["retryCount"] == 0  # 본문·판정은 재호출 없음 — 0 고정
     assert meta["promptVersions"]["SAFETY"] >= 1  # 6레이어 버전 객체
     assert "NEXT_ACTIONS" not in meta["promptVersions"]  # 선택지 버전 키는 /chat/choices로 이동
@@ -114,7 +117,7 @@ async def test_chat_turn_meta_body_tokens_and_fixed_retry(client, mock_events) -
     # 선택지 몫(토큰·재호출 횟수)이 completed meta에 섞이지 않는지 고정하는 회귀 그물.
     mock_events(
         [{"event": "completed", "ai_output": "장면", "model": "deepseek-v4-flash",
-          "input_tokens": 100, "output_tokens": 40}]
+          "provider": "deepseek", "input_tokens": 100, "output_tokens": 40}]
     )
     resp = await client.post("/api/v1/chat/turns", json=_payload())
     meta = _data_of(resp.text, "completed")["meta"]
@@ -137,7 +140,8 @@ async def test_chat_turn_completed_serializes_judgement_meta(
 ) -> None:
     # 재료가 실린 턴: 판정 3필드가 completed까지 camelCase로 직렬화되고, meta.promptVersions에
     # JUDGEMENT 키가 실리며, 판정 토큰이 합산되는지 엔드포인트 전체 흐름으로 확인한다(#3 리뷰 반영).
-    mock_events([{"event": "completed", "ai_output": "장면", "model": "deepseek-v4-flash"}])
+    mock_events([{"event": "completed", "ai_output": "장면", "model": "deepseek-v4-flash",
+                  "provider": "deepseek"}])
     mock_judgement(
         JudgementResult(
             target_main_event=TargetMainEventOut(name="반란의 증거", progress_turns=2),
@@ -203,7 +207,8 @@ async def test_chat_turn_trace_receives_no_tags(client, mock_events, monkeypatch
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash"},
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+             "provider": "deepseek"},
         ]
     )
     resp = await client.post("/api/v1/chat/turns", json=_payload())
@@ -211,3 +216,50 @@ async def test_chat_turn_trace_receives_no_tags(client, mock_events, monkeypatch
     assert resp.status_code == 200
     assert captured["name"] == "채팅 턴"
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
+
+
+async def test_chat_turn_survives_completed_without_provider(
+    client, mock_events, other_provider_model
+) -> None:
+    """완료 이벤트에 provider가 없어도 턴이 조용히 사라지지 않는다(KNK-674 리뷰 M2).
+
+    이 자리에서 예외가 나면 이미 200으로 열린 SSE라 상태를 못 바꾸고, error 이벤트도
+    completed도 없이 끊긴다 — 사용자 화면엔 글이 떴는데 백엔드는 그 턴을 저장하지 못한다.
+    지금 키가 빠지는 경로는 없지만, 빠졌을 때의 모양이 나빠 폴백을 둔다.
+
+    **DeepSeek이 아닌 모델로 확인한다.** 정답이 "deepseek"이면 폴백이 등록부를 조회한
+    것인지 그냥 상수를 적어둔 것인지 구분되지 않는다(KNK-674 2차 리뷰에서 상수 변이가
+    살아남았다).
+    """
+    other_provider_model(chat_module)
+    mock_events([{"event": "completed", "ai_output": "장면", "model": "not-deepseek-model"}])
+
+    resp = await client.post("/api/v1/chat/turns", json=_payload())
+
+    assert resp.status_code == 200
+    meta = _data_of(resp.text, "completed")["meta"]  # completed가 실제로 나온다
+    assert meta["provider"] == "not-deepseek"  # 설정 모델을 등록부로 풀어 채운다
+
+
+async def test_chat_turn_does_not_paper_over_an_empty_provider(client, mock_events) -> None:
+    """빈 provider는 폴백으로 덮지 않는다 — 고장 신호가 기록에서 사라지면 안 된다.
+
+    폴백을 `ev.get("provider") or ...`로 되돌리면 빈 문자열까지 폴백을 타서, 아래 단언이
+    "deepseek"을 받아 깨진다(KNK-674 2차 리뷰).
+    """
+    mock_events(
+        [
+            {
+                "event": "completed",
+                "ai_output": "장면",
+                "model": "deepseek-v4-flash",
+                "provider": "",
+            }
+        ]
+    )
+
+    resp = await client.post("/api/v1/chat/turns", json=_payload())
+
+    assert resp.status_code == 200
+    meta = _data_of(resp.text, "completed")["meta"]
+    assert meta["provider"] == ""  # 그럴듯한 값으로 메꾸지 않는다

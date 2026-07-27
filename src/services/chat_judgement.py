@@ -183,6 +183,14 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
     if not req.main_events and not req.endings:
         return _EMPTY  # 사건·엔딩 없는 스토리(재료 없음) — 비용·지연 0
 
+    # 이 호출이 어느 공급자로 갈지는 부르기 전에 정한다 — 등록부 해석이 실패하면 LLM을
+    # 부르기도 전에 막혀 헛돈이 안 나가고, 네 호출부(본문·선택지·판정·스토리)가 모두 같은
+    # 자리에서 provider를 구해 읽는 사람이 규칙을 한 번만 익히면 된다(KNK-674 리뷰 L1).
+    #
+    # **아래 except가 이 예외를 흡수해 주지는 않는다.** 여기서 나는 예외는 LlmConfigError
+    # 하나인데 LlmError를 상속하지 않아, 어디에 두든 밖으로 샌다. 그 경로는 기동 검사
+    # (`validate_startup`)가 막는 몫이다 — CHAT_MODEL이 등록부에 없으면 서버가 안 뜬다.
+    provider = llm.provider_of(settings.chat_model)
     start = time.monotonic()
     try:
         result_llm = await llm.complete(
@@ -221,6 +229,7 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
         capture_ai_exception(
             e,
             feature=FEATURE_CHAT_RESPONSE,
+            provider=provider,
             model=settings.chat_model,
             prompt_versions={"JUDGEMENT": JUDGEMENT_VERSION},
             retry_count=0,  # 단일 호출 — 재호출 없음(D12)

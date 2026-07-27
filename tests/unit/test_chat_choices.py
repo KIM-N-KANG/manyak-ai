@@ -120,6 +120,9 @@ async def test_total_failure_absorbed_to_fallback(install_llm_sdk) -> None:
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2
     assert res.input_tokens is None and res.output_tokens is None  # 성공한 호출 없음
+    # 성공한 호출이 하나도 없어도 provider는 채워진다 — 결과가 아니라 모델 이름으로
+    # 정해지기 때문이다(KNK-674). 여기서 비면 meta.provider가 null로 나간다.
+    assert res.provider == "deepseek"
 
 
 async def test_failure_capture_carries_latency_and_retry(monkeypatch, install_llm_sdk) -> None:
@@ -130,6 +133,7 @@ async def test_failure_capture_carries_latency_and_retry(monkeypatch, install_ll
     await generate_choices(_request(), "*장면*")
     assert [c["retry_count"] for c in calls] == [0, 1, 2]  # 첫 호출 + 재호출 2회 전부 캡처
     assert all(isinstance(c["latency_ms"], int) and c["latency_ms"] >= 0 for c in calls)
+    assert {c["provider"] for c in calls} == {"deepseek"}  # provider 태그도 함께(KNK-674)
 
 
 async def test_truncates_when_too_many(install_llm_sdk) -> None:
@@ -284,3 +288,62 @@ async def test_our_own_bug_is_not_absorbed_into_the_fallback(monkeypatch, instal
 
     with pytest.raises(RuntimeError):
         await generate_choices(_request(), "*장면*")
+
+
+# ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674) ────────────
+# 모든 테스트가 DeepSeek이면 "그냥 'deepseek'을 적어둔 코드"와 구분되지 않는다.
+# 다른 회사 모델을 하나 끼워 넣어, 값이 모델을 따라 바뀌는지 본다.
+async def test_provider_follows_the_selected_model(other_provider_model, install_llm_sdk) -> None:
+    other_provider_model(chat_choices)
+    _mock_calls(install_llm_sdk, ['{"choices": ["가", "나", "다"]}'])
+
+    res = await generate_choices(_request(), "*장면*")
+
+    assert res.provider == "not-deepseek"  # settings.llm_provider가 남아 있으면 "deepseek"이 된다
+
+
+async def test_failure_capture_provider_follows_the_selected_model(
+    monkeypatch, other_provider_model, install_llm_sdk
+) -> None:
+    """실패 태그도 같은 값이다 — 여기가 상수면 다른 회사의 실패가 deepseek 탓으로 쌓인다."""
+    other_provider_model(chat_choices)
+    calls: list = []
+    monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda *a, **k: calls.append(k))
+    _mock_calls(install_llm_sdk, [OpenAIError("boom")])
+
+    await generate_choices(_request(), "*장면*")
+
+    assert {c["provider"] for c in calls} == {"not-deepseek"}
+
+
+def test_choices_result_requires_an_explicit_provider() -> None:
+    """`ChoicesResult.provider`도 기본값을 두지 않는다(KNK-674 리뷰 M3 — LlmUsage와 같은 이유)."""
+    with pytest.raises(TypeError):
+        chat_choices.ChoicesResult(
+            choices=["가", "나", "다"],
+            input_tokens=None,
+            output_tokens=None,
+            retry_count=0,
+            model="m",
+        )
+
+
+def test_choices_result_provider_cannot_be_passed_by_position() -> None:
+    """provider는 이름으로만 넘긴다(KNK-674 2차 리뷰 4번 — LlmUsage와 같은 이유).
+
+    지금은 맨 끝이라 순서로 넣어도 맞지만, 앞에 칸이 하나 끼는 순간 위치로 넘긴 값들이
+    한 칸씩 밀린다. 모델도 공급자도 문자열이라 그 사고는 에러 없이 지나간다.
+    """
+    with pytest.raises(TypeError):
+        chat_choices.ChoicesResult(["가", "나", "다"], 1, 2, 0, "m", "deepseek")
+
+    # 이름을 적으면 그대로 만들어진다.
+    res = chat_choices.ChoicesResult(
+        choices=["가", "나", "다"],
+        input_tokens=1,
+        output_tokens=2,
+        retry_count=0,
+        model="m",
+        provider="deepseek",
+    )
+    assert res.model == "m" and res.provider == "deepseek"

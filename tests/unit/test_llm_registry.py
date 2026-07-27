@@ -7,6 +7,7 @@ settings는 전역을 고쳐 쓰지 않고 `Settings(_env_file=None, ...)`로 �
 import pytest
 
 from src.core.config import Settings
+from src.services import llm
 from src.services.llm import registry
 from src.services.llm.base import (
     ADAPTER_OPENAI_SDK,
@@ -195,3 +196,20 @@ def test_provider_error_carries_provider_and_model() -> None:
     assert exc.provider == PROVIDER_DEEPSEEK
     assert exc.model == "deepseek-v4-flash"
     assert isinstance(exc, LlmError)
+
+
+# ── provider 해석 (KNK-674) ──────────────────────────────────────────────────
+# provider는 예전에 전역 설정값(LLM_PROVIDER) 하나였다. 그 값은 "지금 이 호출이 어디로
+# 갔는지"와 무관해서, 스토리와 채팅을 서로 다른 회사로 나눠 쓰는 순간 절반이 거짓이 된다.
+def test_provider_of_follows_the_model_not_a_fixed_value(other_provider_model) -> None:
+    """모델 이름이 공급자를 정한다 — 값이 고정돼 있으면 아래 두 단언이 함께 통과할 수 없다."""
+    other_provider_model()
+
+    assert llm.provider_of("not-deepseek-model") == "not-deepseek"
+    assert llm.provider_of("deepseek-v4-flash") == PROVIDER_DEEPSEEK
+
+
+def test_provider_of_rejects_unregistered_model() -> None:
+    """등록 안 된 모델은 어느 공급자인지 알 수 없다 — 지어내지 않고 설정 오류로 막는다."""
+    with pytest.raises(LlmConfigError):
+        llm.provider_of("있지도-않은-모델")

@@ -292,7 +292,9 @@ def test_spec_to_response_render_equality() -> None:
 async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_complete(system: str, user: str, **_kwargs: object):
         # 완전한 결과 → 재호출 없음. (dict, 사용 메타) 튜플 반환.
-        return _load("spec_valid.json"), story_llm.LlmUsage("deepseek-test", 100, 200)
+        return _load("spec_valid.json"), story_llm.LlmUsage(
+            "deepseek-test", 100, 200, provider="not-deepseek"
+        )
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -304,7 +306,8 @@ async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyP
     # 로깅 메타(KNK-243): model=응답값, prompt_versions=객체, retry_count=0(재호출 없음)
     assert res.meta is not None
     assert res.meta.model == "deepseek-test"
-    assert res.meta.provider == "deepseek"
+    # 주입한 값이 그대로 meta까지 온다 — 상수로 되돌리면 여기서 깨진다(KNK-674 리뷰 H1).
+    assert res.meta.provider == "not-deepseek"
     assert list(res.meta.prompt_versions) == ["COMPILE"]
     assert res.meta.prompt_versions["COMPILE"] >= 1
     assert res.meta.input_token_count == 100
@@ -321,7 +324,7 @@ async def test_compile_story_forwards_lorebooks_to_prompt(
 
     async def fake_complete(system: str, user: str, **_kwargs: object):
         captured["user"] = user
-        return _load("spec_valid.json"), story_llm.LlmUsage("m", 1, 1)
+        return _load("spec_valid.json"), story_llm.LlmUsage("m", 1, 1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -345,8 +348,8 @@ async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPat
         if len(calls) == 1:
             data = _load("spec_valid.json")
             data["prompt_settings"]["world_setting"] = ""  # 1차: 빈 필드
-            return data, story_llm.LlmUsage("m", 100, 200)
-        return {"world_setting": "복구된 세계관 설정"}, story_llm.LlmUsage("m", 10, 20)
+            return data, story_llm.LlmUsage("m", 100, 200, provider="deepseek")
+        return {"world_setting": "복구된 세계관 설정"}, story_llm.LlmUsage("m", 10, 20, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -373,7 +376,7 @@ async def test_compile_story_502_after_max_refill(monkeypatch: pytest.MonkeyPatc
         calls.append(user)
         data = _load("spec_valid.json")
         data["start"]["prologue"] = ""  # 매번 빈 채 → 재호출로도 못 채움
-        return data, story_llm.LlmUsage("m", 1, 1)
+        return data, story_llm.LlmUsage("m", 1, 1, provider="not-deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
     captured: list = []
@@ -386,6 +389,9 @@ async def test_compile_story_502_after_max_refill(monkeypatch: pytest.MonkeyPatc
     # 소진 캡처의 retry_count가 상한값이다(루프 조건이 <=로 바뀌어 3회 재호출되면 깨진다).
     assert len(calls) == 3
     assert captured[-1]["retry_count"] == 2
+    # Sentry provider 태그도 호출이 실제로 나간 공급자를 가리킨다 — 상수로 되돌리면
+    # 다른 회사에서 난 실패가 전부 deepseek 탓으로 쌓인다(KNK-674 리뷰 H2).
+    assert captured[-1]["provider"] == "not-deepseek"
 
 
 # ── 재호출 프롬프트 내용·토큰 합산·경계값 (KNK-574 감사 1-4) ──────────────────
@@ -420,10 +426,10 @@ async def test_compile_story_refill_boundary_retry_two(monkeypatch: pytest.Monke
         if len(calls) == 1:
             data = _load("spec_valid.json")
             data["prompt_settings"]["world_setting"] = ""
-            return data, story_llm.LlmUsage("m", 100, 200)
+            return data, story_llm.LlmUsage("m", 100, 200, provider="deepseek")
         if len(calls) == 2:
-            return {"world_setting": ""}, story_llm.LlmUsage("m", None, 20)  # 혼합: input None
-        return {"world_setting": "채움"}, story_llm.LlmUsage("m", 10, 30)
+            return {"world_setting": ""}, story_llm.LlmUsage("m", None, 20, provider="deepseek")  # 혼합: input None
+        return {"world_setting": "채움"}, story_llm.LlmUsage("m", 10, 30, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -439,7 +445,7 @@ async def test_compile_story_success_does_not_capture(monkeypatch: pytest.Monkey
     """정상 컴파일에서는 Sentry capture를 호출하지 않는다."""
 
     async def fake_complete(system: str, user: str, **_kwargs: object):
-        return _load("spec_valid.json"), story_llm.LlmUsage("deepseek-test", 100, 200)
+        return _load("spec_valid.json"), story_llm.LlmUsage("deepseek-test", 100, 200, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
     calls: list = []
@@ -455,7 +461,7 @@ async def test_compile_story_schema_failure_captures(monkeypatch: pytest.MonkeyP
 
     async def fake_complete(system: str, user: str, **_kwargs: object):
         # 빈 필수키는 없어 재호출 없이 통과하지만, 인물 6명이라 StorySpec 파싱에서 거부된다.
-        return _load("spec_chars_6.json"), story_llm.LlmUsage("m", 1, 1)
+        return _load("spec_chars_6.json"), story_llm.LlmUsage("m", 1, 1, provider="not-deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
     calls: list = []
@@ -466,6 +472,7 @@ async def test_compile_story_schema_failure_captures(monkeypatch: pytest.MonkeyP
     assert exc.value.status_code == 502
     assert len(calls) == 1
     assert calls[0]["error_code"] == "schema_validation_failed"
+    assert calls[0]["provider"] == "not-deepseek"  # provider 태그도 함께(KNK-674 리뷰 H2)
 
 
 # ── 엔딩·주요 사건 (KNK-417) ─────────────────────────────────────────────────
@@ -572,7 +579,7 @@ async def test_compile_story_falls_back_to_empty_endings(
     async def fake_complete(system: str, user: str, **_kwargs: object):
         data = _load("spec_valid.json")
         data["endings"] = data["endings"][:2]  # 매번 2개 → 재호출로도 3개 못 채움
-        return data, story_llm.LlmUsage("m", 1, 1)
+        return data, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -587,7 +594,7 @@ async def test_compile_story_keeps_valid_endings(
 ) -> None:
     # 정상 엔딩 3개는 재호출·폴백 없이 그대로 응답에 실린다.
     async def fake_complete(system: str, user: str, **_kwargs: object):
-        return _load("spec_valid.json"), story_llm.LlmUsage("m", 100, 200)
+        return _load("spec_valid.json"), story_llm.LlmUsage("m", 100, 200, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -606,7 +613,7 @@ async def test_compile_story_502_when_endings_incomplete_and_other_field_missing
         data = _load("spec_valid.json")
         data["endings"] = data["endings"][:2]  # 엔딩 미완성
         data["start"]["prologue"] = ""  # 엔딩 외 필수 누락
-        return data, story_llm.LlmUsage("m", 1, 1)
+        return data, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -623,7 +630,7 @@ async def test_compile_story_keeps_numeric_string_min_turns(
         data = _load("spec_valid.json")
         for e in data["endings"]:
             e["min_turns"] = "15"
-        return data, story_llm.LlmUsage("m", 100, 200)
+        return data, story_llm.LlmUsage("m", 100, 200, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -641,7 +648,7 @@ async def test_compile_story_falls_back_when_min_turns_uncoercible(
     async def fake_complete(system: str, user: str, **_kwargs: object):
         data = _load("spec_valid.json")
         data["endings"][0]["min_turns"] = "열다섯"  # 매번 비정수
-        return data, story_llm.LlmUsage("m", 1, 1)
+        return data, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -658,7 +665,7 @@ async def test_compile_story_falls_back_when_min_turns_below_lower_bound(
     async def fake_complete(system: str, user: str, **_kwargs: object):
         data = _load("spec_valid.json")
         data["endings"][0]["min_turns"] = 0  # 매번 하한 미달
-        return data, story_llm.LlmUsage("m", 1, 1)
+        return data, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -675,7 +682,7 @@ async def test_compile_story_falls_back_on_unicode_digit_min_turns(
     async def fake_complete(system: str, user: str, **_kwargs: object):
         data = _load("spec_valid.json")
         data["endings"][0]["min_turns"] = "²"  # 위첨자 2
-        return data, story_llm.LlmUsage("m", 1, 1)
+        return data, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 

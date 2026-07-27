@@ -2,7 +2,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import HTTPException, status
 
@@ -50,6 +50,17 @@ class LlmUsage:
     model: str
     input_tokens: int | None
     output_tokens: int | None
+    # 이 호출이 실제로 어느 공급자로 나갔는지(KNK-674). 전역 설정값이 아니라 모델 이름을
+    # 등록부가 해석한 값이라, 경로마다 다른 회사를 써도 적재값이 어긋나지 않는다.
+    #
+    # **기본값을 두지 않는다** — 두면 새 호출부가 조용히 그 값을 물려받아, 없애려던 전역
+    # 폴백이 이름만 바꿔 되살아난다.
+    #
+    # **이름으로만 넘길 수 있게 한다(kw_only).** 이 칸을 retry_count 앞에 새로 끼워 넣었기
+    # 때문에, 그냥 두면 예전 습관대로 순서만 적은 `LlmUsage("m", 1, 2, 3)`이 **에러 없이**
+    # 숫자 3을 공급자 이름으로 받아들이고 재호출 횟수는 0이 된다. kw_only면 그런 호출이
+    # 그 자리에서 TypeError로 막힌다(KNK-674 리뷰 L2).
+    provider: str = field(kw_only=True)
     retry_count: int = 0
 
 
@@ -151,6 +162,9 @@ async def _complete_json(
     루프 밖(응답 조립)에서 500으로 터지는 것을 루프 안에서 잡기 위함이다(Sentry PYTHON-FASTAPI-A).
     """
     resolved_model = model if model is not None else settings.story_compile_model
+    # 이 호출이 어느 공급자로 갈지는 부르기 전에 정해진다 — 실패해서 결과가 없어도 Sentry
+    # 태그를 채울 수 있어야 한다(KNK-674).
+    provider = llm.provider_of(resolved_model)
     attempts = 0  # invalid 응답으로 다시 부른 횟수(첫 호출은 0)
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -209,6 +223,7 @@ async def _complete_json(
                 model=result.model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                provider=result.provider,
                 retry_count=attempts,
             )
         except (LlmError, json.JSONDecodeError, _InvalidAiResponse) as exc:
@@ -234,6 +249,7 @@ async def _complete_json(
             capture_ai_exception(
                 exc,
                 feature=feature,
+                provider=provider,
                 error_code=error_code,
                 model=resolved_model,
                 prompt_versions=prompt_versions,
@@ -571,6 +587,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         capture_ai_exception(
             exc,
             feature=FEATURE_STORY_COMPLETION,
+            provider=usage.provider,
             error_code=ERROR_INVALID_AI_RESPONSE,
             model=usage.model,
             prompt_versions={"COMPILE": COMPILE_VERSION},
@@ -587,6 +604,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         capture_ai_exception(
             e,
             feature=FEATURE_STORY_COMPLETION,
+            provider=usage.provider,
             error_code=ERROR_SCHEMA_VALIDATION_FAILED,
             model=usage.model,
             prompt_versions={"COMPILE": COMPILE_VERSION},
@@ -601,7 +619,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     response.meta = StoryResponseMeta(
         model=usage.model,
         prompt_versions={"COMPILE": COMPILE_VERSION},
-        provider=settings.llm_provider,
+        provider=usage.provider,
         input_token_count=input_tokens,
         output_token_count=output_tokens,
         retry_count=attempts,  # 부분 재호출 횟수(0~_MAX_REFILL)

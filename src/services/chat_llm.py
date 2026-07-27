@@ -7,7 +7,7 @@
 
 이벤트(dict)를 async generator로 낸다. SSE 와이어 변환·선택지 합치기는 엔드포인트(chat.py)가 맡는다.
 - {"event": "token",     "text": ...}
-- {"event": "completed", "ai_output": ..., "model": ..., "input_tokens": ..., "output_tokens": ...}
+- {"event": "completed", "ai_output": ..., "model": ..., "provider": ..., "input_tokens": ..., "output_tokens": ...}
 - {"event": "error",     "code": ..., "message": ...}
 """
 
@@ -69,6 +69,9 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
     model: str | None = None               # 응답이 돌려준 실제 모델(로깅 메타)
     input_tokens: int | None = None        # 종료 이벤트에서 취득(없으면 None)
     output_tokens: int | None = None
+    # 이 호출이 어느 공급자로 갈지는 부르기 전에 정해진다 — 스트림이 오류로 끝나면 종료
+    # 이벤트가 아예 없어서, 결과에서 읽는 방식으로는 실패 태그를 채울 수 없다(KNK-674).
+    provider = llm.provider_of(settings.chat_model)
     start = time.monotonic()
 
     try:
@@ -108,6 +111,7 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "provider": provider,
         }
     except LlmError as e:
         # 전송 오류(타임아웃·429·요청거부·연결실패)를 통로가 공급자 중립 예외로 접어 준 것.
@@ -117,6 +121,7 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
         capture_ai_exception(
             e,
             feature=FEATURE_CHAT_RESPONSE,
+            provider=provider,
             model=settings.chat_model,
             prompt_versions=LAYER_VERSIONS,
             retry_count=0,  # 본문은 재호출 없음

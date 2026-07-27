@@ -10,7 +10,8 @@
 
 호출용 공개 함수는 `complete`·`stream` 둘이다. **둘 다 단발 호출이다** — 재호출·시간 예산·
 검증은 호출부가 관장한다(스토리라인 invalid 재호출 KNK-312이 통로로 올라오면 이관 범위가
-폭발한다). 여기에 기동 검사용 `validate_startup`이 더해져 공개 함수는 셋이다.
+폭발한다). 여기에 기동 검사용 `validate_startup`과 로깅 메타·Sentry 태그용 `provider_of`가
+더해져 공개 함수는 넷이다.
 """
 
 from collections.abc import AsyncIterator
@@ -26,7 +27,22 @@ from src.services.llm.base import (
     StreamEvent,
 )
 
-__all__ = ["complete", "stream", "validate_startup"]
+__all__ = ["complete", "provider_of", "stream", "validate_startup"]
+
+
+def provider_of(model: str) -> str:
+    """이 모델을 어느 공급자로 부르는지 돌려준다 — 로깅 메타·Sentry 태그용(KNK-674).
+
+    **호출 전에 답이 나온다**는 점이 중요하다. 예전에는 전역 설정값 하나(`LLM_PROVIDER`)를
+    다섯 곳이 나눠 썼는데, 그 값은 "지금 이 호출이 어디로 갔는지"와 무관하다 — 스토리는
+    DeepSeek, 채팅은 다른 회사로 나눠 쓰는 순간 절반이 거짓이 된다. 여기서는 모델 이름을
+    등록부로 해석해 실제 값을 준다.
+
+    결과에서 읽지 않고 이름으로 해석하는 이유: 실패·폴백 경로에는 결과가 아예 없다.
+    선택지는 세 번 다 실패해도 폴백으로 답하고(성공 결과 없음), 스트림 오류는 종료 이벤트
+    없이 끝난다. 그런 경로에서도 meta와 Sentry 태그는 채워져야 한다.
+    """
+    return registry.resolve(model).provider
 
 
 def validate_startup() -> None:

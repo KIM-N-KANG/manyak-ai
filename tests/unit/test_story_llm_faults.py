@@ -54,6 +54,9 @@ class _Msg:
 class _Choice:
     def __init__(self, content):
         self.message = _Msg(content)
+        # 실제 SDK 응답에는 항상 있는 칸이다. 빼두면 어댑터가 매 호출 꺼내기에 실패해
+        # 스택트레이스 경고를 쏟고, 정상 추출 경로는 한 번도 검증되지 않는다(KNK-673 리뷰).
+        self.finish_reason = "stop"
 
 
 class _Usage:
@@ -153,6 +156,7 @@ async def test_code_fenced_json_passes(monkeypatch, captures) -> None:
     parsed, usage = await story_llm._complete_json("sys", "user")
     assert parsed == {"meta": {"title": "제목"}}  # _strip_code_fence가 실제로 실행됨
     assert usage.model == "deepseek-v4-pro"
+    assert usage.provider == "deepseek"  # 모델 이름을 등록부가 해석한 값(KNK-674)
     assert usage.input_tokens == 11 and usage.output_tokens == 13
     assert captures == []  # 성공 경로이므로 실패 캡처 없음
 
@@ -565,3 +569,54 @@ async def test_storylines_contract_violation_exhausts_to_502(
     assert "올바른 형식" in ei.value.detail
     assert calls["count"] == 3  # 첫 호출 + 재호출 2회
     assert ei.value.retry_count == 2
+
+
+# ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674) ────────────
+# 모든 테스트가 DeepSeek이면 "그냥 'deepseek'을 적어둔 코드"와 구분되지 않는다.
+# 다른 회사 모델을 하나 끼워 넣어, 메타와 실패 태그가 함께 따라 바뀌는지 본다.
+async def test_provider_follows_the_selected_model(monkeypatch, other_provider_model) -> None:
+    other_provider_model()
+    _install(monkeypatch, _returns('{"meta": {"title": "제목"}}'))
+
+    _parsed, usage = await story_llm._complete_json("sys", "user", "not-deepseek-model")
+
+    assert usage.provider == "not-deepseek"
+
+
+async def test_failure_capture_provider_follows_the_selected_model(
+    monkeypatch, other_provider_model, captures
+) -> None:
+    """실패 경로에도 같은 값이 실린다 — 여기가 비면 Sentry provider 태그가 거짓이 된다."""
+    other_provider_model()
+    _install(monkeypatch, _returns("이건 JSON이 아님"))
+
+    with pytest.raises(HTTPException):
+        await story_llm._complete_json("sys", "user", "not-deepseek-model")
+
+    assert captures[-1]["provider"] == "not-deepseek"
+
+
+def test_llm_usage_requires_an_explicit_provider() -> None:
+    """`LlmUsage.provider`에 기본값을 두지 않는다(KNK-674 리뷰 M3).
+
+    기본값을 붙이면 provider를 안 넘긴 호출부가 **에러 없이 조용히** 그 값을 물려받는다 —
+    없애려던 전역 폴백이 이름만 바꿔 되살아난다. 선언은 주석에 있었지만 지키는 장치가 없어
+    변이(`provider: str = "deepseek"`)가 그대로 통과했다.
+    """
+    with pytest.raises(TypeError):
+        story_llm.LlmUsage("m", 1, 2)  # provider 없이 만들 수 없어야 한다
+
+
+def test_llm_usage_provider_cannot_be_passed_by_position() -> None:
+    """provider는 이름으로만 넘긴다(KNK-674 리뷰 L2).
+
+    이 칸을 retry_count 앞에 끼워 넣었기 때문에, 위치로 넘길 수 있게 두면 예전 습관대로 쓴
+    `LlmUsage("m", 1, 2, 3)`이 **에러 없이** 숫자 3을 공급자 이름으로 받아들이고 재호출
+    횟수는 0이 된다. 그대로 백엔드에 `provider: 3`이 적재된다.
+    """
+    with pytest.raises(TypeError):
+        story_llm.LlmUsage("m", 1, 2, 3)  # 4번째 위치 인자는 이제 막힌다
+
+    # 이름을 적으면 옛 의미(재호출 3회) 그대로 만들어진다.
+    usage = story_llm.LlmUsage("m", 1, 2, retry_count=3, provider="deepseek")
+    assert usage.retry_count == 3 and usage.provider == "deepseek"

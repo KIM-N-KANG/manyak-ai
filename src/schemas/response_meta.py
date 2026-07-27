@@ -4,7 +4,8 @@
 실린다. 와이어 표기는 각 응답의 기존 관례를 따른다: 동기 REST=snake_case,
 chat SSE completed=camelCase(공식 예외 — 5-ai-server §5-1).
 값 출처는 호출 경계 한 곳에서 묶는다 — `model`은 실제 응답(response.model),
-`prompt_versions`는 frontmatter(KNK-229 상수), `provider`는 config, 토큰은 LLM usage.
+`prompt_versions`는 frontmatter(KNK-229 상수), `provider`는 모델 등록부가 모델 이름을
+해석한 값(KNK-674 — 설정 전역값이 아니다), 토큰은 LLM usage.
 """
 
 from pydantic import BaseModel, ConfigDict, Field

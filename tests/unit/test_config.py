@@ -48,3 +48,16 @@ def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> Non
     # 옛 키는 무시되고 기본값이 유지된다
     assert s.story_compile_model == "deepseek-v4-pro"
     assert s.chat_model == "deepseek-v4-flash"
+
+
+# ── 전역 provider 설정 삭제 (KNK-674) ───────────────────────────────────────
+def test_settings_no_longer_carries_a_global_provider(monkeypatch) -> None:
+    """회사 이름은 설정이 아니라 모델 이름이 정한다 — 옛 필드가 부활하면 출처가 둘이 된다.
+
+    전역값 하나로는 "스토리는 A사, 채팅은 B사"를 표현할 수 없어 반드시 한쪽이 거짓이 된다.
+    그래서 필드를 지웠는데, 지웠다는 사실을 지키는 것이 주석뿐이라 되살려도 아무도 몰랐다
+    (KNK-674 리뷰 M4). 부활하면 여기서 막는다.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+
+    assert not hasattr(Settings(_env_file=None), "llm_provider")

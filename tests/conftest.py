@@ -15,7 +15,13 @@ import sentry_sdk  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
 from src.main import app  # noqa: E402
-from src.services.llm import openai_sdk  # noqa: E402
+from src.services.llm import openai_sdk, registry  # noqa: E402
+from src.services.llm.base import ADAPTER_OPENAI_SDK, ResolvedModel  # noqa: E402
+
+# DeepSeek이 아닌 시험용 모델. 모든 테스트가 DeepSeek이면 "모델을 보고 공급자를 정하는 코드"와
+# "그냥 'deepseek'이라 적어둔 코드"가 구분되지 않는다(KNK-674).
+OTHER_PROVIDER_MODEL = "not-deepseek-model"
+OTHER_PROVIDER = "not-deepseek"
 
 
 @pytest.fixture
@@ -73,3 +79,33 @@ def install_llm_sdk(monkeypatch):
         monkeypatch.setattr(openai_sdk, "_client", lambda provider: client)
 
     return _install
+
+
+@pytest.fixture
+def other_provider_model(monkeypatch):
+    """DeepSeek이 아닌 모델을 등록부에 임시로 끼운다(KNK-674 2차 리뷰).
+
+    등록부는 비공개 dict(`registry._REGISTRY`)라 밖에서 모델을 넣을 공식 수단이 없다. 그
+    우회 코드가 테스트 9곳에 그대로 복사돼 있어, `ResolvedModel`에 필드가 하나 늘면 9곳을
+    함께 고쳐야 했다 — 여기 한 곳으로 모은다.
+
+    모듈을 넘기면 그 모듈이 보는 `settings.chat_model`까지 이 모델로 바꾼다(채팅 3기능).
+    스토리는 모델 이름을 인자로 직접 받으므로 등록만 하면 된다.
+    """
+
+    def _use(module=None) -> str:
+        monkeypatch.setitem(
+            registry._REGISTRY,
+            OTHER_PROVIDER_MODEL,
+            ResolvedModel(
+                model=OTHER_PROVIDER_MODEL,
+                provider=OTHER_PROVIDER,
+                adapter=ADAPTER_OPENAI_SDK,
+                use_thinking=True,
+            ),
+        )
+        if module is not None:
+            monkeypatch.setattr(module.settings, "chat_model", OTHER_PROVIDER_MODEL)
+        return OTHER_PROVIDER_MODEL
+
+    return _use

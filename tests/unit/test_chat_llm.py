@@ -126,6 +126,8 @@ async def test_stream_captures_model_and_usage(install_llm_sdk) -> None:
     assert completed["model"] == "deepseek-v4-flash"
     assert completed["input_tokens"] == 11
     assert completed["output_tokens"] == 22
+    # provider는 응답에 없는 값이라 모델 이름을 등록부로 해석해 싣는다(KNK-674).
+    assert completed["provider"] == "deepseek"
 
 
 # ── 토큰 누락은 0이 아니라 null (KNK-673 리뷰) ───────────────────────────────
@@ -224,6 +226,8 @@ async def test_stream_error_captures(monkeypatch, install_llm_sdk) -> None:
     # AN-4-8 컨텍스트 — 실패 캡처에 재호출 횟수·소요 시간이 실린다(KNK-529)
     assert calls[0]["retry_count"] == 0
     assert isinstance(calls[0]["latency_ms"], int) and calls[0]["latency_ms"] >= 0
+    # 스트림이 오류로 끝나면 종료 이벤트가 없다 — 그래도 provider 태그는 채워져야 한다(KNK-674).
+    assert calls[0]["provider"] == "deepseek"
 
 
 # ── 스트림 도중의 실패·취소 (KNK-673) ────────────────────────────────────────
@@ -300,3 +304,69 @@ async def test_stream_call_contract(install_llm_sdk) -> None:
     # 본문은 지문·대사를 자유 생성하므로 json 모드·출력 상한을 걸지 않는다.
     assert "response_format" not in captured
     assert "max_tokens" not in captured
+
+
+# ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674) ────────────
+# 모든 테스트가 DeepSeek이면 "그냥 'deepseek'을 적어둔 코드"와 구분되지 않는다.
+# 다른 회사 모델을 하나 끼워 넣어, 값이 모델을 따라 바뀌는지 본다.
+async def test_provider_follows_the_selected_model(other_provider_model, install_llm_sdk) -> None:
+    other_provider_model(chat_llm)
+
+    async def _create(**kwargs):
+        return FakeStream([_FakeChunk("본문")])
+
+    install_llm_sdk(_create)
+
+    events = [e async for e in stream_chat_turn([])]
+    completed = next(e for e in events if e["event"] == "completed")
+
+    assert completed["provider"] == "not-deepseek"
+
+
+async def test_failure_capture_provider_follows_the_selected_model(
+    monkeypatch, other_provider_model, install_llm_sdk
+) -> None:
+    """스트림이 오류로 끝나도 같은 값이 실린다 — 종료 이벤트가 없는 경로다."""
+    from openai import OpenAIError
+
+    other_provider_model(chat_llm)
+    calls: list = []
+    monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda *a, **k: calls.append(k))
+
+    async def _create(**kwargs):
+        raise OpenAIError("boom")
+
+    install_llm_sdk(_create)
+
+    events = [e async for e in stream_chat_turn([])]
+
+    assert any(e["event"] == "error" for e in events)
+    assert calls[0]["provider"] == "not-deepseek"
+
+
+async def test_provider_is_resolved_before_the_llm_call(monkeypatch, install_llm_sdk) -> None:
+    """provider 조회는 LLM 호출 **전에** 한다 — 실패하면 헛돈이 안 나가야 한다(KNK-674).
+
+    판정에 있는 같은 테스트의 짝이다(KNK-674 2차 리뷰 3번). 조회를 스트림 뒤나 except 안으로
+    옮기면 except의 `provider=provider`가 UnboundLocalError가 나 여러 테스트가 함께 깨지는데,
+    그건 **우연히** 잡히는 것이라 규칙을 직접 말하는 테스트를 따로 둔다.
+
+    조회가 호출 전에 있는지를 **LLM을 한 번도 부르지 않았다**로 확인한다.
+    """
+    calls = {"n": 0}
+
+    async def _create(**kwargs):
+        calls["n"] += 1
+        return FakeStream([_FakeChunk("본문")])
+
+    install_llm_sdk(_create)
+
+    def _boom(_model: str) -> str:
+        raise RuntimeError("등록부 조회 실패")
+
+    monkeypatch.setattr(chat_llm.llm, "provider_of", _boom)
+
+    with pytest.raises(RuntimeError):
+        [e async for e in stream_chat_turn([])]
+
+    assert calls["n"] == 0  # LLM을 부르기도 전에 막힌다
