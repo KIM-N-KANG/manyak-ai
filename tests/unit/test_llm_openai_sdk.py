@@ -388,7 +388,10 @@ async def test_stream_yields_deltas_then_completed(monkeypatch) -> None:
     events = [ev async for ev in openai_sdk.stream(_req(), _FLASH)]
 
     assert events[:2] == [TextDelta("안"), TextDelta("녕")]
-    assert isinstance(events[-1], StreamCompleted)
+    # 이벤트 구성 전체를 고정한다 — 마지막 것만 보면 종료 이벤트가 두 번 나가도 통과한다
+    # (Codex 리뷰에서 변이로 확인). 종료는 맨 끝에 정확히 한 번이다.
+    assert [type(ev) for ev in events] == [TextDelta, TextDelta, StreamCompleted]
+    assert sum(isinstance(ev, StreamCompleted) for ev in events) == 1
     assert events[-1].usage.input_tokens == 100
     assert events[-1].finish_reason == "stop"
     assert events[-1].provider == PROVIDER_DEEPSEEK

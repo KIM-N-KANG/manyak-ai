@@ -22,12 +22,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from openai import AsyncOpenAI, OpenAIError
-
 from src.core.config import settings
 from src.core.sentry import FEATURE_CHOICE_GENERATION, capture_ai_exception
 from src.schemas.chat_turn import ChatTurnRequest
+from src.services import llm
 from src.services.chat_assembler import format_main_events, format_target_main_event
+from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt_meta import read_version
 
 logger = logging.getLogger(__name__)
@@ -44,8 +44,9 @@ _CHOICES_COUNT = 3
 _MAX_REFILL = 2
 # 선택지는 짧으므로 출력 상한을 작게 둔다.
 _MAX_TOKENS = 512
-# DeepSeek V4 비추론 호출(thinking 비활성) — 본문 호출과 동일 정책.
-_THINKING_DISABLED = {"thinking": {"type": "disabled"}}
+# 이 호출의 제한 시간(초). 짧은 생성이라 본문(90초)보다 짧게 둔다.
+# **호출마다 반드시 넘긴다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
+_TIMEOUT_SECONDS = 60.0
 
 # 누적·재호출조차 3개를 못 채운 '최후 안전망'. 장면을 가리지 않는 중립 행동 3개(서로 다름).
 # 이 폴백이 쓰이면 프롬프트가 약하다는 신호이므로 로깅한다(거의 발동하지 않아야 정상).
@@ -55,11 +56,8 @@ _FALLBACK = (
     "*상대의 반응을 기다리며 침묵한다*",
 )
 
-_client = AsyncOpenAI(
-    api_key=settings.deepseek_api_key,
-    base_url=settings.deepseek_api_url,
-    timeout=60.0,  # 짧은 생성이라 본문(90s)보다 짧게 둔다.
-)
+# LLM 호출은 공통 통로(src.services.llm)를 통한다(KNK-673) — 클라이언트 생성·추론 모드 같은
+# 회사 문법은 이 파일에서 사라졌다.
 
 
 def _load_template(path: Path) -> tuple[str, str]:
@@ -169,30 +167,27 @@ def _accumulate(collected: list[str], seen: set[str], raw: object) -> None:
 
 async def _call(system: str, user: str) -> tuple[list, str, int | None, int | None]:
     """선택지 호출 1회 → (choices 리스트, model, in_tokens, out_tokens). 실패 시 예외."""
-    response = await _client.chat.completions.create(
-        model=settings.chat_model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        response_format={"type": "json_object"},
-        max_tokens=_MAX_TOKENS,
-        extra_body=_THINKING_DISABLED,
+    result = await llm.complete(
+        LlmRequest(
+            model=settings.chat_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=_MAX_TOKENS,
+            timeout=_TIMEOUT_SECONDS,
+            json_mode=True,
+        )
     )
-    content = response.choices[0].message.content
-    if not content:
+    # 통로는 응답 모양이 깨져도 예외를 던지지 않고 빈 문자열을 준다 — 아래가 그대로 받는다.
+    if not result.text:
         raise ValueError("LLM이 빈 응답을 반환했습니다.")
-    data = json.loads(_strip_code_fence(content))
+    data = json.loads(_strip_code_fence(result.text))
     choices = data.get("choices") if isinstance(data, dict) else None
     if not isinstance(choices, list):
         raise ValueError("응답에 choices 배열이 없습니다.")
-    usage = response.usage
-    return (
-        choices,
-        response.model or settings.chat_model,
-        getattr(usage, "prompt_tokens", None),
-        getattr(usage, "completion_tokens", None),
-    )
+    # model은 응답이 비어 와도 요청 이름으로 채워져 온다(폴백은 통로가 한다).
+    return choices, result.model, result.usage.input_tokens, result.usage.output_tokens
 
 
 async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResult:
@@ -218,10 +213,15 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
             input_tokens = _add_tokens(input_tokens, in_tok)
             output_tokens = _add_tokens(output_tokens, out_tok)
             _accumulate(collected, seen, raw)
-        except (OpenAIError, json.JSONDecodeError, ValueError, IndexError, AttributeError) as e:
+        except (LlmError, json.JSONDecodeError, ValueError) as e:
             # 한 번의 호출이 터져도 선택지 응답을 깨지 않는다 — Sentry로만 보고하고 다음
-            # 시도/폴백으로 간다. IndexError(빈 choices)·AttributeError(message=None)도
-            # 흡수한다(F2 — 예외가 밖으로 새면 폴백 보정을 못 거쳐 /chat/choices가 500이 된다).
+            # 시도/폴백으로 간다. 예외가 밖으로 새면 폴백 보정을 못 거쳐 /chat/choices가 500이 된다.
+            #
+            # 전송 오류(LlmError)는 통로가 회사 SDK 예외를 접어 준 것이고, 내용물 오류(깨진
+            # JSON·빈 응답·choices 없음)는 여기 남는다. 예전에는 응답 껍데기가 깨졌을 때의
+            # IndexError·AttributeError도 잡았지만, 이제 통로가 그런 응답을 빈 문자열로
+            # 정규화해 위 `if not result.text`가 받는다 — 결과는 같고 경로만 옮겨졌다.
+            # **두 예외를 다시 넣지 않는다**: 우리 코드의 오타까지 폴백으로 조용히 덮인다.
             logger.warning("선택지 호출 실패(시도 %d): %s", attempt, e)
             capture_ai_exception(
                 e,

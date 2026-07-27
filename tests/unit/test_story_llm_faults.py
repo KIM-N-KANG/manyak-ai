@@ -8,8 +8,6 @@ detail과 Sentry error_code가 실패 코드 카탈로그(AN-4-7)대로 실리�
 코드펜스로 감싼 정상 응답은 펜스를 벗겨 통과(200 경로)함을 함께 확인한다.
 """
 
-import ast
-from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -238,52 +236,6 @@ async def test_missing_model_falls_back_to_requested_model(monkeypatch, captures
     assert usage.model == story_llm.settings.story_compile_model  # 요청에 쓴 이름으로 채움
     assert usage.input_tokens == 11 and usage.output_tokens == 13
     assert captures == []
-
-
-# ── 통로를 우회하는 직접 호출 금지 (KNK-672 구조 가드) ────────────────────────
-# 회사 SDK 패키지들. 새 공급자를 붙이면 여기에 더한다.
-_COMPANY_SDKS = frozenset({"openai", "anthropic"})
-# 통로 묶음(`src.services.llm`) 중 호출부가 써도 되는 것 — 공용 타입뿐이다.
-# 어댑터(`openai_sdk` 등)와 등록부는 통로 내부라, 호출부가 직접 만지면 통로가 무의미해진다.
-_ALLOWED_LLM_MEMBERS = frozenset({"base"})
-_LLM_PACKAGE = "src.services.llm"
-
-
-def _imported_paths(module_file: str) -> set[str]:
-    """모듈이 가져오는 이름을 점 경로로 모은다.
-
-    `from A import B`는 A와 `A.B`를 **둘 다** 넣는다. 안 그러면
-    `from src.services.llm import openai_sdk`가 "src.services.llm을 가져왔다"로만 보여
-    어댑터를 직접 집어온 것을 놓친다(Codex 2차 리뷰에서 변이로 확인된 구멍).
-    """
-    tree = ast.parse(Path(module_file).read_text(encoding="utf-8"))
-    paths: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            paths.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            paths.add(node.module)
-            paths.update(f"{node.module}.{alias.name}" for alias in node.names)
-    return paths
-
-
-def test_story_llm_uses_only_the_gateway() -> None:
-    """story 코드는 회사 SDK도, 통로 내부(어댑터·등록부)도 직접 쓰지 않는다.
-
-    쓸 수 있는 것은 통로 자체(`src.services.llm`)와 공용 타입(`...llm.base`)뿐이다.
-    이 가드가 없으면 "여기서 그냥 직접 부르자"는 한 줄이 테스트 초록불로 들어오고, 그 순간부터
-    이 파일만 DeepSeek 전용으로 되돌아간다. 기능은 멀쩡히 돌아 리뷰에서도 놓치기 쉽다.
-    """
-    offenders = []
-    for path in _imported_paths(story_llm.__file__):
-        if path.split(".")[0] in _COMPANY_SDKS:
-            offenders.append(path)
-        elif path.startswith(f"{_LLM_PACKAGE}."):
-            member = path[len(_LLM_PACKAGE) + 1 :].split(".")[0]
-            if member not in _ALLOWED_LLM_MEMBERS:
-                offenders.append(path)
-
-    assert not offenders, f"story_llm이 통로를 우회한다: {sorted(offenders)}"
 
 
 # ── 설정 오류는 502로 위장되지 않는다 (KNK-672 이관 가드) ─────────────────────

@@ -1,7 +1,8 @@
 """선택지 생성 서비스 — '항상 정확히 3개 보장' 로직 검증.
 
-LLM(_client)을 모킹해, 정상/부족/초과/중복/완전실패 경우 모두 choices가 정확히 3개가
-되는지, 누적 재호출·결정적 폴백·retry_count·토큰 합산이 맞는지 확인한다.
+SDK 경계를 모킹해(통로 이관 후의 목 지점 — `install_llm_sdk`), 정상/부족/초과/중복/완전실패
+경우 모두 choices가 정확히 3개가 되는지, 누적 재호출·결정적 폴백·retry_count·토큰 합산이
+맞는지 확인한다.
 """
 
 import json
@@ -44,6 +45,9 @@ class _Msg:
 class _Choice:
     def __init__(self, content):
         self.message = _Msg(content)
+        # 실제 SDK 응답에는 항상 있는 칸이다. 빼두면 어댑터가 매 호출 꺼내기에 실패해
+        # 스택트레이스 경고를 쏟고, 정상 추출 경로는 한 번도 검증되지 않는다(KNK-673 리뷰).
+        self.finish_reason = "stop"
 
 
 class _Usage:
@@ -59,7 +63,7 @@ class _Resp:
         self.usage = usage
 
 
-def _mock_calls(monkeypatch, items: list):
+def _mock_calls(install, items: list):
     """호출마다 items를 순서대로 반환한다. item이 Exception이면 raise, str(json)이면 응답.
 
     items가 모자라면 마지막 item을 반복 사용한다(재호출이 같은 결과를 주는 상황 모사).
@@ -74,22 +78,22 @@ def _mock_calls(monkeypatch, items: list):
             raise item
         return _Resp(item, usage=_Usage(5, 7))
 
-    monkeypatch.setattr(chat_choices._client.chat.completions, "create", _create)
+    install(_create)
     return state
 
 
-async def test_first_call_gives_three(monkeypatch) -> None:
-    _mock_calls(monkeypatch, ['{"choices": ["맞선다", "피한다", "살핀다"]}'])
+async def test_first_call_gives_three(install_llm_sdk) -> None:
+    _mock_calls(install_llm_sdk, ['{"choices": ["맞선다", "피한다", "살핀다"]}'])
     res = await generate_choices(_request(), "*레이가 다가선다.*")
     assert res.choices == ["맞선다", "피한다", "살핀다"]
     assert res.retry_count == 0
     assert res.input_tokens == 5 and res.output_tokens == 7
 
 
-async def test_accumulates_across_refill(monkeypatch) -> None:
+async def test_accumulates_across_refill(install_llm_sdk) -> None:
     # 2개 → (재호출) 1개 = 누적 3개. retry_count=1, 토큰 합산.
     state = _mock_calls(
-        monkeypatch,
+        install_llm_sdk,
         ['{"choices": ["맞선다", "피한다"]}', '{"choices": ["설득한다"]}'],
     )
     res = await generate_choices(_request(), "*장면*")
@@ -99,9 +103,9 @@ async def test_accumulates_across_refill(monkeypatch) -> None:
     assert res.input_tokens == 10 and res.output_tokens == 14  # 5+5, 7+7
 
 
-async def test_pads_with_fallback_when_short(monkeypatch) -> None:
+async def test_pads_with_fallback_when_short(install_llm_sdk) -> None:
     # 매번 같은 1개만 줘서 누적이 안 늘면, 재호출 2회 후 폴백으로 채워 정확히 3개.
-    _mock_calls(monkeypatch, ['{"choices": ["맞선다"]}'])
+    _mock_calls(install_llm_sdk, ['{"choices": ["맞선다"]}'])
     res = await generate_choices(_request(), "*장면*")
     assert len(res.choices) == 3
     assert res.choices[0] == "맞선다"
@@ -109,43 +113,43 @@ async def test_pads_with_fallback_when_short(monkeypatch) -> None:
     assert res.retry_count == 2  # 재호출을 최대치까지 시도한 뒤 보정
 
 
-async def test_total_failure_absorbed_to_fallback(monkeypatch) -> None:
+async def test_total_failure_absorbed_to_fallback(install_llm_sdk) -> None:
     # 호출이 매번 터져도 턴은 안 깨지고, 폴백 3개로 정확히 채운다.
-    _mock_calls(monkeypatch, [OpenAIError("boom")])
+    _mock_calls(install_llm_sdk, [OpenAIError("boom")])
     res = await generate_choices(_request(), "*장면*")
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2
     assert res.input_tokens is None and res.output_tokens is None  # 성공한 호출 없음
 
 
-async def test_failure_capture_carries_latency_and_retry(monkeypatch) -> None:
+async def test_failure_capture_carries_latency_and_retry(monkeypatch, install_llm_sdk) -> None:
     # AN-4-8 — 실패 캡처마다 그 시도의 retry_count와 latency_ms가 실린다(KNK-529).
     calls: list = []
     monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda *a, **k: calls.append(k))
-    _mock_calls(monkeypatch, [OpenAIError("boom")])
+    _mock_calls(install_llm_sdk, [OpenAIError("boom")])
     await generate_choices(_request(), "*장면*")
     assert [c["retry_count"] for c in calls] == [0, 1, 2]  # 첫 호출 + 재호출 2회 전부 캡처
     assert all(isinstance(c["latency_ms"], int) and c["latency_ms"] >= 0 for c in calls)
 
 
-async def test_truncates_when_too_many(monkeypatch) -> None:
-    _mock_calls(monkeypatch, ['{"choices": ["a", "b", "c", "d", "e"]}'])
+async def test_truncates_when_too_many(install_llm_sdk) -> None:
+    _mock_calls(install_llm_sdk, ['{"choices": ["a", "b", "c", "d", "e"]}'])
     res = await generate_choices(_request(), "*장면*")
     assert res.choices == ["a", "b", "c"]  # 앞 3개만
     assert res.retry_count == 0
 
 
-async def test_dedups_within_response(monkeypatch) -> None:
+async def test_dedups_within_response(install_llm_sdk) -> None:
     # 한 응답 안의 중복은 제거하고 서로 다른 3개를 남긴다.
-    _mock_calls(monkeypatch, ['{"choices": ["a", "a", "b", "c"]}'])
+    _mock_calls(install_llm_sdk, ['{"choices": ["a", "a", "b", "c"]}'])
     res = await generate_choices(_request(), "*장면*")
     assert res.choices == ["a", "b", "c"]
     assert res.retry_count == 0
 
 
-async def test_bad_json_then_fallback(monkeypatch) -> None:
+async def test_bad_json_then_fallback(install_llm_sdk) -> None:
     # json이 깨져도 흡수하고 폴백으로 3개를 보장한다.
-    _mock_calls(monkeypatch, ["not json at all"])
+    _mock_calls(install_llm_sdk, ["not json at all"])
     res = await generate_choices(_request(), "*장면*")
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2
@@ -154,9 +158,9 @@ async def test_bad_json_then_fallback(monkeypatch) -> None:
 # ── _call 구조 방어 4분기 (KNK-574 감사 1-1) ────────────────────────────────
 # _call은 응답이 계약을 어기면 ValueError를 던지고, generate_choices가 이를 흡수해
 # 폴백으로 간다. JSONDecodeError 외 3분기(빈 content·비-dict·choices 부재)를 직접 태운다.
-async def test_call_strips_code_fence(monkeypatch) -> None:
+async def test_call_strips_code_fence(install_llm_sdk) -> None:
     # 코드펜스로 감싼 정상 응답도 펜스를 벗겨 파싱해야 한다(_strip_code_fence 실경로).
-    _mock_calls(monkeypatch, ['```json\n{"choices": ["a", "b", "c"]}\n```'])
+    _mock_calls(install_llm_sdk, ['```json\n{"choices": ["a", "b", "c"]}\n```'])
     choices, model, _in, _out = await chat_choices._call("sys", "user")
     assert choices == ["a", "b", "c"]
 
@@ -170,15 +174,15 @@ async def test_call_strips_code_fence(monkeypatch) -> None:
         '{"choices": "abc"}',  # choices가 list가 아님
     ],
 )
-async def test_call_raises_on_malformed_structure(monkeypatch, content) -> None:
-    _mock_calls(monkeypatch, [content])
+async def test_call_raises_on_malformed_structure(install_llm_sdk, content) -> None:
+    _mock_calls(install_llm_sdk, [content])
     with pytest.raises(ValueError):
         await chat_choices._call("sys", "user")
 
 
-async def test_malformed_structure_absorbed_to_fallback(monkeypatch) -> None:
+async def test_malformed_structure_absorbed_to_fallback(install_llm_sdk) -> None:
     # 위 구조 위반이 generate_choices까지 오면 흡수돼 폴백 3개로 수렴한다(배열 케이스 대표).
-    _mock_calls(monkeypatch, ['["a", "b"]'])
+    _mock_calls(install_llm_sdk, ['["a", "b"]'])
     res = await generate_choices(_request(), "*장면*")
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2
@@ -187,14 +191,14 @@ async def test_malformed_structure_absorbed_to_fallback(monkeypatch) -> None:
 # ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
 # 가짜가 kwargs를 버리면 model·json 모드·max_tokens·thinking 회귀를 못 잡는다.
 # 넘긴 인자를 붙잡아 선택지 호출 계약(비스트리밍 json 단발)을 고정한다.
-async def test_call_contract(monkeypatch) -> None:
+async def test_call_contract(install_llm_sdk) -> None:
     captured: dict = {}
 
     async def _create(**kwargs):
         captured.update(kwargs)
         return _Resp('{"choices": ["a", "b", "c"]}', usage=_Usage(5, 7))
 
-    monkeypatch.setattr(chat_choices._client.chat.completions, "create", _create)
+    install_llm_sdk(_create)
     await chat_choices._call("SYS", "USER")
 
     assert captured["model"] == chat_choices.settings.chat_model
@@ -204,7 +208,10 @@ async def test_call_contract(monkeypatch) -> None:
     ]
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["max_tokens"] == chat_choices._MAX_TOKENS
-    assert captured["extra_body"] == chat_choices._THINKING_DISABLED
+    # 추론 끄기는 이제 호출부가 아니라 등록부(use_thinking=False)의 뜻을 어댑터가 옮긴 것이다.
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    # 타임아웃을 호출마다 넘긴다 — 비우면 상한이 SDK 기본값(10분)으로 늘어난다(KNK-673).
+    assert captured["timeout"] == chat_choices._TIMEOUT_SECONDS == 60.0
     assert "stream" not in captured  # 선택지는 비스트리밍 단발 호출
 
 
@@ -227,3 +234,53 @@ def test_build_user_replaces_event_material_slots() -> None:
     if template_has_slots:
         assert "반란의 서막" in user and "- 선왕의 죽음" in user
     assert "{{main_events}}" not in user  # 미치환 슬롯이 남지 않는다
+
+
+# ── 토큰 누락은 0이 아니라 null (KNK-673 리뷰) ───────────────────────────────
+# 성공 경로의 가짜가 늘 usage를 채워 주면 "null을 0으로 바꾸는" 회귀를 못 잡는다
+# (변이 `result.usage.input_tokens or 0`이 통과했다). 없는 경우를 따로 태운다.
+async def test_missing_usage_stays_null(install_llm_sdk) -> None:
+    async def _create(**kwargs):
+        return _Resp('{"choices": ["a", "b", "c"]}', usage=None)  # usage 없는 응답
+
+    install_llm_sdk(_create)
+    res = await generate_choices(_request(), "*장면*")
+
+    assert res.choices == ["a", "b", "c"]
+    assert res.input_tokens is None and res.output_tokens is None  # 0이 아니라 null
+
+
+# ── 전송 오류와 내용물 오류의 구분 (KNK-673 리뷰) ────────────────────────────
+# 결과 모양(폴백 3개)만 보면 둘이 구분되지 않아, 깨진 JSON을 공급자 장애로 잘못 접어도
+# 테스트가 통과했다. 그러면 Sentry 오류 이름이 invalid_ai_response에서
+# provider_unavailable로 조용히 바뀌어 "LLM이 이상한 답을 줬다"가 "DeepSeek이 죽었다"가 된다.
+async def test_broken_json_is_reported_as_invalid_ai_response(monkeypatch, install_llm_sdk) -> None:
+    from src.core.sentry import ERROR_INVALID_AI_RESPONSE, classify_error_code
+
+    captured: list = []
+    monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda e, **k: captured.append(e))
+    _mock_calls(install_llm_sdk, ["not json at all"])
+
+    await generate_choices(_request(), "*장면*")
+
+    assert captured, "깨진 JSON도 Sentry로 보고돼야 한다"
+    assert all(isinstance(e, json.JSONDecodeError) for e in captured)
+    assert {classify_error_code(e) for e in captured} == {ERROR_INVALID_AI_RESPONSE}
+
+
+async def test_our_own_bug_is_not_absorbed_into_the_fallback(monkeypatch, install_llm_sdk) -> None:
+    """우리 코드의 결함은 폴백으로 덮지 않고 그대로 올려보낸다.
+
+    흡수 대상은 전송 오류와 내용물 오류뿐이다. 예외 절을 넓히면(예전의 IndexError·
+    AttributeError를 되넣거나 `except Exception`으로 바꾸면) 오타·형 실수까지 "선택지가 좀
+    밋밋하네" 수준으로 위장돼, 500이 나야 알 수 있는 버그가 영영 안 보인다.
+    """
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("우리 코드의 결함")
+
+    monkeypatch.setattr(chat_choices, "_accumulate", _boom)
+    _mock_calls(install_llm_sdk, ['{"choices": ["a", "b", "c"]}'])
+
+    with pytest.raises(RuntimeError):
+        await generate_choices(_request(), "*장면*")
