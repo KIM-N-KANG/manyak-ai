@@ -10,6 +10,7 @@ Anthropic Sonnet 4.6은 temperature를 받지만 Sonnet 5는 400으로 거부한
 """
 
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from src.core.config import settings
 from src.services.llm.base import (
@@ -48,11 +49,12 @@ _REGISTRY: dict[str, ResolvedModel] = {
 
 @dataclass(frozen=True)
 class ProviderCredentials:
-    """공급자 접속 정보. api_key_env는 값이 비었을 때 무엇을 채우라고 알려줄 env 이름이다."""
+    """공급자 접속 정보. *_env는 값이 잘못됐을 때 무엇을 고치라고 알려줄 env 이름이다."""
 
     api_key: str
     base_url: str | None
     api_key_env: str
+    base_url_env: str
 
 
 def resolve(model: str) -> ResolvedModel:
@@ -75,6 +77,7 @@ def credentials(provider: str) -> ProviderCredentials:
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_api_url,
             api_key_env="DEEPSEEK_API_KEY",
+            base_url_env="DEEPSEEK_API_URL",
         )
     raise LlmConfigError(f"공급자 '{provider}'의 접속 정보 규칙이 없습니다.")
 
@@ -97,15 +100,37 @@ def validate_selected_models() -> None:
 
     서버 시작 시 한 번 부른다 — 잘못 적은 모델 이름이나 빈 키는 첫 사용자 요청(502)이 아니라
     기동에서 드러나야 한다.
+
+    주소(base_url)도 함께 본다. 키와 달리 주소는 **비어 있지 않아도 틀릴 수 있어**
+    (`not-a-url`처럼) 검사를 통과한 뒤 첫 호출에서야 실패한다. 형식만 보는 것이라 실제 접속은
+    하지 않는다 — 기동에 지연도 과금도 없다.
     """
     for env_name, model in selected_models():
         try:
             resolved = resolve(model)
+            # 접속 정보 조회도 같이 감싼다 — 규칙이 없는 공급자면 여기서도 실패하는데,
+            # 그때도 어느 env를 고칠지 메시지에 있어야 한다.
+            creds = credentials(resolved.provider)
         except LlmConfigError as exc:
             raise LlmConfigError(f"{env_name}: {exc}") from exc
-        creds = credentials(resolved.provider)
         if not creds.api_key.strip():
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데 "
                 f"{creds.api_key_env}가 비어 있습니다."
             )
+        _validate_base_url(creds, env_name=env_name, model=model, provider=resolved.provider)
+
+
+def _validate_base_url(
+    creds: ProviderCredentials, *, env_name: str, model: str, provider: str
+) -> None:
+    """주소가 http/https이고 호스트가 있는지 본다. None은 통과 — SDK 기본 주소를 쓴다는 뜻이다."""
+    if creds.base_url is None:
+        return
+    parsed = urlparse(creds.base_url)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        return
+    raise LlmConfigError(
+        f"{env_name}={model}이 쓰는 공급자 '{provider}'의 {creds.base_url_env}가 "
+        f"올바른 주소가 아닙니다(http:// 또는 https://와 호스트가 필요): {creds.base_url!r}"
+    )

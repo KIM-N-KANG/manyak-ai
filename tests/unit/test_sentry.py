@@ -1,7 +1,9 @@
+import io
 import json
 
 import httpx
 import pytest
+import sentry_sdk
 
 from src.core import sentry
 from src.core.sentry import capture_ai_exception, classify_error_code, init_sentry
@@ -49,6 +51,74 @@ def test_classify_connection_unavailable() -> None:
     from openai import APIConnectionError
 
     assert classify_error_code(APIConnectionError(request=_req())) == "provider_unavailable"
+
+
+# ── 시크릿·원문이 스택 프레임으로 새지 않는지 (KNK-671 리뷰) ─────────────────
+# 두 층으로 나눈다. "운영 코드가 그 옵션을 넘기는가"는 아래 test_init_with_dsn_passes_options가
+# init을 가로채 확인하고(전역 오염 없음), "그 옵션이 정말 값을 막는가"는 실제 초기화가 필요해
+# 여기서 확인한다.
+
+
+class _CollectingTransport(sentry_sdk.transport.Transport):
+    """전송 대신 직렬화된 봉투(envelope) 원문을 모은다.
+
+    함수 하나를 `transport=`로 넘기는 옛 방식은 폐기 예정 경고가 뜬다. 그리고 모은 것을
+    `str()`로 훑으면 실제 전송될 바이트가 아니라 객체 표기를 보게 돼 검증이 헛돈다 —
+    직렬화까지 해서 **나가는 내용 그대로**를 본다.
+    """
+
+    def __init__(self, sink: list[str]) -> None:
+        super().__init__()
+        self._sink = sink
+
+    def capture_envelope(self, envelope: object) -> None:
+        buf = io.BytesIO()
+        envelope.serialize_into(buf)  # type: ignore[attr-defined]
+        self._sink.append(buf.getvalue().decode("utf-8", errors="replace"))
+
+
+def test_secrets_in_locals_do_not_reach_sentry() -> None:
+    """설정만 확인하지 않고 **실제 전송되는 이벤트**에 시크릿이 없는지 본다.
+
+    옵션 이름만 단언하면 "그 옵션이 정말 그 일을 하는가"는 증명되지 않는다.
+
+    통합(integration)은 전부 끄고 켠다 — sentry_sdk.init은 프로세스 전역이라, 켜두면 이
+    테스트 이후의 모든 테스트가 HTTP·예외 처리에 후크가 붙은 다른 환경에서 돌게 된다.
+    """
+    sent: list[str] = []
+    api_key = "sk-live-must-not-leak"
+    prompt = "사용자가 쓴 프롬프트 원문"
+    isolated = {"default_integrations": False, "auto_enabling_integrations": False}
+
+    try:
+        sentry_sdk.init(
+            dsn="https://pub@example.invalid/1",
+            transport=_CollectingTransport(sent),  # 실제 전송 대신 여기로 모은다
+            include_local_variables=False,
+            before_send=sentry._before_send,
+            **isolated,
+        )
+
+        def _fails_with_secrets_in_scope() -> None:
+            creds = {"api_key": api_key}  # noqa: F841 — 프레임에 남기는 것이 시험 대상
+            messages = [{"role": "user", "content": prompt}]  # noqa: F841
+            raise RuntimeError("접속 준비 실패")
+
+        try:
+            _fails_with_secrets_in_scope()
+        except RuntimeError as exc:
+            sentry_sdk.capture_exception(exc)
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.init(dsn="", **isolated)  # 전역 상태 원복(이후 테스트가 실제 전송을 하지 않도록)
+
+    assert sent, "이벤트가 전송되지 않아 검증이 무의미하다"
+    payload = "\n".join(sent)
+    for secret in (api_key, prompt):
+        # 봉투는 ASCII로 이스케이프된 JSON이라 한국어 원문이 \uXXXX 형태로 들어간다.
+        # 원문 그대로만 찾으면 프롬프트 검사가 **무슨 일이 있어도 통과**해 버린다(실측 확인).
+        assert secret not in payload
+        assert json.dumps(secret)[1:-1] not in payload
 
 
 # ── 공급자 중립 예외 분류 (KNK-670) ──────────────────────────────────────────
@@ -108,6 +178,9 @@ def test_init_with_dsn_passes_options(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called["dsn"] == "https://k@o.ingest.sentry.io/1"
     assert called["environment"] == "test-env"
     assert called["send_default_pii"] is False  # AN-4-10
+    # 지역변수 수집 끄기(KNK-671). 이 단언이 없으면 운영 코드에서 옵션을 지워도 테스트는
+    # 통과한다 — 실제 차단 효과는 test_secrets_in_locals_do_not_reach_sentry가 따로 본다.
+    assert called["include_local_variables"] is False
 
 
 # ── before_send PII 차단 (AN-4-10) ──────────────────────────────────────────

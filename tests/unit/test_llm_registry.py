@@ -14,6 +14,7 @@ from src.services.llm.base import (
     LlmConfigError,
     LlmError,
     LlmTimeout,
+    ResolvedModel,
 )
 
 
@@ -138,6 +139,48 @@ def test_validate_rejects_blank_provider_key(monkeypatch) -> None:
         registry.validate_selected_models()
 
     assert "DEEPSEEK_API_KEY" in str(exc_info.value)
+
+
+def test_validate_names_the_env_for_provider_without_credentials(monkeypatch) -> None:
+    """접속 정보 규칙이 없는 공급자에서 막힐 때도 어느 env가 문제인지 붙인다."""
+    future = ResolvedModel(
+        model="claude-sonnet-5",
+        provider="anthropic",  # 아직 이 공급자의 키·주소 규칙이 없다(KNK-675)
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=False,
+    )
+    monkeypatch.setitem(registry._REGISTRY, "claude-sonnet-5", future)
+    monkeypatch.setattr(registry, "settings", _settings(chat_model="claude-sonnet-5"))
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        registry.validate_selected_models()
+
+    assert "CHAT_MODEL" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("bad_url", ["not-a-url", "ftp://api.deepseek.com", "https://", "   "])
+def test_validate_rejects_malformed_base_url(monkeypatch, bad_url: str) -> None:
+    """주소가 틀리면 기동에서 실패한다 — 비어 있지 않아도 틀릴 수 있어 첫 호출까지 숨는다."""
+    monkeypatch.setattr(registry, "settings", _settings(deepseek_api_url=bad_url))
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        registry.validate_selected_models()
+
+    assert "DEEPSEEK_API_URL" in str(exc_info.value)
+
+
+def test_validate_allows_missing_base_url() -> None:
+    """주소가 아예 없으면 통과한다 — SDK 기본 주소를 쓰겠다는 뜻이라 오류가 아니다.
+
+    DeepSeek은 주소에 기본값이 있어 None이 되지 않는다. 주소 없이 부르는 공급자(다음 단계에
+    등록될 GPT·Anthropic)가 이 갈래를 탄다.
+    """
+    creds = registry.ProviderCredentials(
+        api_key="k", base_url=None, api_key_env="X_API_KEY", base_url_env="X_API_URL"
+    )
+
+    registry._validate_base_url(creds, env_name="CHAT_MODEL", model="m", provider="x")
 
 
 def test_config_error_is_not_a_provider_error() -> None:

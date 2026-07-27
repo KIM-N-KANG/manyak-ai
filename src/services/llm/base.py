@@ -4,8 +4,9 @@
 어댑터는 호출부의 도메인을 모른다.
 """
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Protocol, TypeAlias
 
 # 어댑터 종류 = SDK 계열이다(회사 단위가 아니다). DeepSeek과 GPT는 같은 OpenAI SDK를 쓰고
 # base_url·키만 다르므로 어댑터 하나를 공유한다. Anthropic은 SDK가 달라 별 어댑터를 쓴다(KNK-675).
@@ -125,6 +126,28 @@ class StreamCompleted:
 StreamEvent: TypeAlias = TextDelta | StreamCompleted
 
 
+class LlmAdapter(Protocol):
+    """어댑터가 갖춰야 할 함수 셋. 어댑터는 클래스가 아니라 **모듈**이 이 모양을 만족한다.
+
+    이 레포에는 타입 검사기(mypy)가 설정돼 있지 않아 **실행 중에 강제되지는 않는다** —
+    편집기와 이 파일이 계약을 알려주는 역할이다. 그래도 적어두는 이유는, 다음 어댑터
+    (Anthropic — KNK-675)를 만들 때 함수 이름을 다르게 지으면 통로가 그 모듈을 부르는
+    순간에야 AttributeError로 드러나기 때문이다. 여기가 "무엇을 만들면 되는지"의 정본이다.
+    """
+
+    def check_supported(self, resolved: ResolvedModel) -> None:
+        """이 모델의 설정을 요청 인자로 표현할 수 있는지 확인한다. 못 하면 LlmConfigError."""
+        ...
+
+    async def complete(self, req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
+        """단발 호출."""
+        ...
+
+    def stream(self, req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[StreamEvent]:
+        """스트리밍 호출."""
+        ...
+
+
 class LlmError(Exception):
     """공급자 전송 오류의 공통 상위 — 어댑터가 회사별 SDK 예외를 이 계열로 번역해 던진다.
 
@@ -167,11 +190,15 @@ class LlmBadRequest(LlmError):
 
 
 class LlmUnavailable(LlmError):
-    """연결 실패·인증·권한·5xx, 그리고 위 셋에 안 걸리는 모든 provider 오류 → provider_unavailable.
+    """연결 실패·인증·권한·404·422·5xx, 그리고 위 셋에 안 걸리는 provider 오류 → provider_unavailable.
 
-    **어댑터는 모르는 예외를 통과시키지 않고 전부 이 예외로 접는다.** 번역되지 않은 SDK 예외가
-    호출부까지 올라가면, 실패를 흡수해야 하는 경로(선택지 폴백·판정 null)가 흡수에 실패해
+    어댑터가 이 예외로 접는 대상은 둘이다 — **SDK 예외 중 위 셋에 안 걸리는 것**과, **SDK 밖으로
+    새는 전송·파싱 오류**(스트림 도중의 연결 끊김·깨진 SSE 줄). 번역되지 않은 전송 오류가
+    호출부까지 올라가면 실패를 흡수해야 하는 경로(선택지 폴백·판정 null)가 흡수에 실패해
     턴이 500으로 깨진다.
+
+    반대로 **우리 코드의 결함(오타·형 실수)은 접지 않는다.** 공급자 장애로 위장되면 관측이
+    거짓이 되고 원인 추적이 헛돈다(STYLEGUIDE §4 — 모든 예외를 삼키지 않는다).
     """
 
 

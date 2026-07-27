@@ -112,6 +112,11 @@ def init_sentry() -> None:
         environment=settings.sentry_environment,
         traces_sample_rate=settings.sentry_traces_sample_rate,
         send_default_pii=False,  # AN-4-10 — 식별자·원문 PII 미전송
+        # 스택 프레임의 지역변수를 싣지 않는다(기본은 실음). 실으면 예외가 난 함수의 변수가
+        # 그대로 전송되는데, 우리 코드에는 API 키(LLM 클라이언트 생성부)와 프롬프트·채팅 원문
+        # (LLM 호출부)이 지역변수로 들어 있다 — AN-4-10 원문 비수집과 정면으로 충돌한다.
+        # 대가로 원인 추적 시 변수 값을 못 보지만, 시크릿·원문 유출보다 낫다(KNK-671 리뷰).
+        include_local_variables=False,
         before_send=_before_send,
     )
 
