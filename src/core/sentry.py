@@ -27,6 +27,15 @@ from openai import (
 
 from src.core.config import settings
 
+# 공급자 중립 예외를 AN-4-7 코드로 접기 위해 가져온다(KNK-670). base는 src 안의 다른 것을
+# 임포트하지 않아 순환이 생기지 않는다 — 여기가 이미 openai 예외 타입을 아는 자리이기도 하다.
+from src.services.llm.base import (
+    LlmBadRequest,
+    LlmError,
+    LlmRateLimited,
+    LlmTimeout,
+)
+
 logger = logging.getLogger(__name__)
 
 # AN-4-3 AI feature 식별자 — server AiCallFeature 값과 동일하게 맞춘다.
@@ -53,7 +62,20 @@ def classify_error_code(exc: BaseException) -> str:
 
     빈/비객체 응답(invalid_ai_response)과 schema 검증 실패는 호출부가 error_code를
     명시 전달하므로 여기서는 provider 오류·JSON 파싱 실패만 다룬다.
+
+    공급자 중립 예외(LlmError 계열)를 먼저 본다(KNK-670). 이 분기가 없으면 통로 이관 후
+    모든 전송 실패가 unexpected_error로 떨어져 AN-4-7 관측이 통째로 무너진다. OpenAI SDK
+    예외 분기는 이관이 끝날 때까지(KNK-672·673) 함께 남는다.
     """
+    if isinstance(exc, LlmTimeout):
+        return ERROR_PROVIDER_TIMEOUT
+    if isinstance(exc, LlmRateLimited):
+        return ERROR_PROVIDER_RATE_LIMITED
+    if isinstance(exc, LlmBadRequest):
+        return ERROR_PROVIDER_BAD_REQUEST
+    if isinstance(exc, LlmError):
+        # LlmUnavailable과, 혹시 늘어날 다른 중립 예외까지 일시 장애로 묶는다(코드를 적게 유지).
+        return ERROR_PROVIDER_UNAVAILABLE
     if isinstance(exc, APITimeoutError):
         return ERROR_PROVIDER_TIMEOUT
     if isinstance(exc, RateLimitError):
@@ -90,6 +112,11 @@ def init_sentry() -> None:
         environment=settings.sentry_environment,
         traces_sample_rate=settings.sentry_traces_sample_rate,
         send_default_pii=False,  # AN-4-10 — 식별자·원문 PII 미전송
+        # 스택 프레임의 지역변수를 싣지 않는다(기본은 실음). 실으면 예외가 난 함수의 변수가
+        # 그대로 전송되는데, 우리 코드에는 API 키(LLM 클라이언트 생성부)와 프롬프트·채팅 원문
+        # (LLM 호출부)이 지역변수로 들어 있다 — AN-4-10 원문 비수집과 정면으로 충돌한다.
+        # 대가로 원인 추적 시 변수 값을 못 보지만, 시크릿·원문 유출보다 낫다(KNK-671 리뷰).
+        include_local_variables=False,
         before_send=_before_send,
     )
 
@@ -98,6 +125,7 @@ def capture_ai_exception(
     exc: BaseException,
     *,
     feature: str,
+    provider: str,
     error_code: str | None = None,
     model: str | None = None,
     prompt_versions: dict | None = None,
@@ -109,12 +137,17 @@ def capture_ai_exception(
     원문(프롬프트·응답)은 인자로 받지 않는다 — feature·provider·model·error_code(tag)와
     prompt_versions·retry_count·latency_ms(context)만 싣는다. error_code가 없으면
     예외 타입으로 분류한다(classify_error_code).
+
+    provider는 **기본값 없는 필수 인자**다(KNK-674). 예전에는 전역 설정값 하나를 여기서
+    직접 읽었는데, 그러면 공급자를 둘 이상 쓰는 순간 모든 실패 태그가 한 값으로 눌린다.
+    기본값을 두면 새 호출부가 조용히 그 값을 물려받으므로, 부르는 쪽이 반드시 적게 한다 —
+    호출부는 `llm.provider_of(model)`이나 중립 예외의 `.provider`로 얻는다.
     """
     if error_code is None:
         error_code = classify_error_code(exc)
     with sentry_sdk.new_scope() as scope:
         scope.set_tag("feature", feature)
-        scope.set_tag("provider", settings.llm_provider)
+        scope.set_tag("provider", provider)
         scope.set_tag("error_code", error_code)
         if model:
             scope.set_tag("model", model)

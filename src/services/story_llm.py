@@ -2,10 +2,9 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import HTTPException, status
-from openai import AsyncOpenAI, OpenAIError
 
 from src.core.config import settings
 from src.core.sentry import (
@@ -23,6 +22,8 @@ from src.core.sentry import (
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import StoryItem
 from src.schemas.story_compile import Ending, StoryCompileRequest, StoryCompileResponse, StorySpec
+from src.services import llm
+from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt import (
     COMPILE_VERSION,
     STORYLINES_VERSION,
@@ -49,6 +50,17 @@ class LlmUsage:
     model: str
     input_tokens: int | None
     output_tokens: int | None
+    # 이 호출이 실제로 어느 공급자로 나갔는지(KNK-674). 전역 설정값이 아니라 모델 이름을
+    # 등록부가 해석한 값이라, 경로마다 다른 회사를 써도 적재값이 어긋나지 않는다.
+    #
+    # **기본값을 두지 않는다** — 두면 새 호출부가 조용히 그 값을 물려받아, 없애려던 전역
+    # 폴백이 이름만 바꿔 되살아난다.
+    #
+    # **이름으로만 넘길 수 있게 한다(kw_only).** 이 칸을 retry_count 앞에 새로 끼워 넣었기
+    # 때문에, 그냥 두면 예전 습관대로 순서만 적은 `LlmUsage("m", 1, 2, 3)`이 **에러 없이**
+    # 숫자 3을 공급자 이름으로 받아들이고 재호출 횟수는 0이 된다. kw_only면 그런 호출이
+    # 그 자리에서 TypeError로 막힌다(KNK-674 리뷰 L2).
+    provider: str = field(kw_only=True)
     retry_count: int = 0
 
 
@@ -58,15 +70,9 @@ def _add_tokens(a: int | None, b: int | None) -> int | None:
         return None
     return (a or 0) + (b or 0)
 
-_client = AsyncOpenAI(
-    api_key=settings.deepseek_api_key,
-    base_url=settings.deepseek_api_url,
-    timeout=90.0,  # 무한 대기 방지 — 정상 컴파일은 ~30초, 초과 시 APITimeoutError → 502
-)
-
-# DeepSeek V4를 비추론으로 호출한다(thinking 비활성). 컴파일은 창작 태스크라
-# 추론 모드가 출력 외국어 오염·평면화를 일으켜 비추론이 더 안정적이었다(KNK-208 벤치).
-_THINKING_DISABLED = {"thinking": {"type": "disabled"}}
+# LLM 호출은 공통 통로(src.services.llm)를 통한다(KNK-672). 어느 회사 SDK로 어떤 인자를
+# 보낼지는 모델 등록부와 어댑터가 정하므로, 여기서는 "무엇을 원하는지"만 넘긴다 —
+# 클라이언트 생성·추론 모드(thinking) 같은 회사 문법은 이 파일에서 사라졌다.
 
 # 출력이 무한정 길어지지 않도록 상한. 컴파일 명세 JSON(인물 최대 5명)도 충분히 담긴다.
 _MAX_TOKENS = 6144
@@ -142,20 +148,23 @@ async def _complete_json(
     시점에 해석한다. 응답 속도가 중요한 경로(스토리라인)는 호출 측에서 flash 모델을 넘겨
     덮어쓴다(KNK-215). label은 진단 로깅에서 호출 종류를 구분하는 용도다(KNK-222).
 
-    로깅용 메타는 응답에서 직접 뽑는다 — model은 response.model(실제 쓴 모델), 토큰은
-    response.usage(없으면 None). 이 한 곳이 메타의 출처라 모델을 바꿔도 따로 손댈 게 없다.
+    로깅용 메타는 통로가 돌려준 결과에서 뽑는다 — model은 실제 쓴 모델명, 토큰은 사용량
+    (없으면 None). 이 한 곳이 메타의 출처라 모델을 바꿔도 따로 손댈 게 없다.
 
     max_invalid_retries(KNK-312): 응답이 왔지만 내용물이 못 쓸 것일 때(invalid_ai_response —
     깨진 JSON·빈 응답·비객체)만 같은 요청을 그 횟수까지 다시 부른다. temperature 0.75라
     재호출은 대개 다른(유효한) 출력을 낸다. provider 오류(타임아웃·429·5xx)는 여기서 다시
-    부르지 않는다 — 전송 실패는 SDK 재시도가 이미 맡고 있고, 타임아웃은 90초 예산을 이미
-    소진한 뒤라 다시 불러도 백엔드가 기다려주지 않는다.
+    부르지 않는다 — 전송 실패는 어댑터 아래의 SDK 재시도가 이미 맡고 있고, 타임아웃은 90초
+    예산을 이미 소진한 뒤라 다시 불러도 백엔드가 기다려주지 않는다.
 
     validate: 파싱이 성공한 dict의 내용 계약을 추가 검증하는 훅. 위반 시 _InvalidAiResponse를
     던지면 위 invalid 재호출과 같은 경로를 탄다 — 파싱은 됐지만 못 쓸 응답(스키마 불일치 등)이
     루프 밖(응답 조립)에서 500으로 터지는 것을 루프 안에서 잡기 위함이다(Sentry PYTHON-FASTAPI-A).
     """
     resolved_model = model if model is not None else settings.story_compile_model
+    # 이 호출이 어느 공급자로 갈지는 부르기 전에 정해진다 — 실패해서 결과가 없어도 Sentry
+    # 태그를 채울 수 있어야 한다(KNK-674).
+    provider = llm.provider_of(resolved_model)
     attempts = 0  # invalid 응답으로 다시 부른 횟수(첫 호출은 0)
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -163,36 +172,43 @@ async def _complete_json(
     while True:
         start = time.monotonic()
         try:
-            response = await _client.chat.completions.create(
-                model=resolved_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=_TEMPERATURE,
-                max_tokens=_MAX_TOKENS,
-                extra_body=_THINKING_DISABLED,
-                # 시도별 타임아웃 = 전체 예산(90초)의 남은 시간 — 60초 직전에 시작한 재호출이
-                # 총 90초를 넘겨 끌지 못하게 한다(Codex P2). 첫 시도는 남은 시간이 90초라 종전과 같다.
-                timeout=max(1.0, _TOTAL_CALL_BUDGET_SECONDS - (start - overall_start)),
+            result = await llm.complete(
+                LlmRequest(
+                    model=resolved_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=_MAX_TOKENS,
+                    # 시도별 타임아웃 = 전체 예산(90초)의 남은 시간 — 60초 직전에 시작한 재호출이
+                    # 총 90초를 넘겨 끌지 못하게 한다(Codex P2). 첫 시도는 남은 시간이 90초라 종전과 같다.
+                    # **반드시 채운다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
+                    timeout=max(1.0, _TOTAL_CALL_BUDGET_SECONDS - (start - overall_start)),
+                    temperature=_TEMPERATURE,
+                    json_mode=True,
+                )
             )
             # 진단: 호출별 소요시간·입출력 토큰·캐시 적중을 남겨 병목(재호출/출력 decode)을 실측한다.
-            usage = response.usage
+            usage = result.usage
             logger.info(
                 "LLM[%s] %.1fs in=%s out=%s cache_hit=%s",
                 label,
                 time.monotonic() - start,
-                getattr(usage, "prompt_tokens", "?"),
-                getattr(usage, "completion_tokens", "?"),
-                getattr(usage, "prompt_cache_hit_tokens", "?"),
+                usage.input_tokens if usage.input_tokens is not None else "?",
+                usage.output_tokens if usage.output_tokens is not None else "?",
+                (
+                    usage.cache_read_input_tokens
+                    if usage.cache_read_input_tokens is not None
+                    else "?"
+                ),
             )
             # 토큰은 파싱 전에 합산한다 — 이 시도가 파싱에서 실패해도 과금은 됐으므로,
             # 재호출 성공 시 메타가 실패 시도분까지 실비용을 반영해야 한다(컴파일 refill 합산과 동일 원칙).
-            # 토큰 필드 누락 시에도 'null 폴백' 계약을 지키도록 getattr로 방어한다.
-            input_tokens = _add_tokens(input_tokens, getattr(usage, "prompt_tokens", None))
-            output_tokens = _add_tokens(output_tokens, getattr(usage, "completion_tokens", None))
-            content = response.choices[0].message.content
+            input_tokens = _add_tokens(input_tokens, usage.input_tokens)
+            output_tokens = _add_tokens(output_tokens, usage.output_tokens)
+            # 통로는 응답 모양이 깨져도 예외를 던지지 않고 빈 문자열을 준다 — 아래 invalid 경로가
+            # 그대로 받아 재호출(KNK-312)을 태운다.
+            content = result.text
             if not content:
                 raise _InvalidAiResponse("LLM이 빈 응답을 반환했습니다.")
             parsed = json.loads(_strip_code_fence(content))
@@ -203,20 +219,29 @@ async def _complete_json(
             if validate is not None:
                 validate(parsed)  # 계약 위반이면 _InvalidAiResponse → 아래 재호출 경로
             return parsed, LlmUsage(
-                model=response.model or resolved_model,
+                # 응답이 돌려준 실제 모델명. 비어 오면 요청 이름으로 채우는 폴백은 통로가 한다.
+                model=result.model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                provider=result.provider,
                 retry_count=attempts,
             )
-        except (OpenAIError, json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError) as exc:
+        except (LlmError, json.JSONDecodeError, _InvalidAiResponse) as exc:
             # 실패를 한 곳에서 모아 Sentry에 보고하고(AN-4) error_code별 502로 바꾼다. 502 detail에는
             # provider 원문(str(e))을 싣지 않는다 — 내부 상세는 Sentry로만 보낸다(AN-4-7·4-10).
-            # IndexError(빈 choices)·AttributeError(message=None)도 잡아 응답 모양이 깨진 malformed
-            # SDK 응답을 500이 아니라 정제 502(invalid_ai_response)로 수렴시킨다(§5-5 준수 —
-            # chat_choices·chat_judgement가 이미 하는 방어와 대칭, story만 빠져 있었다).
+            #
+            # 두 종류를 함께 잡는다. **전송 오류**(LlmError — 타임아웃·429·요청거부·연결실패)는
+            # 통로가 회사 SDK 예외를 접어 준 것이고, **내용물 오류**(깨진 JSON·빈/비객체 응답)는
+            # 여기 남는다. 내용물 오류만 재호출(KNK-312) 대상이라 둘을 섞으면 안 된다.
+            #
+            # 응답 껍데기가 깨진 경우(빈 choices·message 없음)는 예전에 여기서 IndexError·
+            # AttributeError로 잡았지만, 이제 통로가 그것을 빈 본문으로 정규화해 위 `if not content`가
+            # 받는다 — 결과(502 invalid_ai_response)는 같고 경로만 한 단계 위로 옮겨졌다.
+            # **두 예외를 다시 넣지 않는다**: 그 그물은 우리 코드의 오타(NameError 계열 제외)까지
+            # invalid로 오분류해 돈 드는 재호출 2회를 태운다(KNK-672 리뷰).
             error_code = (
                 ERROR_INVALID_AI_RESPONSE
-                if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse, IndexError, AttributeError))
+                if isinstance(exc, (json.JSONDecodeError, _InvalidAiResponse))
                 else classify_error_code(exc)
             )
             # 재호출로 넘어가는 실패도 Sentry에 남긴다 — 최종 성공 여부와 무관하게
@@ -224,6 +249,7 @@ async def _complete_json(
             capture_ai_exception(
                 exc,
                 feature=feature,
+                provider=provider,
                 error_code=error_code,
                 model=resolved_model,
                 prompt_versions=prompt_versions,
@@ -561,6 +587,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         capture_ai_exception(
             exc,
             feature=FEATURE_STORY_COMPLETION,
+            provider=usage.provider,
             error_code=ERROR_INVALID_AI_RESPONSE,
             model=usage.model,
             prompt_versions={"COMPILE": COMPILE_VERSION},
@@ -577,6 +604,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         capture_ai_exception(
             e,
             feature=FEATURE_STORY_COMPLETION,
+            provider=usage.provider,
             error_code=ERROR_SCHEMA_VALIDATION_FAILED,
             model=usage.model,
             prompt_versions={"COMPILE": COMPILE_VERSION},
@@ -591,7 +619,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     response.meta = StoryResponseMeta(
         model=usage.model,
         prompt_versions={"COMPILE": COMPILE_VERSION},
-        provider=settings.llm_provider,
+        provider=usage.provider,
         input_token_count=input_tokens,
         output_token_count=output_tokens,
         retry_count=attempts,  # 부분 재호출 횟수(0~_MAX_REFILL)

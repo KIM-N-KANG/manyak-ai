@@ -1,6 +1,6 @@
 ---
-version: 6
-updated: 2026-07-20
+version: 7
+updated: 2026-07-27
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -101,12 +101,14 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 근거: 순수 치환만으로는 캐릭터 카드가 얇아져 긴 세션 몰입이 약해지고, 풀 컴파일은 비용·지연·검증 난도가 크다. 하이브리드가 **풍부함과 결정성**을 동시에 확보한다.
 
-### 2.3 모델 추상화 — 인터페이스 1개 + OpenAI 호환 구현 1개
+### 2.3 모델 추상화 — 공통 통로 + 모델 등록부 + SDK 어댑터
 
-- **얇은 `ChatProvider` 인터페이스**(예: `async def complete(messages, **opts) -> str`) 하나만 정의한다.
-- 1차 구현은 **OpenAI 호환 chat completions** 클라이언트 하나(`chat_llm.py`의 `AsyncOpenAI` + `base_url` 교체 방식). DeepSeek·Upstage·OpenAI 대부분이 그대로 붙는다.
-- 모델·`base_url`·키는 `config.py`에서 주입한다.
-- **과잉 추상화 금지**: provider별 클래스를 처음부터 만들지 않는다. messages 구조가 다른 provider(예: Anthropic)가 실제 필요해질 때 **어댑터를 추가**한다.
+- **공통 통로**는 `src/services/llm`이다. 공개 함수는 `complete(req)`(단발)와 `stream(req)`(조각 흘리기) 둘뿐이고, 호출부는 "무엇을 원하는지"(messages·길이 상한·제한 시간·JSON 모드)만 넘긴다. 재호출·검증·시간 예산은 호출부가 관장한다(통로는 단발).
+- **모델 등록부**(`registry.py`)가 모델 이름을 공급자·어댑터·호출 특성(추론 모드·temperature 수용)으로 해석한다. 등록되지 않은 모델은 서버 기동에서 막는다.
+- **어댑터**는 SDK 계열 단위다. 지금은 `openai_sdk.py` 하나이고 DeepSeek·GPT가 이걸 공유한다(OpenAI 호환 API). 등록부의 *뜻*을 그 SDK의 *문법*으로 옮기고, 회사별 예외를 공급자 중립 예외로 접는다.
+- 모델·`base_url`·키는 `config.py`에서 읽고, 등록부가 호출 시점에 조회한다.
+- **과잉 추상화 금지**는 유지한다: 공급자마다 클래스를 만들지 않는다. messages 구조가 다른 provider(Anthropic)가 실제 필요해질 때 어댑터를 하나 더 추가한다(KNK-675).
+- 이 구조라서 **모델을 바꿀 때 호출부를 고치지 않는다** — 환경변수의 모델 이름만 바꾼다. 다만 채팅 본문 × Anthropic은 예외다(system 배치 문제 — 7절).
 
 ### 2.4 세션 상태 저장소 — 두지 않는다 (완전 stateless)
 
@@ -558,7 +560,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 | 추상 경계 | 역할 | 1차 구현 | 교체 대상 |
 |---|---|---|---|
-| **ChatProvider** | LLM 호출 단일 통로 | OpenAI 호환 클라이언트 1개 — 본문은 `stream=True`, 선택지는 JSON(비스트림) | DeepSeek·Anthropic 어댑터 |
+| **ChatProvider** | LLM 호출 단일 통로 | 공통 통로 `src/services/llm` — 본문은 `stream()`, 선택지·판정은 `complete()`(JSON). 등록부가 공급자·어댑터를 정한다(2.3) | Anthropic 어댑터(KNK-675) |
 | **PromptCompiler** | 시점 A-1: 희소 입력 → 스토리 명세 JSON | 하이브리드(LLM+치환) | — |
 | **PromptAssembler** | 시점 B: 매 턴 슬롯 치환 + 6레이어 조립 | 받은 재료 → 슬롯 치환 → 시스템+History+Depth(받은 summary)+PHI | — |
 | **Choices 생성기** | 전용 엔드포인트(`/chat/choices`)의 선택지 생성 + 정확히 3개 보장(KNK-625) | `CHOICES-TEMPLATE.md` 렌더 → ChatProvider(JSON) 호출 → 코드 검증·보충(최대 2회)·기본값 패딩 | — |

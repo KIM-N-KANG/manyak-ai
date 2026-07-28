@@ -20,12 +20,16 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from openai import AsyncOpenAI, OpenAIError
-
 from src.core.config import settings
-from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
+from src.core.sentry import (
+    ERROR_INVALID_AI_RESPONSE,
+    FEATURE_CHAT_RESPONSE,
+    capture_ai_exception,
+)
 from src.schemas.chat_turn import ChatTurnRequest, TargetMainEventOut
+from src.services import llm
 from src.services.chat_assembler import format_main_events, format_target_main_event
+from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt_meta import read_version
 
 logger = logging.getLogger(__name__)
@@ -38,14 +42,12 @@ JUDGEMENT_VERSION = read_version(_TEMPLATE_PATH)
 
 # 판정 출력은 작은 JSON 하나뿐이라 상한을 작게 둔다.
 _MAX_TOKENS = 256
-# DeepSeek V4 비추론 호출(thinking 비활성) — 본문·선택지 호출과 동일 정책.
-_THINKING_DISABLED = {"thinking": {"type": "disabled"}}
+# 이 호출의 제한 시간(초). 짧은 생성이라 본문(90초)보다 짧게 둔다(선택지와 동일).
+# **호출마다 반드시 넘긴다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
+_TIMEOUT_SECONDS = 60.0
 
-_client = AsyncOpenAI(
-    api_key=settings.deepseek_api_key,
-    base_url=settings.deepseek_api_url,
-    timeout=60.0,  # 짧은 생성이라 본문(90s)보다 짧게 둔다(선택지와 동일).
-)
+# LLM 호출은 공통 통로(src.services.llm)를 통한다(KNK-673) — 클라이언트 생성·추론 모드 같은
+# 회사 문법은 이 파일에서 사라졌다.
 
 
 def _load_template(path: Path) -> tuple[str, str]:
@@ -185,38 +187,58 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
     if not req.main_events and not req.endings:
         return _EMPTY  # 사건·엔딩 없는 스토리(재료 없음) — 비용·지연 0
 
+    # 이 호출이 어느 공급자로 갈지는 부르기 전에 정한다 — 등록부 해석이 실패하면 LLM을
+    # 부르기도 전에 막혀 헛돈이 안 나가고, 네 호출부(본문·선택지·판정·스토리)가 모두 같은
+    # 자리에서 provider를 구해 읽는 사람이 규칙을 한 번만 익히면 된다(KNK-674 리뷰 L1).
+    #
+    # **아래 except가 이 예외를 흡수해 주지는 않는다.** 여기서 나는 예외는 LlmConfigError
+    # 하나인데 LlmError를 상속하지 않아, 어디에 두든 밖으로 샌다. 그 경로는 기동 검사
+    # (`validate_startup`)가 막는 몫이다 — CHAT_MODEL이 등록부에 없으면 서버가 안 뜬다.
+    provider = llm.provider_of(settings.chat_model)
     start = time.monotonic()
     try:
-        response = await _client.chat.completions.create(
-            model=settings.chat_model,
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": _build_user(req, ai_output)},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=_MAX_TOKENS,
-            extra_body=_THINKING_DISABLED,
+        result_llm = await llm.complete(
+            LlmRequest(
+                model=settings.chat_model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM},
+                    {"role": "user", "content": _build_user(req, ai_output)},
+                ],
+                max_tokens=_MAX_TOKENS,
+                timeout=_TIMEOUT_SECONDS,
+                json_mode=True,
+            )
         )
-        content = response.choices[0].message.content
-        if not content:
+        # 통로는 응답 모양이 깨져도 예외를 던지지 않고 빈 문자열을 준다 — 아래가 그대로 받는다.
+        if not result_llm.text:
             raise ValueError("LLM이 빈 응답을 반환했습니다.")
-        data = json.loads(_strip_code_fence(content))
+        data = json.loads(_strip_code_fence(result_llm.text))
         if not isinstance(data, dict):
             raise ValueError("판정 응답이 JSON 객체가 아닙니다.")
-        usage = response.usage
         result = _sanitize(req, data)
-        result.input_tokens = getattr(usage, "prompt_tokens", None)
-        result.output_tokens = getattr(usage, "completion_tokens", None)
+        result.input_tokens = result_llm.usage.input_tokens
+        result.output_tokens = result_llm.usage.output_tokens
         return result
-    except (OpenAIError, json.JSONDecodeError, ValueError, IndexError, AttributeError) as e:
-        # 판정 실패가 턴을 깨지 않는다 — Sentry로만 보고하고 null로 돌아간다.
-        # IndexError(빈 choices 배열)·AttributeError(message=None)까지 흡수해, 응답 형태
-        # 이상으로도 gather가 예외를 전파해 턴을 깨는 일이 없게 한다(F2 — 모듈 불변식 보강).
+    except (LlmError, json.JSONDecodeError, ValueError) as e:
+        # 판정 실패가 턴을 깨지 않는다 — Sentry로만 보고하고 null로 돌아간다. 예외가 밖으로
+        # 새면 gather가 그것을 전파해 턴 자체가 깨진다.
+        #
+        # 전송 오류(LlmError)는 통로가 접어 준 것이고, 내용물 오류(깨진 JSON·빈 응답·비객체)는
+        # 여기 남는다. 예전에는 응답 껍데기가 깨졌을 때의 IndexError·AttributeError도 잡았지만,
+        # 이제 통로가 그런 응답을 빈 문자열로 정규화해 위 `if not result_llm.text`가 받는다 —
+        # 결과(판정 null)는 같고 경로만 옮겨졌다. **두 예외를 다시 넣지 않는다**: 우리 코드의
+        # 오타까지 "판정 없음"으로 조용히 덮인다.
         # 별도 feature 신설은 관측 카탈로그(6-analytics) 개정 사안이라 chat_response로 묶는다.
         logger.warning("판정 호출 실패(흡수 — 메타 null): %s", e)
         capture_ai_exception(
             e,
             feature=FEATURE_CHAT_RESPONSE,
+            provider=provider,
+            error_code=(
+                ERROR_INVALID_AI_RESPONSE
+                if isinstance(e, (json.JSONDecodeError, ValueError))
+                else None
+            ),
             model=settings.chat_model,
             prompt_versions={"JUDGEMENT": JUDGEMENT_VERSION},
             retry_count=0,  # 단일 호출 — 재호출 없음(D12)

@@ -30,7 +30,7 @@ async def test_compile_endpoint_returns_nested_contract(
     """200 경로: LLM을 가짜로 두고 ERD 4테이블 nested 계약이 그대로 내려오는지 확인."""
 
     async def fake_complete(system: str, user: str, **_kwargs: object):
-        return _spec_valid(), story_llm.LlmUsage("deepseek-test", 100, 200)
+        return _spec_valid(), story_llm.LlmUsage("deepseek-test", 100, 200, provider="not-deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -53,7 +53,8 @@ async def test_compile_endpoint_returns_nested_contract(
     # 로깅 메타(KNK-243): story는 snake_case 와이어
     meta = body["meta"]
     assert meta["model"] == "deepseek-test"
-    assert meta["provider"] == "deepseek"
+    # 주입한 값이 그대로 응답까지 온다 — 상수로 되돌리면 여기서 깨진다(KNK-674 리뷰 H1).
+    assert meta["provider"] == "not-deepseek"
     assert meta["prompt_versions"]["COMPILE"] >= 1
     assert meta["input_token_count"] == 100
     assert meta["output_token_count"] == 200

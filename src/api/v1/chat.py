@@ -36,6 +36,7 @@ from src.schemas.chat_turn import (
     TokenData,
 )
 from src.schemas.response_meta import ChatResponseMeta, StoryResponseMeta
+from src.services import llm
 from src.services.chat_assembler import LAYER_VERSIONS, assemble
 from src.services.chat_llm import stream_chat_turn
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
@@ -91,7 +92,22 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
                 meta = ChatResponseMeta(
                     model=ev.get("model") or settings.chat_model,
                     prompt_versions={**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
-                    provider=settings.llm_provider,
+                    # 본문 호출이 실제로 나간 공급자(KNK-674). 판정도 같은 CHAT_MODEL이라
+                    # 값이 같다 — 두 값이 갈릴 수 있게 되면 그때 meta 계약부터 정한다.
+                    #
+                    # 키가 빠졌을 때만 되짚어 채운다. 여기서 KeyError가 나면 이미 200으로
+                    # 열린 SSE라 상태를 못 바꾸고, error 이벤트도 completed도 없이 끊긴다 —
+                    # 사용자 화면엔 글이 떴는데 백엔드는 그 턴을 저장하지 못한다(KNK-674
+                    # 리뷰 M2에서 실제 재현). 지금 키가 빠지는 경로는 없다.
+                    #
+                    # **`or`를 쓰지 않는다.** 빈 문자열까지 폴백을 타서, "공급자를 못 구했다"는
+                    # 고장 신호가 그럴듯한 값으로 덮인다 — 이 티켓이 없애려던 "실제 호출과
+                    # 무관한 값"이 그대로 재현된다(KNK-674 2차 리뷰). 빈 값은 빈 값으로 둔다.
+                    provider=(
+                        ev["provider"]
+                        if "provider" in ev
+                        else llm.provider_of(settings.chat_model)
+                    ),
                     input_token_count=_add_tokens(ev.get("input_tokens"), judgement.input_tokens),
                     output_token_count=_add_tokens(ev.get("output_tokens"), judgement.output_tokens),
                     retry_count=0,
@@ -138,7 +154,7 @@ async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
         meta = StoryResponseMeta(
             model=result.model,
             prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
-            provider=settings.llm_provider,
+            provider=result.provider,
             input_token_count=result.input_tokens,
             output_token_count=result.output_tokens,
             retry_count=result.retry_count,

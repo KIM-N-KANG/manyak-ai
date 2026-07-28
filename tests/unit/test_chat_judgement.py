@@ -1,8 +1,11 @@
 """사건·엔딩 판정 서비스 — 스킵·흡수·보정 로직 검증 (KNK-484).
 
-LLM(_client)을 모킹해 ①재료 없으면 호출 자체가 스킵되고 ②실패는 흡수돼 3필드
-null이며 ③목록 밖 이름·형식 위반은 코드가 무효화하는지(D7 보정) 확인한다.
+SDK 경계를 모킹해(통로 이관 후의 목 지점 — `install_llm_sdk`) ①재료 없으면 호출 자체가
+스킵되고 ②실패는 흡수돼 3필드 null이며 ③목록 밖 이름·형식 위반은 코드가 무효화하는지
+(D7 보정) 확인한다.
 """
+
+import json
 
 import pytest
 from openai import OpenAIError
@@ -67,6 +70,9 @@ class _Msg:
 class _Choice:
     def __init__(self, content):
         self.message = _Msg(content)
+        # 실제 SDK 응답에는 항상 있는 칸이다. 빼두면 어댑터가 매 호출 꺼내기에 실패해
+        # 스택트레이스 경고를 쏟고, 정상 추출 경로는 한 번도 검증되지 않는다(KNK-673 리뷰).
+        self.finish_reason = "stop"
 
 
 class _Usage:
@@ -82,7 +88,7 @@ class _Resp:
         self.usage = usage
 
 
-def _mock_call(monkeypatch, item):
+def _mock_call(install, item):
     """단일 판정 호출을 모킹한다. Exception이면 raise, str(json)이면 응답. 호출 수를 센다."""
     state = {"calls": 0}
 
@@ -92,13 +98,13 @@ def _mock_call(monkeypatch, item):
             raise item
         return _Resp(item, usage=_Usage(11, 3))
 
-    monkeypatch.setattr(chat_judgement._client.chat.completions, "create", _create)
+    install(_create)
     return state
 
 
 # ── 스킵: 재료 없는 턴(현행 트래픽)은 호출·비용이 0이다 ─────────────────────
-async def test_skips_llm_when_no_materials(monkeypatch) -> None:
-    state = _mock_call(monkeypatch, '{"target_main_event": null}')
+async def test_skips_llm_when_no_materials(install_llm_sdk) -> None:
+    state = _mock_call(install_llm_sdk, '{"target_main_event": null}')
     res = await generate_judgement(_request(), "*장면*")
     assert state["calls"] == 0
     assert res.target_main_event is None
@@ -108,9 +114,9 @@ async def test_skips_llm_when_no_materials(monkeypatch) -> None:
 
 
 # ── 정상 판정 파싱 ──────────────────────────────────────────────────────────
-async def test_parses_valid_judgement(monkeypatch) -> None:
+async def test_parses_valid_judgement(install_llm_sdk) -> None:
     _mock_call(
-        monkeypatch,
+        install_llm_sdk,
         '{"target_main_event": {"name": "반란의 서막", "progress_turns": 2},'
         ' "occurred_main_event_name": "선왕의 유언", "ending_name": "왕좌를 되찾다"}',
     )
@@ -124,35 +130,36 @@ async def test_parses_valid_judgement(monkeypatch) -> None:
 
 
 # ── 실패 흡수: 판정 실패가 턴을 깨지 않는다 ─────────────────────────────────
-async def test_llm_failure_absorbed_to_nulls(monkeypatch) -> None:
-    _mock_call(monkeypatch, OpenAIError("boom"))
+async def test_llm_failure_absorbed_to_nulls(install_llm_sdk) -> None:
+    _mock_call(install_llm_sdk, OpenAIError("boom"))
     res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
     assert res.target_main_event is None
     assert res.occurred_main_event_name is None
     assert res.ending_name is None
 
 
-async def test_invalid_json_absorbed_to_nulls(monkeypatch) -> None:
-    _mock_call(monkeypatch, "이건 JSON이 아님")
+async def test_invalid_json_absorbed_to_nulls(install_llm_sdk) -> None:
+    _mock_call(install_llm_sdk, "이건 JSON이 아님")
     res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
     assert res.target_main_event is None and res.ending_name is None
 
 
-async def test_failure_capture_carries_latency_and_retry(monkeypatch) -> None:
+async def test_failure_capture_carries_latency_and_retry(monkeypatch, install_llm_sdk) -> None:
     # AN-4-8 — 실패 캡처에 retry_count(단일 호출이라 0)와 latency_ms가 실린다(KNK-529).
     calls: list = []
     monkeypatch.setattr(chat_judgement, "capture_ai_exception", lambda *a, **k: calls.append(k))
-    _mock_call(monkeypatch, OpenAIError("boom"))
+    _mock_call(install_llm_sdk, OpenAIError("boom"))
     await generate_judgement(_request(main_events=_EVENTS), "*장면*")
     assert len(calls) == 1
     assert calls[0]["retry_count"] == 0
     assert isinstance(calls[0]["latency_ms"], int) and calls[0]["latency_ms"] >= 0
+    assert calls[0]["provider"] == "deepseek"  # provider 태그도 함께(KNK-674)
 
 
 # ── 보정: 목록 밖 이름·형식 위반은 무효화한다(D7) ───────────────────────────
-async def test_unknown_names_nullified(monkeypatch) -> None:
+async def test_unknown_names_nullified(install_llm_sdk) -> None:
     _mock_call(
-        monkeypatch,
+        install_llm_sdk,
         '{"target_main_event": {"name": "없는 사건", "progress_turns": 1},'
         ' "occurred_main_event_name": "없는 사건", "ending_name": "없는 엔딩"}',
     )
@@ -162,24 +169,24 @@ async def test_unknown_names_nullified(monkeypatch) -> None:
     assert res.ending_name is None
 
 
-async def test_negative_progress_turns_nullified(monkeypatch) -> None:
-    _mock_call(monkeypatch, '{"target_main_event": {"name": "반란의 서막", "progress_turns": -3}}')
+async def test_negative_progress_turns_nullified(install_llm_sdk) -> None:
+    _mock_call(install_llm_sdk, '{"target_main_event": {"name": "반란의 서막", "progress_turns": -3}}')
     res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
     assert res.target_main_event is None
 
 
-async def test_already_occurred_event_not_reported_again(monkeypatch) -> None:
-    _mock_call(monkeypatch, '{"occurred_main_event_name": "선왕의 유언"}')
+async def test_already_occurred_event_not_reported_again(install_llm_sdk) -> None:
+    _mock_call(install_llm_sdk, '{"occurred_main_event_name": "선왕의 유언"}')
     res = await generate_judgement(
         _request(main_events=_EVENTS, occurred=["선왕의 유언"]), "*장면*"
     )
     assert res.occurred_main_event_name is None
 
 
-async def test_target_cleared_when_same_event_occurred(monkeypatch) -> None:
+async def test_target_cleared_when_same_event_occurred(install_llm_sdk) -> None:
     # 완결로 판정된 사건을 계속 목표로 들고 있으면 코드가 목표를 비운다(완결 직후 상태).
     _mock_call(
-        monkeypatch,
+        install_llm_sdk,
         '{"target_main_event": {"name": "반란의 서막", "progress_turns": 5},'
         ' "occurred_main_event_name": "반란의 서막"}',
     )
@@ -188,9 +195,9 @@ async def test_target_cleared_when_same_event_occurred(monkeypatch) -> None:
     assert res.target_main_event is None
 
 
-async def test_target_in_prior_occurred_nullified(monkeypatch) -> None:
+async def test_target_in_prior_occurred_nullified(install_llm_sdk) -> None:
     # 이전 턴들에서 이미 완결된 사건을 목표로 되보고하면 무효화한다(occurred 가드와 대칭, #1).
-    _mock_call(monkeypatch, '{"target_main_event": {"name": "선왕의 유언", "progress_turns": 2}}')
+    _mock_call(install_llm_sdk, '{"target_main_event": {"name": "선왕의 유언", "progress_turns": 2}}')
     res = await generate_judgement(
         _request(main_events=_EVENTS, occurred=["선왕의 유언"]), "*장면*"
     )
@@ -215,13 +222,15 @@ class _NoneMsgResp:
 
 
 @pytest.mark.parametrize("resp", [_NoChoicesResp(), _NoneMsgResp()])
-async def test_malformed_response_absorbed_to_nulls(monkeypatch, resp) -> None:
-    # choices[0].message.content 접근에서 IndexError(빈 choices)·AttributeError(message None)가
-    # 나도 흡수해 3필드 null로 돌아간다 — gather로 전파돼 completed 없이 턴이 깨지지 않게 한다.
+async def test_malformed_response_absorbed_to_nulls(install_llm_sdk, resp) -> None:
+    # 응답 껍데기가 깨져도(빈 choices·message 없음) 흡수해 3필드 null로 돌아간다 —
+    # gather로 전파돼 completed 없이 턴이 깨지지 않게 한다.
+    # 통로 이관(KNK-673) 후 경로가 바뀌었다: 어댑터가 그런 응답을 빈 본문으로 정규화하고
+    # 호출부의 "빈 응답" 판정이 받는다. 결과(판정 null)는 같다.
     async def _create(**kwargs):
         return resp
 
-    monkeypatch.setattr(chat_judgement._client.chat.completions, "create", _create)
+    install_llm_sdk(_create)
     res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
     assert res.target_main_event is None
     assert res.occurred_main_event_name is None
@@ -231,19 +240,131 @@ async def test_malformed_response_absorbed_to_nulls(monkeypatch, resp) -> None:
 # ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
 # 가짜가 kwargs를 버리면 model·json 모드·max_tokens·thinking 회귀를 못 잡는다.
 # 넘긴 인자를 붙잡아 판정 호출 계약(선택지와 같은 비스트리밍 json 단발)을 고정한다.
-async def test_judgement_call_contract(monkeypatch) -> None:
+async def test_judgement_call_contract(install_llm_sdk) -> None:
     captured: dict = {}
 
     async def _create(**kwargs):
         captured.update(kwargs)
         return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
 
-    monkeypatch.setattr(chat_judgement._client.chat.completions, "create", _create)
+    install_llm_sdk(_create)
     await generate_judgement(_request(main_events=_EVENTS, endings=_ENDINGS), "*장면*")
 
     assert captured["model"] == chat_judgement.settings.chat_model
     assert [m["role"] for m in captured["messages"]] == ["system", "user"]
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["max_tokens"] == chat_judgement._MAX_TOKENS
-    assert captured["extra_body"] == chat_judgement._THINKING_DISABLED
+    # 추론 끄기는 이제 호출부가 아니라 등록부(use_thinking=False)의 뜻을 어댑터가 옮긴 것이다.
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    # 타임아웃을 호출마다 넘긴다 — 비우면 상한이 SDK 기본값(10분)으로 늘어난다(KNK-673).
+    assert captured["timeout"] == chat_judgement._TIMEOUT_SECONDS == 60.0
     assert "stream" not in captured  # 판정은 비스트리밍 단발 호출
+
+
+# ── 비-dict 응답도 흡수한다 (KNK-673 리뷰) ───────────────────────────────────
+# 선택지에는 같은 검사가 있는데 판정에는 없어 "JSON 객체가 아님" 분기가 한 번도 실행되지
+# 않았다. 이 분기가 죽으면 배열 응답이 _sanitize로 흘러 들어가 턴을 깨뜨린다.
+async def test_non_object_json_absorbed_to_nulls(monkeypatch, install_llm_sdk) -> None:
+    captures: list[dict] = []
+    monkeypatch.setattr(
+        chat_judgement, "capture_ai_exception", lambda *args, **kwargs: captures.append(kwargs)
+    )
+    _mock_call(install_llm_sdk, '["반란의 서막"]')  # 유효 JSON이지만 객체가 아님
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+    assert res.target_main_event is None
+    assert res.occurred_main_event_name is None
+    assert res.ending_name is None
+    assert captures[0]["error_code"] == "invalid_ai_response"
+
+
+# ── 토큰 누락은 0이 아니라 null (KNK-673 리뷰) ───────────────────────────────
+# 성공 경로의 가짜가 늘 usage를 채워 주면 "null을 0으로 바꾸는" 회귀를 못 잡는다
+# (변이 `result_llm.usage.input_tokens or 0`이 통과했다). 없는 경우를 따로 태운다.
+async def test_missing_usage_stays_null(install_llm_sdk) -> None:
+    async def _create(**kwargs):
+        return _Resp('{"target_main_event": null}', usage=None)  # usage 없는 응답
+
+    install_llm_sdk(_create)
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+
+    assert res.input_tokens is None and res.output_tokens is None  # 0이 아니라 null
+
+
+# ── 전송 오류와 내용물 오류의 구분 (KNK-673 리뷰) ────────────────────────────
+# 결과 모양(3필드 null)만 보면 둘이 구분되지 않아, 깨진 JSON을 공급자 장애로 잘못 접어도
+# 테스트가 통과했다. 그러면 Sentry 오류 이름이 조용히 바뀌어 원인 추적이 헛돈다.
+async def test_broken_json_is_reported_as_invalid_ai_response(monkeypatch, install_llm_sdk) -> None:
+    from src.core.sentry import ERROR_INVALID_AI_RESPONSE, classify_error_code
+
+    captured: list = []
+    monkeypatch.setattr(chat_judgement, "capture_ai_exception", lambda e, **k: captured.append(e))
+    _mock_call(install_llm_sdk, "이건 JSON이 아님")
+
+    await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+
+    assert len(captured) == 1
+    assert isinstance(captured[0], json.JSONDecodeError)
+    assert classify_error_code(captured[0]) == ERROR_INVALID_AI_RESPONSE
+
+
+async def test_our_own_bug_is_not_absorbed_into_nulls(monkeypatch, install_llm_sdk) -> None:
+    """우리 코드의 결함은 판정 null로 덮지 않고 그대로 올려보낸다.
+
+    흡수 대상은 전송 오류와 내용물 오류뿐이다. 예외 절을 넓히면 오타·형 실수까지 "판정이
+    안 나왔네"로 위장돼, 사건 진행이 조용히 멈춘 원인을 영영 못 찾는다.
+    """
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("우리 코드의 결함")
+
+    monkeypatch.setattr(chat_judgement, "_sanitize", _boom)
+    _mock_call(install_llm_sdk, '{"target_main_event": null}')
+
+    with pytest.raises(RuntimeError):
+        await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+
+
+# ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674 리뷰 H2) ────
+async def test_failure_capture_provider_follows_the_selected_model(
+    monkeypatch, other_provider_model, install_llm_sdk
+) -> None:
+    """판정 실패 태그도 지금 쓰는 모델의 공급자를 가리킨다 — 상수면 구분되지 않는다."""
+    other_provider_model(chat_judgement)
+    calls: list = []
+    monkeypatch.setattr(chat_judgement, "capture_ai_exception", lambda *a, **k: calls.append(k))
+    _mock_call(install_llm_sdk, OpenAIError("boom"))
+
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+
+    assert res.target_main_event is None  # 실패는 여전히 흡수된다
+    assert calls[0]["provider"] == "not-deepseek"
+
+
+async def test_provider_is_resolved_before_the_call_not_inside_the_handler(
+    monkeypatch, install_llm_sdk
+) -> None:
+    """provider 조회는 LLM 호출 **전에** 한다 — 실패하면 헛돈이 안 나가야 한다(KNK-674 리뷰 L1).
+
+    조회가 호출 전에 있는지를 **LLM을 한 번도 부르지 않았다**로 확인한다 — try 안으로
+    돌아가면 LLM을 먼저 부른 뒤에야 이 자리에 닿으므로 호출 수가 0이 아니게 된다.
+
+    아래 `pytest.raises`가 말하듯 이 예외는 **여전히 밖으로 샌다.** 위치를 바꿔도 흡수되지
+    않는다(LlmConfigError는 LlmError가 아니다) — 그 경로는 기동 검사가 막는 몫이다.
+    """
+    calls = {"n": 0}
+
+    async def _create(**kwargs):
+        calls["n"] += 1
+        raise OpenAIError("boom")
+
+    install_llm_sdk(_create)
+
+    def _boom(_model: str) -> str:
+        raise RuntimeError("등록부 조회 실패")
+
+    monkeypatch.setattr(chat_judgement.llm, "provider_of", _boom)
+
+    with pytest.raises(RuntimeError):
+        await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+
+    assert calls["n"] == 0  # LLM을 부르기도 전에 막힌다

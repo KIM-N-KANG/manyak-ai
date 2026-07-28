@@ -62,6 +62,8 @@ async def test_chat_choices_returns_three_with_snake_meta(client, mock_choices) 
             output_tokens=12,
             retry_count=1,
             model="deepseek-v4-flash",
+            # 일부러 "deepseek"이 아닌 값 — 상수와 구분하기 위함(KNK-674 리뷰 H1).
+            provider="not-deepseek",
         )
     )
     resp = await client.post("/api/v1/chat/choices", json=_payload())
@@ -72,7 +74,7 @@ async def test_chat_choices_returns_three_with_snake_meta(client, mock_choices) 
 
     # meta는 story 계열과 같은 snake_case다(camelCase는 chat SSE만의 예외)
     meta = data["meta"]
-    assert meta["provider"] == "deepseek"
+    assert meta["provider"] == "not-deepseek"  # 결과에 실린 값이 그대로 meta로
     assert meta["retry_count"] == 1
     assert meta["input_token_count"] == 30
     assert meta["output_token_count"] == 12
@@ -96,6 +98,7 @@ async def test_chat_choices_fallback_result_is_still_200(client, mock_choices) -
             output_tokens=None,
             retry_count=2,
             model="deepseek-v4-flash",
+            provider="deepseek",
         )
     )
     resp = await client.post("/api/v1/chat/choices", json=_payload())
@@ -124,7 +127,7 @@ async def test_chat_choices_requires_ai_output(client, mock_choices) -> None:
     # ai_output 없는 요청은 422 — 턴 요청과 구분되는 이 계약의 필수 추가 필드.
     mock_choices(
         ChoicesResult(choices=["가", "나", "다"], input_tokens=None,
-                      output_tokens=None, retry_count=0, model="m")
+                      output_tokens=None, retry_count=0, model="m", provider="deepseek")
     )
     payload = _payload()
     del payload["ai_output"]
@@ -157,7 +160,7 @@ async def test_chat_choices_trace_receives_no_tags(client, mock_choices, monkeyp
     monkeypatch.setattr(chat_module, "observe_request", _fake_observe)
     mock_choices(
         ChoicesResult(choices=["가", "나", "다"], input_tokens=1,
-                      output_tokens=1, retry_count=0, model="m")
+                      output_tokens=1, retry_count=0, model="m", provider="deepseek")
     )
     resp = await client.post("/api/v1/chat/choices", json=_payload())
 

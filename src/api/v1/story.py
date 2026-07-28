@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException
 
-from src.core.config import settings
 from src.core.langfuse import dimension_tags, observe_request
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import StorylinesRequest, StorylinesResponse
@@ -40,7 +39,7 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
         meta = StoryResponseMeta(
             model=usage.model,
             prompt_versions={"STORYLINES": STORYLINES_VERSION},
-            provider=settings.llm_provider,
+            provider=usage.provider,
             input_token_count=usage.input_tokens,
             output_token_count=usage.output_tokens,
             retry_count=usage.retry_count,  # invalid 응답 재호출 횟수(0~2, KNK-312)
