@@ -10,15 +10,30 @@
 """
 
 import ast
+import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from anthropic import AsyncAnthropic
+from anthropic import NOT_GIVEN, AsyncAnthropic
 from anthropic.types import Message as AnthropicMessage
 from anthropic.types import TextDelta as AnthropicTextDelta
-from anthropic.types import TextBlock, ThinkingBlock, Usage
+from anthropic.types import (
+    MessageDeltaUsage,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStartEvent,
+    RawMessageStopEvent,
+    TextBlock,
+    ThinkingBlock,
+    ThinkingDelta,
+    Usage,
+)
+from anthropic.types.raw_message_delta_event import Delta as AnthropicStopDelta
 
 from src.core.config import Settings
 from src.services import llm
@@ -33,6 +48,9 @@ from src.services.llm.base import (
     LlmTimeout,
     LlmUnavailable,
     ResolvedModel,
+    StreamCompleted,
+    TextDelta,
+    TokenUsage,
 )
 from src.services.llm.registry import ProviderCredentials
 
@@ -655,6 +673,532 @@ async def test_timeout_is_checked_before_connection_error(monkeypatch) -> None:
         await anthropic_sdk.complete(_req(), _THINKING)
 
 
+# ── 스트리밍 (KNK-696) ───────────────────────────────────────────────────────
+# 이벤트도 손으로 만들지 않고 SDK 실제 타입으로 만든다. 이 회사는 신호 종류가 여럿이라
+# (시작·조각·끝) 손으로 흉내 내면 어느 신호에 무엇이 실리는지를 우리가 정하게 되고,
+# 그러면 테스트가 실제 계약이 아니라 우리 가정을 증명하게 된다.
+def _start_event(model="anthropic-test-model", usage=None):
+    """시작 신호 — 모델 이름과 **입력** 토큰이 여기 실린다. 본문은 아직 비어 있다."""
+    return RawMessageStartEvent(
+        type="message_start",
+        message=_response(
+            content=[],
+            model=model,
+            # 시작 시점의 출력 토큰은 실제 총량이 아니다(보통 1~2). 끝 신호가 덮어써야 한다.
+            usage=usage if usage is not None else _usage(output_tokens=1),
+            stop_reason=None,
+        ),
+    )
+
+
+def _text_event(text: str):
+    return RawContentBlockDeltaEvent(
+        type="content_block_delta", index=0, delta=AnthropicTextDelta(type="text_delta", text=text)
+    )
+
+
+def _thinking_event(thinking: str = "속으로 생각한 말"):
+    return RawContentBlockDeltaEvent(
+        type="content_block_delta",
+        index=0,
+        delta=ThinkingDelta(type="thinking_delta", thinking=thinking),
+    )
+
+
+def _stop_event(stop_reason="end_turn", **usage_fields):
+    """끝 신호 — 종료 이유와 **최종 출력** 토큰이 여기 실린다.
+
+    usage의 입력 칸들은 기본이 None이다(SDK 0.120.0). 그래서 이 신호만 읽으면 입력 토큰이
+    통째로 빈다 — `test_stream_merges_tokens_from_two_events`가 그것을 고정한다.
+    """
+    return RawMessageDeltaEvent(
+        type="message_delta",
+        delta=AnthropicStopDelta(stop_reason=stop_reason, stop_sequence=None),
+        usage=MessageDeltaUsage(**({"output_tokens": 20} | usage_fields)),
+    )
+
+
+class _FakeStream:
+    """실제 `anthropic.AsyncStream`의 모양을 흉내 낸다 — 반복 가능하고 `close()`로 닫힌다.
+
+    async generator로 대신하면 `close()`가 없어(그쪽은 `aclose()`) 어댑터가 스트림을 닫는지
+    검증할 수 없다. 목이 실제 타입과 다르면 통과해도 아무것도 증명하지 못한다.
+    """
+
+    def __init__(self, events: list, error: BaseException | None = None) -> None:
+        self._events = events
+        self._error = error
+        self.closed = False
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        for event in self._events:
+            yield event
+        if self._error is not None:
+            raise self._error
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _stream_of(events: list, error: BaseException | None = None) -> _FakeStream:
+    return _FakeStream(events, error)
+
+
+async def test_stream_yields_deltas_then_completed(monkeypatch) -> None:
+    events_in = [_start_event(), _text_event("안"), _text_event("녕"), _stop_event()]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert events[:2] == [TextDelta("안"), TextDelta("녕")]
+    # 이벤트 구성 전체를 고정한다 — 마지막 것만 보면 종료 이벤트가 두 번 나가도 통과한다.
+    assert [type(ev) for ev in events] == [TextDelta, TextDelta, StreamCompleted]
+    assert sum(isinstance(ev, StreamCompleted) for ev in events) == 1
+    assert events[-1].model == "anthropic-test-model"
+    assert events[-1].provider == PROVIDER_ANTHROPIC
+    assert events[-1].finish_reason == "end_turn"
+
+
+async def test_stream_merges_tokens_from_two_events(monkeypatch) -> None:
+    """**입력은 시작 신호, 최종 출력은 끝 신호에 온다 — 둘을 합쳐야 맞다.**
+
+    이 어댑터에서 제일 틀리기 쉬운 곳이다. 한쪽만 읽어도 오류가 나지 않고, 백엔드에 절반이
+    빈 값이 적재될 뿐이라 조용히 틀린다.
+
+    - 끝 신호만 읽으면 → 입력 토큰이 전부 None
+    - 시작 신호만 읽으면 → 출력 토큰이 1(시작 시점의 값)로 굳는다
+    - 끝 신호로 통째로 덮어쓰면 → 입력 토큰이 마지막에 지워진다
+    """
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_start_event(), _stop_event()])))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    usage = events[-1].usage
+    assert usage.input_tokens == 170  # 100(일반) + 30(캐시 생성) + 40(캐시 읽기)
+    assert usage.output_tokens == 20  # 시작 신호의 1이 아니다
+    assert usage.cache_creation_input_tokens == 30
+    assert usage.cache_read_input_tokens == 40
+
+
+async def test_stream_takes_the_later_input_tokens_when_both_carry_them(monkeypatch) -> None:
+    """끝 신호가 입력 토큰을 다시 보내면 그쪽을 쓴다 — 두 값 다 '지금까지의 총합'이라서다.
+
+    (더하면 두 배가 된다. `_absorb_usage`가 더하지 않고 덮어쓰는 이유가 이것이다.)
+    """
+    _install(
+        monkeypatch,
+        _FakeMessages(
+            result=_stream_of([_start_event(), _stop_event(input_tokens=111, output_tokens=20)])
+        ),
+    )
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert events[-1].usage.input_tokens == 111 + 30 + 40
+
+
+async def test_stream_keeps_absorbing_after_the_first_finish_signal(monkeypatch) -> None:
+    """마무리 신호는 **여러 번** 올 수 있다 — 첫 개만 읽고 멈추면 최종값을 놓친다.
+
+    실제 계약이 그렇다(SDK 자체 누적 코드도 매번 갱신한다). 값은 매번 '지금까지의 총합'이라
+    마지막 것이 맞다. 앞 테스트들은 신호를 하나만 보내서 "첫 개 뒤로는 안 읽는" 변이를
+    놓친다(KNK-696 리뷰 P2).
+    """
+    first = _stop_event(stop_reason=None, output_tokens=5)
+    last = _stop_event(stop_reason="max_tokens", output_tokens=42, cache_read_input_tokens=99)
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_start_event(), first, last])))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert events[-1].usage.output_tokens == 42
+    assert events[-1].usage.cache_read_input_tokens == 99
+    assert events[-1].usage.input_tokens == 100 + 30 + 99  # 캐시 읽기가 나중 값으로 갱신됐다
+    assert events[-1].finish_reason == "max_tokens"
+
+
+async def test_stream_usage_stays_none_without_any_signal(monkeypatch) -> None:
+    """토큰 신호가 하나도 없으면 0이 아니라 None이다(백엔드 계약: 누락 시 null).
+
+    마무리 신호는 오되 그 안에 토큰이 없는 모양이라 손으로 만든다 — SDK의 진짜 타입은
+    출력 토큰을 필수로 받아 "토큰 없는 마무리"를 표현할 수 없다.
+    """
+    no_usage = SimpleNamespace(
+        type="message_delta", delta=SimpleNamespace(stop_reason="end_turn"), usage=None
+    )
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_text_event("가"), no_usage])))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert events[-1].usage == TokenUsage()
+
+
+async def test_stream_drops_thinking_deltas(monkeypatch) -> None:
+    """추론 조각은 흘리지 않는다 — 그대로 내보내면 모델의 생각이 사용자 화면에 그대로 뜬다."""
+    events_in = [_start_event(), _thinking_event(), _text_event("안"), _stop_event()]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [ev for ev in events if isinstance(ev, TextDelta)] == [TextDelta("안")]
+
+
+@pytest.mark.parametrize("weird", [None, 123, ["안녕"], {"text": "안녕"}, ""])
+async def test_stream_drops_non_text_delta(monkeypatch, weird: object) -> None:
+    """글자가 아닌 조각은 흘리지 않는다 — 화면에 그 표기가 뜨거나 이어붙이다 터진다.
+
+    깨진 모양은 SimpleNamespace로 만든다. 정의상 정상 SDK 타입이 아니라서 진짜 타입으로는
+    만들 수 없다(만들려 하면 SDK가 먼저 거부한다).
+    """
+    broken = SimpleNamespace(
+        type="content_block_delta", delta=SimpleNamespace(type="text_delta", text=weird)
+    )
+    events_in = [_start_event(), _text_event("안"), broken, _text_event("녕"), _stop_event()]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [ev for ev in events if isinstance(ev, TextDelta)] == [TextDelta("안"), TextDelta("녕")]
+    assert events[-1].finish_reason == "end_turn"  # 뒤 신호도 계속 읽었다
+
+
+async def test_stream_ignores_other_event_kinds(monkeypatch) -> None:
+    """읽을 것이 없는 신호는 조용히 지나간다 — 여기서 터지면 정상 응답이 오류가 된다."""
+    events_in = [
+        _start_event(),
+        RawContentBlockStartEvent(
+            type="content_block_start", index=0, content_block=TextBlock(type="text", text="")
+        ),
+        _text_event("가"),
+        RawContentBlockStopEvent(type="content_block_stop", index=0),
+        _stop_event(),
+        RawMessageStopEvent(type="message_stop"),
+    ]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [type(ev) for ev in events] == [TextDelta, StreamCompleted]
+
+
+async def test_stream_keeps_the_providers_own_stop_word(monkeypatch) -> None:
+    """종료 이유를 우리 어휘로 바꾸지 않고 그대로 올린다.
+
+    길이 상한에 걸렸을 때 이 회사는 `max_tokens`, OpenAI 계열은 `length`다. 지금 이 값을
+    읽어 판정하는 코드가 없어 문제되지 않지만, 잘림 감지를 붙이는 날 두 어휘를 함께 봐야 한다.
+    """
+    events_in = [_start_event(), _text_event("가"), _stop_event(stop_reason="max_tokens")]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert events[-1].finish_reason == "max_tokens"
+
+
+async def test_stream_ignores_a_non_text_stop_reason(monkeypatch) -> None:
+    """종료 이유도 글자일 때만 쓴다 — 이상한 값이 응답 meta에 그대로 실려 나가지 않게."""
+    broken = SimpleNamespace(
+        type="message_delta", delta=SimpleNamespace(stop_reason=["end_turn"]), usage=None
+    )
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_start_event(), broken])))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert events[-1].finish_reason is None
+
+
+async def test_stream_drops_a_delta_that_only_looks_like_text(monkeypatch) -> None:
+    """조각 종류를 **이름으로** 거른다 — `text` 칸이 있는지로 거르면 안 된다.
+
+    지금 이 회사의 조각 종류 중 글이 아닌 것들은 글을 `text`가 아닌 칸(`thinking`·
+    `signature`)에 담아, 종류 검사를 빼도 우연히 걸러진다. 그래서 검사를 지워도 다른
+    테스트는 전부 통과한다 — 종류가 하나 늘어나는 날 그 조각이 그대로 사용자 화면에 뜬다.
+    여기서 "글 칸을 가진 다른 종류"를 만들어 그 우연에 기대지 않게 한다.
+    """
+    disguised = SimpleNamespace(
+        type="content_block_delta",
+        delta=SimpleNamespace(type="thinking_delta", text="속으로 생각한 말"),
+    )
+    _install(monkeypatch, _FakeMessages(result=_stream_of([disguised, _text_event("안"), _stop_event()])))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [ev for ev in events if isinstance(ev, TextDelta)] == [TextDelta("안")]
+
+
+@pytest.mark.parametrize(
+    "leading",
+    [
+        [],  # 시작 신호가 아예 없다
+        [SimpleNamespace(type="message_start", message=SimpleNamespace(model=None, usage=None))],
+    ],
+)
+async def test_stream_model_falls_back_to_the_requested_name(monkeypatch, leading: list) -> None:
+    """시작 신호가 없거나 모델명이 비어도 요청에 쓴 이름으로 채운다(빈 값은 meta 조립에서 터진다)."""
+    _install(
+        monkeypatch, _FakeMessages(result=_stream_of([*leading, _text_event("가"), _stop_event()]))
+    )
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert events[-1].model == "anthropic-test-model"
+
+
+async def test_stream_completed_provider_follows_the_model(monkeypatch) -> None:
+    """종료 신호의 provider는 그 모델의 공급자다 — 상수를 박아도 통과하면 안 된다."""
+    other = ResolvedModel(
+        model="anthropic-test-model",
+        provider="not-anthropic",
+        adapter=ADAPTER_ANTHROPIC_SDK,
+        use_thinking=True,
+    )
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_start_event(), _stop_event()])))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), other)]
+
+    assert events[-1].provider == "not-anthropic"
+
+
+async def test_stream_sends_exact_kwargs(monkeypatch) -> None:
+    """스트리밍도 단발 호출과 **같은 조립**을 거친다 — 조각 흘리기 표시만 더 붙는다.
+
+    dict 전체를 비교한다. `stream=True`만 확인하면 이 경로가 조립을 건너뛰어도 통과하는데,
+    그러면 지시문(system)이 대화 목록 안에 남은 채로 나간다. 이 회사는 대화 줄의 역할로
+    system을 받지 않아 **채팅 턴마다 400**이 된다 — 그리고 스트리밍을 쓰는 호출부는 채팅뿐이라
+    운영에서 채팅만 통째로 죽는다(이 구멍을 실제 변이로 확인하고 이 테스트를 세웠다).
+    """
+    messages = _FakeMessages(result=_stream_of([_text_event("가"), _stop_event()]))
+    _install(monkeypatch, messages)
+
+    [ev async for ev in anthropic_sdk.stream(_req(temperature=0.75, timeout=88.5), _NO_THINKING)]
+
+    assert messages.captured == {
+        "model": "anthropic-test-model",
+        "messages": [{"role": "user", "content": "u"}],  # system이 빠져나갔다
+        "system": [{"type": "text", "text": "s", "cache_control": {"type": "ephemeral"}}],
+        "max_tokens": 16,
+        "thinking": {"type": "disabled"},
+        "temperature": 0.75,
+        "timeout": 88.5,
+        "stream": True,
+    }
+
+
+async def test_stream_does_not_require_max_tokens(monkeypatch) -> None:
+    """스트리밍에는 max_tokens 가드가 없다 — 우리 쪽에서 막지 않고 그대로 보낸다.
+
+    가드를 `_build_kwargs`가 아니라 `complete`에 둔 이유가 이것이다. 조립부에 두면 이 경로도
+    함께 막힌다. 막지 않는 판단의 근거는 `stream`의 설명 참조(공급자가 거부하면 그쪽 400이
+    LlmBadRequest로 접혀 SSE 오류 이벤트가 정상으로 나간다 — 우리가 막으면 그러지 못한다).
+    """
+    messages = _FakeMessages(result=_stream_of([_text_event("가"), _stop_event()]))
+    _install(monkeypatch, messages)
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(max_tokens=None), _THINKING)]
+
+    assert events[0] == TextDelta("가")
+    assert messages.captured["max_tokens"] is NOT_GIVEN  # 요청 본문에서 빠진다
+
+
+async def test_stream_error_after_deltas_becomes_neutral_error(monkeypatch) -> None:
+    """일부를 흘려보낸 뒤 실패해도 중립 예외로 바뀐다 — 호출부가 SSE error로 옮긴다.
+
+    스트림 도중의 `error` 신호도 이 경로다 — SDK가 그 신호를 자기 예외로 바꿔 올린다.
+    """
+    _install(
+        monkeypatch,
+        _FakeMessages(result=_stream_of([_text_event("가")], error=_anthropic_error("rate"))),
+    )
+
+    seen: list = []
+    with pytest.raises(LlmRateLimited):
+        async for ev in anthropic_sdk.stream(_req(), _THINKING):
+            seen.append(ev)
+
+    assert seen == [TextDelta("가")]  # 이미 보낸 조각은 그대로 나갔다
+
+
+async def test_stream_failure_before_the_first_event(monkeypatch) -> None:
+    """조각이 하나도 오기 전에 실패해도 중립 예외다.
+
+    async generator라 부른 자리가 아니라 **첫 조각을 받으려는 순간** 드러난다.
+    """
+    _install(monkeypatch, _FakeMessages(error=_anthropic_error("timeout")))
+    events = anthropic_sdk.stream(_req(), _THINKING)  # 여기서는 아직 안 터진다
+
+    with pytest.raises(LlmTimeout):
+        await events.__anext__()
+
+
+@pytest.mark.parametrize(
+    "escaping",
+    [
+        httpx.RemoteProtocolError("연결이 끊겼습니다"),
+        json.JSONDecodeError("깨진 SSE 줄", "{", 0),
+    ],
+)
+async def test_stream_non_sdk_error_is_also_folded(monkeypatch, escaping: Exception) -> None:
+    """SDK 밖 오류도 중립 예외로 접는다.
+
+    이 SDK의 스트림 반복도 try/finally로만 감싸져(except 없음) 연결 끊김·깨진 SSE 줄이 번역
+    없이 통과한다. 그대로 두면 채팅은 error 이벤트도 못 내고 끊긴다.
+    """
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_text_event("가")], error=escaping)))
+
+    with pytest.raises(LlmUnavailable) as exc_info:
+        async for _ in anthropic_sdk.stream(_req(), _THINKING):
+            pass
+
+    assert exc_info.value.provider == PROVIDER_ANTHROPIC
+    assert type(escaping).__name__ in str(exc_info.value)
+
+
+async def test_stream_read_timeout_stays_a_timeout(monkeypatch) -> None:
+    """스트림이 열린 뒤의 읽기 시간 초과도 '시간 초과'다.
+
+    접는 자리를 나누지 않으면 같은 시간 초과가 발생 시점에 따라 다른 코드·다른 사용자 문구가 된다.
+    """
+    _install(
+        monkeypatch,
+        _FakeMessages(
+            result=_stream_of([_text_event("가")], error=httpx.ReadTimeout("응답이 멈췄습니다"))
+        ),
+    )
+
+    with pytest.raises(LlmTimeout):
+        async for _ in anthropic_sdk.stream(_req(), _THINKING):
+            pass
+
+
+async def test_stream_cut_short_is_an_error_not_a_quiet_completion(monkeypatch) -> None:
+    """마무리 신호 없이 스트림이 끝나면 오류다 — 잘린 답을 완성된 답으로 넘기지 않는다.
+
+    **SDK는 이 상황에 예외를 내지 않는다**(실제 SDK + 가짜 전송으로 재현). 중간 프록시가
+    본문을 자르면서 연결을 정상 종료로 닫으면 반복이 그냥 끝난다. 막지 않으면 잘린 본문이
+    채팅 답으로 저장되고, 출력 토큰도 시작 시점 값(보통 1)으로 굳는다(KNK-696 리뷰 P1).
+    """
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_start_event(), _text_event("잘린")])))
+
+    seen: list = []
+    with pytest.raises(LlmUnavailable) as exc_info:
+        async for ev in anthropic_sdk.stream(_req(), _THINKING):
+            seen.append(ev)
+
+    assert seen == [TextDelta("잘린")]  # 이미 보낸 조각은 그대로 나갔다
+    assert not any(isinstance(ev, StreamCompleted) for ev in seen)
+    assert exc_info.value.provider == PROVIDER_ANTHROPIC
+
+
+async def test_stream_accepts_an_unreadable_stop_reason_as_finished(monkeypatch) -> None:
+    """"끝났다"는 신호는 왔는데 그 이유를 알아볼 수 없는 경우는 오류가 아니다.
+
+    윗 테스트와 짝이다. 둘을 구분하지 않고 "종료 이유 값"으로만 판정하면, 값이 이상하게 온
+    정상 응답까지 전송 오류로 둔갑한다.
+    """
+    unreadable = SimpleNamespace(
+        type="message_delta", delta=SimpleNamespace(stop_reason=["end_turn"]), usage=None
+    )
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_text_event("가"), unreadable])))
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert isinstance(events[-1], StreamCompleted)
+    assert events[-1].finish_reason is None
+
+
+async def test_stream_broken_bytes_become_a_neutral_error(monkeypatch) -> None:
+    """SSE 원문 바이트가 깨져도 중립 예외로 접는다.
+
+    이 SDK는 원문을 자기가 UTF-8로 푸는데, 깨진 바이트에서 나는 `UnicodeDecodeError`는
+    SDK 예외도 httpx 오류도 아니라 접는 목록에 따로 넣어야 한다. 빠뜨리면 채팅이 오류
+    이벤트도 못 내고 끊긴다(KNK-696 리뷰 P1, 실제 SDK로 재현 확인).
+    """
+    broken_bytes = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_text_event("가")], error=broken_bytes)))
+
+    with pytest.raises(LlmUnavailable) as exc_info:
+        async for _ in anthropic_sdk.stream(_req(), _THINKING):
+            pass
+
+    assert "UnicodeDecodeError" in str(exc_info.value)
+
+
+async def test_stream_cancellation_is_not_an_error(monkeypatch) -> None:
+    """사용자 연결 취소는 오류가 아니다 — 중립 예외로 바꾸지 않고 그대로 통과시킨다."""
+    _install(
+        monkeypatch,
+        _FakeMessages(result=_stream_of([_text_event("가")], error=asyncio.CancelledError())),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in anthropic_sdk.stream(_req(), _THINKING):
+            pass
+
+
+async def test_stream_is_closed_after_normal_finish(monkeypatch) -> None:
+    fake_stream = _stream_of([_text_event("가"), _stop_event()])
+    _install(monkeypatch, _FakeMessages(result=fake_stream))
+
+    [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert fake_stream.closed is True
+
+
+async def test_stream_is_closed_when_consumer_leaves_early(monkeypatch) -> None:
+    """사용자가 중간에 떠나면 스트림을 닫아 커넥션을 반납한다.
+
+    `break`만으로는 부족하다 — 파이썬은 제너레이터를 그 자리에서 정리하지 않고 나중에 회수한다.
+    실제 SSE 경로는 연결이 끊기면 태스크가 취소되면서 제너레이터가 닫히므로, 그 정리 시점을
+    여기서 재현한다.
+    """
+    fake_stream = _stream_of([_text_event("가"), _text_event("나")])
+    _install(monkeypatch, _FakeMessages(result=fake_stream))
+    events = anthropic_sdk.stream(_req(), _THINKING)
+
+    async for _ in events:
+        break  # 첫 조각만 받고 떠난다
+    await events.aclose()  # 취소·회수 시점
+
+    assert fake_stream.closed is True
+
+
+async def test_close_failure_does_not_mask_the_real_error(monkeypatch) -> None:
+    """정리하다 실패해도 원래 오류가 그대로 올라온다 — 정리 예외가 원인을 덮으면 안 된다."""
+
+    class _UncloseableStream(_FakeStream):
+        async def close(self) -> None:
+            raise RuntimeError("정리 실패")
+
+    _install(
+        monkeypatch,
+        _FakeMessages(
+            result=_UncloseableStream([_text_event("가")], error=_anthropic_error("rate"))
+        ),
+    )
+
+    with pytest.raises(LlmRateLimited):  # RuntimeError가 아니라 원래 오류
+        async for _ in anthropic_sdk.stream(_req(), _THINKING):
+            pass
+
+
+async def test_close_failure_does_not_break_normal_finish(monkeypatch) -> None:
+    """정상 종료도 마찬가지다 — 정리 실패로 완료 이벤트가 사라지면 안 된다."""
+
+    class _UncloseableStream(_FakeStream):
+        async def close(self) -> None:
+            raise RuntimeError("정리 실패")
+
+    _install(
+        monkeypatch, _FakeMessages(result=_UncloseableStream([_text_event("가"), _stop_event()]))
+    )
+
+    events = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert isinstance(events[-1], StreamCompleted)
+
+
 # ── 통로 연결 ────────────────────────────────────────────────────────────────
 async def test_gateway_routes_to_the_anthropic_adapter(monkeypatch) -> None:
     """통로가 이 어댑터를 실제로 고른다 — 어댑터만 만들고 분기를 안 넣으면 아무도 못 쓴다."""
@@ -668,19 +1212,17 @@ async def test_gateway_routes_to_the_anthropic_adapter(monkeypatch) -> None:
     assert messages.captured is not None  # 통로가 다른 어댑터로 새지 않았다
 
 
-def test_stream_is_not_implemented_yet(monkeypatch) -> None:
-    """스트리밍은 아직 없다(KNK-696) — 부르면 무엇이 없는지 말해주는 오류가 난다.
-
-    함수를 아예 두지 않으면 AttributeError가 나는데, 그 메시지로는 원인을 알 수 없다.
-    그리고 **첫 조각을 꺼낼 때가 아니라 부르는 자리에서 바로** 나야 한다 — 채팅은 이미
-    토큰을 흘려보낸 뒤면 오류 이벤트도 못 내고 끊긴다.
-    """
+async def test_gateway_stream_routes_to_the_anthropic_adapter(monkeypatch) -> None:
+    """통로의 스트리밍도 이 어댑터로 간다 — complete만 배선하고 stream을 빠뜨리면 여기서 걸린다."""
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    messages = _FakeMessages(result=_stream_of([_start_event(), _text_event("가"), _stop_event()]))
+    _install(monkeypatch, messages)
 
-    with pytest.raises(LlmConfigError) as exc_info:
-        llm.stream(_req())  # 반복하지 않고 부르기만 한다
+    events = [ev async for ev in llm.stream(_req())]
 
-    assert "KNK-696" in str(exc_info.value)
+    assert events[0] == TextDelta("가")
+    assert isinstance(events[-1], StreamCompleted)
+    assert events[-1].provider == PROVIDER_ANTHROPIC
 
 
 def test_startup_check_accepts_both_thinking_settings() -> None:
@@ -695,8 +1237,11 @@ def test_adapters_declare_whether_they_can_stream() -> None:
 
     **기본값을 두지 않는 것이 중요하다.** 새 어댑터가 이 값을 빠뜨리면 기동 검사가
     AttributeError로 즉시 드러낸다. 기본값이 True면 못 하는 어댑터가 조용히 통과한다.
+
+    지금은 둘 다 할 수 있다(KNK-696). 그래서 **아래 두 테스트는 값을 일부러 False로 바꿔
+    확인한다** — 못 하는 어댑터가 다시 생길 때를 위해 막는 장치 자체를 살려두는 것이다.
     """
-    assert anthropic_sdk.SUPPORTS_STREAMING is False  # KNK-696에서 True가 된다
+    assert anthropic_sdk.SUPPORTS_STREAMING is True
     assert openai_sdk.SUPPORTS_STREAMING is True
 
 
@@ -704,11 +1249,12 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
     """조각 흘리기를 못 하는 어댑터를 CHAT_MODEL에 꽂으면 **기동에서** 막는다.
 
     막지 않으면 서버는 아무 오류 없이 뜨고, 사용자가 채팅을 눌러야 터진다. 그것도 조용히
-    터진다 — `stream`이 던지는 LlmConfigError는 채팅이 잡는 예외 계열(LlmError)이 아니라
-    SSE 오류 이벤트도 못 내고 스트림이 끊긴다(재현 확인).
+    터진다 — 없는 `stream`이 던지는 것은 채팅이 잡는 예외 계열(LlmError)이 아니라 SSE 오류
+    이벤트도 못 내고 스트림이 끊긴다(재현 확인).
 
     메시지에 어느 env를 되돌릴지도 있어야 한다 — 배포가 실패해 서버가 내려간 상황이다.
     """
+    monkeypatch.setattr(anthropic_sdk, "SUPPORTS_STREAMING", False)
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
     monkeypatch.setattr(
         registry,
@@ -735,6 +1281,7 @@ def test_startup_allows_a_non_streaming_adapter_in_a_non_streaming_slot(monkeypa
     **짝으로 확인해야 의미가 있다.** 윗 테스트만 보면 "이 어댑터를 아예 못 쓰게 막는" 코드도
     똑같이 통과한다 — 막은 것이 "이 어댑터"가 아니라 "스트리밍 자리"임을 여기서 고정한다.
     """
+    monkeypatch.setattr(anthropic_sdk, "SUPPORTS_STREAMING", False)
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
     monkeypatch.setattr(
         registry,

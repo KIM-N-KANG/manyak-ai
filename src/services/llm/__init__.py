@@ -6,7 +6,7 @@
 - `base.py`       — 요청·결과·스트림 이벤트·공급자 중립 예외 (층 사이의 공용 타입)
 - `registry.py`   — 모델 등록부. 모델 이름 → 공급자·어댑터·호출 특성 (뜻만 적는다)
 - `openai_sdk.py` — OpenAI SDK 어댑터(DeepSeek·GPT 공용). 뜻을 회사 문법으로 옮긴다
-- `anthropic_sdk.py` — Anthropic SDK 어댑터. 단발 호출만 있고 스트리밍은 KNK-696에서 붙인다
+- `anthropic_sdk.py` — Anthropic SDK 어댑터. 같은 뜻을 이 회사 문법으로 옮긴다
 
 호출용 공개 함수는 `complete`·`stream` 둘이다. **둘 다 단발 호출이다** — 재호출·시간 예산·
 검증은 호출부가 관장한다(스토리라인 invalid 재호출 KNK-312이 통로로 올라오면 이관 범위가
