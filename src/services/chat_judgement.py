@@ -21,7 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.config import settings
-from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
+from src.core.sentry import (
+    ERROR_INVALID_AI_RESPONSE,
+    FEATURE_CHAT_RESPONSE,
+    capture_ai_exception,
+)
 from src.schemas.chat_turn import ChatTurnRequest, TargetMainEventOut
 from src.services import llm
 from src.services.chat_assembler import format_main_events, format_target_main_event
@@ -230,6 +234,11 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
             e,
             feature=FEATURE_CHAT_RESPONSE,
             provider=provider,
+            error_code=(
+                ERROR_INVALID_AI_RESPONSE
+                if isinstance(e, (json.JSONDecodeError, ValueError))
+                else None
+            ),
             model=settings.chat_model,
             prompt_versions={"JUDGEMENT": JUDGEMENT_VERSION},
             retry_count=0,  # 단일 호출 — 재호출 없음(D12)

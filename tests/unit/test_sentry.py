@@ -121,6 +121,47 @@ def test_secrets_in_locals_do_not_reach_sentry() -> None:
         assert json.dumps(secret)[1:-1] not in payload
 
 
+# ── 채팅 오류의 명시 캡처 순서 ────────────────────────────────────────────────
+# 채팅 오류의 명시 캡처가 로그 자동 캡처보다 먼저 실행되는지 검증한다.
+async def test_chat_stream_error_keeps_ai_tags_after_logging_dedup(install_llm_sdk) -> None:
+    """채팅 오류의 명시 캡처가 로그 자동 캡처보다 먼저여야 AI 태그가 남는다.
+
+    Sentry는 같은 예외를 ``logger.exception``과 ``capture_exception``으로 연달아 보내면
+    뒤 이벤트를 중복으로 버린다. 로그가 먼저면 feature·provider·error_code가 없는 이벤트만
+    남으므로, 실제 SDK와 직렬화된 봉투를 써서 운영 동작을 고정한다.
+    """
+    from openai import OpenAIError
+
+    from src.services import chat_llm
+
+    async def _create(**kwargs):
+        raise OpenAIError("boom")
+
+    install_llm_sdk(_create)
+    sent: list[str] = []
+    isolated = {"default_integrations": False, "auto_enabling_integrations": False}
+
+    try:
+        sentry_sdk.init(
+            dsn="https://pub@example.invalid/1",
+            transport=_CollectingTransport(sent),
+            include_local_variables=False,
+            before_send=sentry._before_send,
+        )
+        events = [event async for event in chat_llm.stream_chat_turn([])]
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.init(dsn="", **isolated)
+
+    assert [event["event"] for event in events] == ["error"]
+    envelopes = [json.loads(raw.splitlines()[-1]) for raw in sent]
+    assert len(envelopes) == 1
+    tags = envelopes[0]["tags"]
+    assert tags["feature"] == "chat_response"
+    assert tags["provider"] == "deepseek"
+    assert tags["error_code"] == "provider_unavailable"
+
+
 # ── 공급자 중립 예외 분류 (KNK-670) ──────────────────────────────────────────
 # 이 분기가 없으면 통로 이관 후 모든 전송 실패가 unexpected_error로 떨어진다.
 @pytest.mark.parametrize(

@@ -116,8 +116,9 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
     except LlmError as e:
         # 전송 오류(타임아웃·429·요청거부·연결실패)를 통로가 공급자 중립 예외로 접어 준 것.
         # 일부 토큰을 이미 흘려보낸 뒤여도 여기로 와서 error 이벤트로 끝난다.
-        logger.exception("채팅 본문 LLM 스트리밍 실패")  # 스택트레이스 포함 서버 로그
         # SSE는 HTTP 200이라 미들웨어가 못 잡는다 — 여기서 직접 Sentry로 보고한다(AN-4).
+        # logger.exception보다 먼저 보낸다. Sentry는 같은 예외의 두 번째 이벤트를 중복으로
+        # 버리므로 로그가 먼저면 feature·provider·error_code가 없는 자동 캡처만 남는다.
         capture_ai_exception(
             e,
             feature=FEATURE_CHAT_RESPONSE,
@@ -127,6 +128,7 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
             retry_count=0,  # 본문은 재호출 없음
             latency_ms=int((time.monotonic() - start) * 1000),
         )
+        logger.exception("채팅 본문 LLM 스트리밍 실패")  # 스택트레이스 포함 서버 로그
         # 내부 상세(str(e))는 Sentry·로그로만 남기고 클라이언트엔 정제 메시지를 보낸다(AN-4-10).
         yield {
             "event": EVENT_ERROR,

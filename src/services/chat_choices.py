@@ -23,7 +23,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.core.config import settings
-from src.core.sentry import FEATURE_CHOICE_GENERATION, capture_ai_exception
+from src.core.sentry import (
+    ERROR_INVALID_AI_RESPONSE,
+    FEATURE_CHOICE_GENERATION,
+    capture_ai_exception,
+)
 from src.schemas.chat_turn import ChatTurnRequest
 from src.services import llm
 from src.services.chat_assembler import format_main_events, format_target_main_event
@@ -238,6 +242,11 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
                 e,
                 feature=FEATURE_CHOICE_GENERATION,
                 provider=provider,
+                error_code=(
+                    ERROR_INVALID_AI_RESPONSE
+                    if isinstance(e, (json.JSONDecodeError, ValueError))
+                    else None
+                ),
                 model=settings.chat_model,
                 prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
                 retry_count=attempt,  # 0=첫 호출, 1·2=재호출

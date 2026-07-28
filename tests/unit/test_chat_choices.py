@@ -184,12 +184,17 @@ async def test_call_raises_on_malformed_structure(install_llm_sdk, content) -> N
         await chat_choices._call("sys", "user")
 
 
-async def test_malformed_structure_absorbed_to_fallback(install_llm_sdk) -> None:
+async def test_malformed_structure_absorbed_to_fallback(monkeypatch, install_llm_sdk) -> None:
     # 위 구조 위반이 generate_choices까지 오면 흡수돼 폴백 3개로 수렴한다(배열 케이스 대표).
+    captures: list[dict] = []
+    monkeypatch.setattr(
+        chat_choices, "capture_ai_exception", lambda *args, **kwargs: captures.append(kwargs)
+    )
     _mock_calls(install_llm_sdk, ['["a", "b"]'])
     res = await generate_choices(_request(), "*장면*")
     assert res.choices == list(_FALLBACK)
     assert res.retry_count == 2
+    assert {capture["error_code"] for capture in captures} == {"invalid_ai_response"}
 
 
 # ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────

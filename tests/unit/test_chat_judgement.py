@@ -264,12 +264,17 @@ async def test_judgement_call_contract(install_llm_sdk) -> None:
 # ── 비-dict 응답도 흡수한다 (KNK-673 리뷰) ───────────────────────────────────
 # 선택지에는 같은 검사가 있는데 판정에는 없어 "JSON 객체가 아님" 분기가 한 번도 실행되지
 # 않았다. 이 분기가 죽으면 배열 응답이 _sanitize로 흘러 들어가 턴을 깨뜨린다.
-async def test_non_object_json_absorbed_to_nulls(install_llm_sdk) -> None:
+async def test_non_object_json_absorbed_to_nulls(monkeypatch, install_llm_sdk) -> None:
+    captures: list[dict] = []
+    monkeypatch.setattr(
+        chat_judgement, "capture_ai_exception", lambda *args, **kwargs: captures.append(kwargs)
+    )
     _mock_call(install_llm_sdk, '["반란의 서막"]')  # 유효 JSON이지만 객체가 아님
     res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
     assert res.target_main_event is None
     assert res.occurred_main_event_name is None
     assert res.ending_name is None
+    assert captures[0]["error_code"] == "invalid_ai_response"
 
 
 # ── 토큰 누락은 0이 아니라 null (KNK-673 리뷰) ───────────────────────────────
