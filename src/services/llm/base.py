@@ -11,9 +11,11 @@ from typing import Protocol, TypeAlias
 # 어댑터 종류 = SDK 계열이다(회사 단위가 아니다). DeepSeek과 GPT는 같은 OpenAI SDK를 쓰고
 # base_url·키만 다르므로 어댑터 하나를 공유한다. Anthropic은 SDK가 달라 별 어댑터를 쓴다(KNK-675).
 ADAPTER_OPENAI_SDK = "openai_sdk"
+ADAPTER_ANTHROPIC_SDK = "anthropic_sdk"
 
 # 공급자 식별자 — 로깅 메타(meta.provider)와 Sentry provider 태그(AN-4-8)에 그대로 실린다.
 PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_ANTHROPIC = "anthropic"
 
 # LLM에 보내는 대화 한 줄. role은 소문자("system"·"user"·"assistant") — OpenAI 호환 규약.
 Message: TypeAlias = dict[str, str]

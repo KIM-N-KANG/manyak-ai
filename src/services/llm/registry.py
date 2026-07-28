@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from src.core.config import settings
 from src.services.llm.base import (
     ADAPTER_OPENAI_SDK,
+    PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
     LlmConfigError,
     ResolvedModel,
@@ -78,6 +79,15 @@ def credentials(provider: str) -> ProviderCredentials:
             base_url=settings.deepseek_api_url,
             api_key_env="DEEPSEEK_API_KEY",
             base_url_env="DEEPSEEK_API_URL",
+        )
+    if provider == PROVIDER_ANTHROPIC:
+        # base_url이 None이면 SDK 기본 주소를 쓴다 — 자체 호스팅 주소가 없는 게 보통이라
+        # DeepSeek과 달리 기본값을 적어두지 않는다.
+        return ProviderCredentials(
+            api_key=settings.anthropic_api_key,
+            base_url=settings.anthropic_api_url,
+            api_key_env="ANTHROPIC_API_KEY",
+            base_url_env="ANTHROPIC_API_URL",
         )
     raise LlmConfigError(f"공급자 '{provider}'의 접속 정보 규칙이 없습니다.")
 

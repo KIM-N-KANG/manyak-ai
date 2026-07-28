@@ -17,6 +17,14 @@ class Settings(BaseSettings):
 
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
+    # Anthropic 접속 정보(KNK-675). **모델은 아직 하나도 등록하지 않았다** — 어댑터만 있고
+    # 이 키를 쓰는 모델이 없으므로 비워둬도 서버가 뜬다. 기동 검사는 *선택된* 모델의 공급자
+    # 키만 보기 때문이다(`registry.validate_selected_models`). DeepSeek 키와 달리 필수가 아닌
+    # 이유가 이것이다.
+    # 주소 기본값은 None — "빈 문자열"이 아니라 "SDK 기본 주소를 쓴다"는 뜻이다. 빈 문자열로
+    # 두면 기동 검사의 주소 형식 검사에 걸린다.
+    anthropic_api_key: str = ""
+    anthropic_api_url: str | None = None
     # 모델은 용도별 3개 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
     # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
     story_compile_model: str = "deepseek-v4-pro"  # 스토리 컴파일 전용(pro)

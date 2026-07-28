@@ -50,6 +50,25 @@ def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> Non
     assert s.chat_model == "deepseek-v4-flash"
 
 
+# ── Anthropic 접속 정보 (KNK-675) ───────────────────────────────────────────
+def test_anthropic_credentials_are_optional(monkeypatch) -> None:
+    """Anthropic 키·주소는 필수가 아니다 — 아직 이 공급자를 쓰는 모델이 없다.
+
+    DeepSeek 키처럼 필수로 만들면, 이 공급자를 안 쓰는 환경(로컬·CI·현재 운영 전부)이
+    설정 하나 때문에 기동에 실패한다.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_URL", raising=False)
+
+    s = Settings(_env_file=None)
+
+    assert s.anthropic_api_key == ""
+    # 주소는 빈 문자열이 아니라 None이다 — "SDK 기본 주소를 쓴다"는 뜻이고, 빈 문자열이면
+    # 기동 검사의 주소 형식 검사에 걸려 이 공급자를 쓰는 순간 기동이 실패한다.
+    assert s.anthropic_api_url is None
+
+
 # ── 전역 provider 설정 삭제 (KNK-674) ───────────────────────────────────────
 def test_settings_no_longer_carries_a_global_provider(monkeypatch) -> None:
     """회사 이름은 설정이 아니라 모델 이름이 정한다 — 옛 필드가 부활하면 출처가 둘이 된다.
