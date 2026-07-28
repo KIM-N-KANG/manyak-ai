@@ -137,6 +137,14 @@ class LlmAdapter(Protocol):
     순간에야 AttributeError로 드러나기 때문이다. 여기가 "무엇을 만들면 되는지"의 정본이다.
     """
 
+    # 이 어댑터가 조각 흘리기를 할 수 있는지. **기본값을 두지 않는다** — 새 어댑터가 이 값을
+    # 빠뜨리면 기동 검사가 AttributeError로 즉시 드러낸다. 기본값을 True로 두면 못 하는
+    # 어댑터가 채팅에 꽂혀도 기동이 통과하고, 첫 사용자 요청에서야 터진다(KNK-676 리뷰 P2).
+    #
+    # **"어느 용도가 스트리밍인지"는 어댑터가 모른다.** 그 판정은 등록부가 한다
+    # (`registry.STREAMING_ENVS`) — 어댑터는 자기가 할 수 있는지만 밝힌다.
+    SUPPORTS_STREAMING: bool
+
     def check_supported(self, resolved: ResolvedModel) -> None:
         """이 모델의 설정을 요청 인자로 표현할 수 있는지 확인한다. 못 하면 LlmConfigError."""
         ...

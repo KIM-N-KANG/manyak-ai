@@ -48,6 +48,15 @@ _REGISTRY: dict[str, ResolvedModel] = {
 }
 
 
+# 조각 흘리기(스트리밍)로 부르는 용도. 이 env로 고른 모델은 담당 어댑터가 스트리밍을 할 수
+# 있어야 한다 — 못 하면 서버 기동에서 막는다(`llm.validate_startup`).
+#
+# **용도 이름이 여기에만 있는 것이 핵심이다.** 통로도 어댑터도 "채팅"을 몰라야 한다 — 용도에
+# 맞춰 아래층을 깎으면 모델·공급자를 바꿀 때마다 그 층을 다시 고쳐야 한다(KNK-667 원칙).
+# 등록부는 이미 env(=용도)와 모델을 잇는 자리라(`selected_models`) 여기가 제자리다.
+STREAMING_ENVS = frozenset({"CHAT_MODEL"})
+
+
 @dataclass(frozen=True)
 class ProviderCredentials:
     """공급자 접속 정보. *_env는 값이 잘못됐을 때 무엇을 고치라고 알려줄 env 이름이다."""

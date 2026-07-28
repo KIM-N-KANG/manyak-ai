@@ -750,19 +750,27 @@ def test_validate_startup_names_the_env_for_missing_adapter(monkeypatch) -> None
 
     이 메시지만 보고 STORYLINES_MODEL·STORY_COMPILE_MODEL·CHAT_MODEL 중 무엇을 되돌릴지
     판단해야 한다 — 배포가 실패해 서버가 내려간 상황이라 추적할 시간이 없다.
+
+    **어댑터 이름은 코드가 생길 일이 없는 값을 쓴다.** 예전에는 여기에 "anthropic_sdk"를
+    썼는데, KNK-676에서 그 어댑터가 실제로 생기자 이 테스트가 검사하려던 실패 경로가 사라져
+    진짜 SDK로 호출이 들어갔다(같은 실수를 KNK-675에서 공급자 이름으로 한 번 했다).
     """
     future = ResolvedModel(
-        model="claude-sonnet-5",
-        provider="anthropic",
-        adapter="anthropic_sdk",  # 아직 이 어댑터 코드가 없다(KNK-675)
+        model="model-of-an-unsupported-adapter",
+        provider="deepseek",
+        adapter="adapter-with-no-code",  # 이 이름의 어댑터는 앞으로도 생기지 않는다
         use_thinking=False,
         supports_temperature=False,
     )
-    monkeypatch.setitem(registry._REGISTRY, "claude-sonnet-5", future)
+    monkeypatch.setitem(registry._REGISTRY, "model-of-an-unsupported-adapter", future)
     monkeypatch.setattr(
         registry,
         "settings",
-        Settings(_env_file=None, deepseek_api_key="k", storylines_model="claude-sonnet-5"),
+        Settings(
+            _env_file=None,
+            deepseek_api_key="k",
+            storylines_model="model-of-an-unsupported-adapter",
+        ),
     )
     # 키·주소 검사는 통과시킨다 — 여기서 보려는 것은 그다음 단계인 어댑터 선택 실패다.
     monkeypatch.setattr(registry, "credentials", lambda provider: _creds())
@@ -772,7 +780,9 @@ def test_validate_startup_names_the_env_for_missing_adapter(monkeypatch) -> None
 
     message = str(exc_info.value)
     assert "STORYLINES_MODEL" in message
-    assert "anthropic_sdk" in message
+    assert "adapter-with-no-code" in message
+    # 어느 단계에서 막혔는지도 단언한다 — env 이름만 보면 앞 단계(등록·키·주소)에서 막혀도 통과한다.
+    assert "처리할 코드가 없습니다" in message
 
 
 def test_gateway_does_not_import_adapter_at_module_load() -> None:
@@ -783,30 +793,41 @@ def test_gateway_does_not_import_adapter_at_module_load() -> None:
 
     새 파이썬 프로세스에서 확인한다. 이 프로세스에서는 앞선 테스트가 이미 어댑터를 불러왔을
     수 있어(한 번 불러오면 부모 패키지에 이름이 붙는다) 실행 순서에 따라 결과가 달라진다.
+
+    **어댑터 전부를 확인한다.** 하나만 보면 다른 어댑터를 맨 위로 끌어올려도 이 가드가
+    통과한다 — Anthropic 어댑터가 생기면서(KNK-676) 실제로 그런 구멍이 생겼다.
     """
     root = Path(__file__).resolve().parents[2]
     probe = (
         "import sys, src.services.llm;"
-        " sys.exit(1 if 'src.services.llm.openai_sdk' in sys.modules else 0)"
+        " early = [name for name in ('src.services.llm.openai_sdk',"
+        " 'src.services.llm.anthropic_sdk') if name in sys.modules];"
+        " print(early);"
+        " sys.exit(1 if early else 0)"
     )
 
     done = subprocess.run([sys.executable, "-c", probe], cwd=root, capture_output=True)
 
-    assert done.returncode == 0, f"통로 import가 어댑터까지 끌어왔다: {done.stderr.decode()}"
+    assert done.returncode == 0, (
+        f"통로 import가 어댑터까지 끌어왔다: {done.stdout.decode()}{done.stderr.decode()}"
+    )
 
 
 async def test_gateway_rejects_adapter_without_code(monkeypatch) -> None:
-    """등록은 됐지만 처리할 어댑터 코드가 없으면 조용히 넘어가지 않는다(KNK-675 대비 가드)."""
+    """등록은 됐지만 처리할 어댑터 코드가 없으면 조용히 넘어가지 않는다.
+
+    윗 테스트와 같은 이유로 코드가 생길 일이 없는 어댑터 이름을 쓴다.
+    """
     future = ResolvedModel(
-        model="claude-sonnet-5",
-        provider="anthropic",
-        adapter="anthropic_sdk",
+        model="model-of-an-unsupported-adapter",
+        provider="deepseek",
+        adapter="adapter-with-no-code",
         use_thinking=False,
         supports_temperature=False,
     )
     monkeypatch.setattr(llm.registry, "resolve", lambda model: future)
 
     with pytest.raises(LlmConfigError) as exc_info:
-        await llm.complete(_req(model="claude-sonnet-5"))
+        await llm.complete(_req(model="model-of-an-unsupported-adapter"))
 
-    assert "anthropic_sdk" in str(exc_info.value)
+    assert "adapter-with-no-code" in str(exc_info.value)

@@ -6,7 +6,7 @@
 - `base.py`       — 요청·결과·스트림 이벤트·공급자 중립 예외 (층 사이의 공용 타입)
 - `registry.py`   — 모델 등록부. 모델 이름 → 공급자·어댑터·호출 특성 (뜻만 적는다)
 - `openai_sdk.py` — OpenAI SDK 어댑터(DeepSeek·GPT 공용). 뜻을 회사 문법으로 옮긴다
-- `anthropic_sdk.py` — Anthropic SDK 어댑터. KNK-675에서 추가한다
+- `anthropic_sdk.py` — Anthropic SDK 어댑터. 단발 호출만 있고 스트리밍은 KNK-696에서 붙인다
 
 호출용 공개 함수는 `complete`·`stream` 둘이다. **둘 다 단발 호출이다** — 재호출·시간 예산·
 검증은 호출부가 관장한다(스토리라인 invalid 재호출 KNK-312이 통로로 올라오면 이관 범위가
@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 
 from src.services.llm import registry
 from src.services.llm.base import (
+    ADAPTER_ANTHROPIC_SDK,
     ADAPTER_OPENAI_SDK,
     LlmAdapter,
     LlmConfigError,
@@ -59,12 +60,21 @@ def validate_startup() -> None:
 
     어댑터 선택 실패(`_adapter_of`)도 함께 잡아 어느 env가 문제인지 붙인다 — 메시지만 보고
     STORYLINES_MODEL·STORY_COMPILE_MODEL·CHAT_MODEL 중 무엇을 고칠지 알 수 있어야 한다.
+
+    **조각 흘리기가 필요한 자리인지도 본다.** 어느 env가 그런 자리인지는 등록부가 알고
+    (`registry.STREAMING_ENVS`), 할 수 있는지는 어댑터가 밝힌다(`SUPPORTS_STREAMING`) —
+    통로는 둘을 맞춰보기만 하므로 여기에 용도 이름이 박히지 않는다.
     """
     registry.validate_selected_models()
     for env_name, model in registry.selected_models():
         try:
             adapter, resolved = _adapter_of(model)
             adapter.check_supported(resolved)
+            if env_name in registry.STREAMING_ENVS and not adapter.SUPPORTS_STREAMING:
+                raise LlmConfigError(
+                    f"모델 '{model}'의 어댑터 '{resolved.adapter}'는 조각 흘리기(스트리밍)를 "
+                    f"하지 못하는데, 이 자리는 스트리밍으로 호출됩니다."
+                )
         except LlmConfigError as exc:
             raise LlmConfigError(f"{env_name}: {exc}") from exc
 
@@ -83,6 +93,10 @@ def _adapter_of(model: str) -> tuple[LlmAdapter, ResolvedModel]:
         from src.services.llm import openai_sdk
 
         return openai_sdk, resolved
+    if resolved.adapter == ADAPTER_ANTHROPIC_SDK:
+        from src.services.llm import anthropic_sdk
+
+        return anthropic_sdk, resolved
     raise LlmConfigError(
         f"모델 '{resolved.model}'의 어댑터 '{resolved.adapter}'를 처리할 코드가 없습니다."
     )
