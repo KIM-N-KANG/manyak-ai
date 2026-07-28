@@ -22,7 +22,9 @@
 - FastAPI 기반 AI 서비스로, 스토리 제작(story)과 채팅 플레이(chat)의 LLM 호출을 담당합니다.
   완전 stateless — 상태는 백엔드가 들고, 이 서버는 요청마다 받은 컨텍스트로 프롬프트를 조립해 LLM을 호출합니다.
 - Python 3.11+, Pydantic(+pydantic-settings) 기반입니다.
-- LLM은 DeepSeek API를 OpenAI SDK(호환 클라이언트)로 호출합니다. Anthropic SDK는 쓰지 않습니다.
+- LLM 호출은 공통 통로(`src/services/llm/`)를 지납니다. 호출부는 "무엇을 원하는지"만 넘기고 회사별 SDK 차이는 어댑터가 흡수합니다(KNK-667). 어느 모델을 어느 회사로 보낼지는 등록부(`registry.py`)가 정하고, 등록되지 않은 모델은 호출 대상이 될 수 없습니다.
+  - 지금 등록된 모델은 DeepSeek뿐이고 OpenAI SDK(호환 클라이언트)로 호출합니다.
+  - Anthropic SDK 어댑터도 있지만 이 공급자를 쓰는 모델은 아직 등록부에 없습니다(KNK-675). 채팅 자리(`CHAT_MODEL`)에는 이 공급자를 쓸 수 없습니다 — 이 회사는 지시문 칸이 하나뿐이라 채팅이 뒤에 두는 안전 지시(PHI)가 버려집니다(`registry.BLOCKED_PROVIDERS`).
   - `deepseek-v4-pro`(env `STORY_COMPILE_MODEL`) — 스토리 컴파일 전용.
   - `deepseek-v4-flash` — 스토리라인 생성(env `STORYLINES_MODEL`)과 채팅 턴·선택지·판정(env `CHAT_MODEL`)에 각각. 지금은 같은 flash 기본이지만 용도별 독립 설정이 가능하도록 env를 3개로 분리했습니다(KNK-595). manyak-infra의 Compose env 이름 동기화는 짝 작업입니다.
 - API는 `/api/v1` 아래 health·story·chat 라우터(`src/api/v1/`)이고, 채팅 턴은 SSE 스트리밍을 지원합니다.

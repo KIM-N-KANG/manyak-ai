@@ -10,7 +10,9 @@ from src.core.config import Settings
 from src.services import llm
 from src.services.llm import registry
 from src.services.llm.base import (
+    ADAPTER_ANTHROPIC_SDK,
     ADAPTER_OPENAI_SDK,
+    PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
     LlmConfigError,
     LlmError,
@@ -20,14 +22,20 @@ from src.services.llm.base import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_model_env(monkeypatch) -> None:
-    """셸·컨테이너에 켜둔 모델 env를 지운다.
+def _clear_llm_env(monkeypatch) -> None:
+    """셸·컨테이너에 켜둔 LLM 관련 env를 지운다 — 모델 이름과 접속 정보 둘 다.
 
     `Settings(_env_file=None)`은 .env 파일만 무시하고 os.environ은 계속 읽는다. 누가
     `export CHAT_MODEL=...`을 켜둔 채 돌리면 "코드 기본값" 단언이 그 사람 컴퓨터에서만 깨지고,
-    도커·CI에서는 재현되지 않아 원인을 찾기 어렵다.
+    도커·CI에서는 재현되지 않아 원인을 찾기 어렵다. 접속 정보도 같은 이유로 함께 지운다.
     """
-    for name in ("STORYLINES_MODEL", "STORY_COMPILE_MODEL", "CHAT_MODEL"):
+    for name in (
+        "STORYLINES_MODEL",
+        "STORY_COMPILE_MODEL",
+        "CHAT_MODEL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_API_URL",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -95,6 +103,23 @@ def test_credentials_read_settings_at_call_time(monkeypatch) -> None:
     assert creds.api_key_env == "DEEPSEEK_API_KEY"
 
 
+def test_credentials_for_anthropic(monkeypatch) -> None:
+    """Anthropic도 같은 규칙으로 읽는다 — 값과 함께 **고칠 env 이름**을 들고 온다(KNK-675).
+
+    env 이름을 함께 나르는 것이 이 자료형의 존재 이유다. 키가 비었을 때 기동 검사가
+    "ANTHROPIC_API_KEY를 채워라"까지 말할 수 있어야 한다.
+    """
+    monkeypatch.setattr(registry, "settings", _settings(anthropic_api_key="ant-key"))
+
+    creds = registry.credentials(PROVIDER_ANTHROPIC)
+
+    assert creds.api_key == "ant-key"
+    # 주소를 안 적으면 None이다 — 빈 문자열이 아니라 "SDK 기본 주소를 쓴다"는 뜻이고,
+    # 빈 문자열이면 기동 검사의 주소 형식 검사에 걸린다.
+    assert creds.base_url is None
+    assert (creds.api_key_env, creds.base_url_env) == ("ANTHROPIC_API_KEY", "ANTHROPIC_API_URL")
+
+
 def test_credentials_unknown_provider_rejected() -> None:
     """접속 규칙이 없는 공급자는 조용히 넘어가지 않는다."""
     with pytest.raises(LlmConfigError):
@@ -102,6 +127,54 @@ def test_credentials_unknown_provider_rejected() -> None:
 
 
 # ── 기동 검사 ────────────────────────────────────────────────────────────────
+def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
+    """기동 검사는 **선택된** 모델의 공급자 키만 본다 — 안 쓰는 공급자의 키가 비어도 뜬다(KNK-675).
+
+    이 성질이 Anthropic 키를 필수로 만들지 않은 근거다. 깨지면 이 공급자를 안 쓰는 환경이
+    통째로 안 뜬다 — CI는 `DEEPSEEK_API_KEY` 하나만 주입해 컨테이너를 실제로 띄워 스모크
+    검사를 한다(`docker-image.yml`).
+
+    **"빈 키로 통과한다"만 보면 아무것도 증명되지 않는다.** 선택된 모델이 그 공급자를 안 쓰니
+    당연히 통과하고, 키를 필수로 되돌려도 이 테스트는 그대로 통과한다(실제로 그랬다). 그래서
+    같은 빈 키가 **고르는 순간 막는지**를 짝으로 확인한다 — 통과와 거부를 가르는 것이 정말
+    "선택 여부"임을 이 대비가 고정한다.
+    """
+    monkeypatch.setitem(
+        registry._REGISTRY,
+        "model-on-the-anthropic-adapter",
+        ResolvedModel(
+            model="model-on-the-anthropic-adapter",
+            provider=PROVIDER_ANTHROPIC,
+            adapter=ADAPTER_ANTHROPIC_SDK,
+            use_thinking=True,
+        ),
+    )
+
+    # 안 고르면 — Anthropic 키가 비어도 기동한다
+    monkeypatch.setattr(registry, "settings", _settings(anthropic_api_key=""))
+    registry.validate_selected_models()
+
+    # 고르면 — 같은 빈 키가 이제는 기동을 막고, 어느 env에 무엇을 채울지 알려준다
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(anthropic_api_key="", storylines_model="model-on-the-anthropic-adapter"),
+    )
+    with pytest.raises(LlmConfigError) as exc_info:
+        registry.validate_selected_models()
+    message = str(exc_info.value)
+    assert "STORYLINES_MODEL" in message
+    assert "ANTHROPIC_API_KEY" in message
+
+    # 골랐고 키도 있으면 — 다시 통과한다. 막은 것이 "선택"이 아니라 "빈 키"였음을 고정한다.
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(anthropic_api_key="ant-key", storylines_model="model-on-the-anthropic-adapter"),
+    )
+    registry.validate_selected_models()
+
+
 def test_selected_models_covers_three_env_vars(monkeypatch) -> None:
     """용도별 모델 3개를 env 이름과 함께 돌려준다(KNK-595 3분리와 짝)."""
     monkeypatch.setattr(registry, "settings", _settings())
@@ -143,21 +216,33 @@ def test_validate_rejects_blank_provider_key(monkeypatch) -> None:
 
 
 def test_validate_names_the_env_for_provider_without_credentials(monkeypatch) -> None:
-    """접속 정보 규칙이 없는 공급자에서 막힐 때도 어느 env가 문제인지 붙인다."""
+    """접속 정보 규칙이 없는 공급자에서 막힐 때도 어느 env가 문제인지 붙인다.
+
+    **공급자 이름은 규칙이 생길 일이 없는 값을 쓴다.** 예전에는 여기에 "anthropic"을 썼는데,
+    KNK-675에서 그 공급자의 규칙이 실제로 생기자 검사 지점이 조용히 "키가 비었다"로 옮겨갔다.
+    두 오류 메시지에 모두 CHAT_MODEL이 들어 있어 테스트는 계속 통과했고, 정작 이 테스트가
+    지키려던 경로는 아무도 밟지 않게 됐다.
+
+    같은 일이 또 생기지 않도록 **어느 단계에서 막혔는지도 함께 단언한다** — env 이름만 보면
+    검사 지점이 옮겨가도 알 수 없다.
+    """
     future = ResolvedModel(
-        model="claude-sonnet-5",
-        provider="anthropic",  # 아직 이 공급자의 키·주소 규칙이 없다(KNK-675)
+        model="model-of-an-unsupported-provider",
+        provider="unsupported-provider",  # credentials()에 이 이름의 분기는 없다
         adapter=ADAPTER_OPENAI_SDK,
-        use_thinking=False,
-        supports_temperature=False,
+        use_thinking=True,
     )
-    monkeypatch.setitem(registry._REGISTRY, "claude-sonnet-5", future)
-    monkeypatch.setattr(registry, "settings", _settings(chat_model="claude-sonnet-5"))
+    monkeypatch.setitem(registry._REGISTRY, "model-of-an-unsupported-provider", future)
+    monkeypatch.setattr(
+        registry, "settings", _settings(chat_model="model-of-an-unsupported-provider")
+    )
 
     with pytest.raises(LlmConfigError) as exc_info:
         registry.validate_selected_models()
 
-    assert "CHAT_MODEL" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "CHAT_MODEL" in message
+    assert "접속 정보 규칙이 없습니다" in message
 
 
 @pytest.mark.parametrize("bad_url", ["not-a-url", "ftp://api.deepseek.com", "https://", "   "])

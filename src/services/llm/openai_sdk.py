@@ -67,6 +67,9 @@ _clients: dict[tuple[str, str | None, str], AsyncOpenAI] = {}
 # 고치려면 재시도를 우리 코드로 가져와야 해서 별도 사안으로 둔다(KNK-672 리뷰 10번).
 _MAX_RETRIES = 2
 
+# 이 어댑터는 조각 흘리기를 한다(`stream`). 기동 검사가 읽는다 — `base.LlmAdapter` 참조.
+SUPPORTS_STREAMING = True
+
 
 def _fingerprint(api_key: str) -> str:
     """캐시 이름표에 넣을 키 지문.

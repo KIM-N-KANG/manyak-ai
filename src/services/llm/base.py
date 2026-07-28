@@ -11,9 +11,11 @@ from typing import Protocol, TypeAlias
 # 어댑터 종류 = SDK 계열이다(회사 단위가 아니다). DeepSeek과 GPT는 같은 OpenAI SDK를 쓰고
 # base_url·키만 다르므로 어댑터 하나를 공유한다. Anthropic은 SDK가 달라 별 어댑터를 쓴다(KNK-675).
 ADAPTER_OPENAI_SDK = "openai_sdk"
+ADAPTER_ANTHROPIC_SDK = "anthropic_sdk"
 
 # 공급자 식별자 — 로깅 메타(meta.provider)와 Sentry provider 태그(AN-4-8)에 그대로 실린다.
 PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_ANTHROPIC = "anthropic"
 
 # LLM에 보내는 대화 한 줄. role은 소문자("system"·"user"·"assistant") — OpenAI 호환 규약.
 Message: TypeAlias = dict[str, str]
@@ -134,6 +136,14 @@ class LlmAdapter(Protocol):
     (Anthropic — KNK-675)를 만들 때 함수 이름을 다르게 지으면 통로가 그 모듈을 부르는
     순간에야 AttributeError로 드러나기 때문이다. 여기가 "무엇을 만들면 되는지"의 정본이다.
     """
+
+    # 이 어댑터가 조각 흘리기를 할 수 있는지. **기본값을 두지 않는다** — 새 어댑터가 이 값을
+    # 빠뜨리면 기동 검사가 AttributeError로 즉시 드러낸다. 기본값을 True로 두면 못 하는
+    # 어댑터가 채팅에 꽂혀도 기동이 통과하고, 첫 사용자 요청에서야 터진다(KNK-676 리뷰 P2).
+    #
+    # **"어느 용도가 스트리밍인지"는 어댑터가 모른다.** 그 판정은 등록부가 한다
+    # (`registry.STREAMING_ENVS`) — 어댑터는 자기가 할 수 있는지만 밝힌다.
+    SUPPORTS_STREAMING: bool
 
     def check_supported(self, resolved: ResolvedModel) -> None:
         """이 모델의 설정을 요청 인자로 표현할 수 있는지 확인한다. 못 하면 LlmConfigError."""
