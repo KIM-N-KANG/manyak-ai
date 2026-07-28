@@ -1253,7 +1253,11 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
     이벤트도 못 내고 스트림이 끊긴다(재현 확인).
 
     메시지에 어느 env를 되돌릴지도 있어야 한다 — 배포가 실패해 서버가 내려간 상황이다.
+
+    **자리별 금지 공급자 검사를 일부러 꺼두고 본다.** 그 검사가 먼저 걸러버리면 여기서 확인하려는
+    그물(스트리밍 능력)이 한 번도 실행되지 않는데, 통과하는 모습은 똑같아 눈치채기 어렵다.
     """
+    monkeypatch.setattr(registry, "BLOCKED_PROVIDERS", {})
     monkeypatch.setattr(anthropic_sdk, "SUPPORTS_STREAMING", False)
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
     monkeypatch.setattr(
@@ -1309,6 +1313,76 @@ def test_the_streaming_slot_is_known_only_to_the_registry() -> None:
     # 통로 docstring은 세 env를 "무엇을 고칠지" 안내로 나열한다 — 코드에 박혔는지를 본다.
     assert "CHAT_MODEL" not in _code_of(gateway_source)
     assert "CHAT_MODEL" not in _code_of(adapter_source)
+
+
+# ── 채팅 자리에 이 공급자를 못 꽂게 한다 (KNK-675) ──────────────────────────
+def _blocked_settings(**overrides) -> Settings:
+    values = {"_env_file": None, "deepseek_api_key": "k", "anthropic_api_key": "ant"}
+    return Settings(**(values | overrides))
+
+
+def test_the_blocked_slot_is_known_only_to_the_registry() -> None:
+    """"채팅에는 이 공급자를 쓸 수 없다"는 규칙은 등록부에만 있다.
+
+    `STREAMING_ENVS`와 같은 이유다 — 통로·어댑터에 용도 이름을 박으면 모델·공급자를 바꿀
+    때마다 그 층을 다시 고쳐야 한다(KNK-667). 어느 파일에도 "CHAT_MODEL"이 코드로 박히지
+    않았는지는 위 `test_the_streaming_slot_is_known_only_to_the_registry`가 함께 지킨다.
+    """
+    assert registry.BLOCKED_PROVIDERS == {"CHAT_MODEL": frozenset({PROVIDER_ANTHROPIC})}
+
+
+def test_startup_rejects_this_provider_in_the_chat_slot(monkeypatch) -> None:
+    """CHAT_MODEL에 이 공급자의 모델을 꽂으면 **기동에서** 막는다.
+
+    막지 않으면 서버도 채팅도 정상으로 도는데 **안전 지시(PHI)만 빠진 채 호출된다** —
+    이 회사는 지시문 칸이 하나뿐이라 채팅이 뒤에 두는 Depth·PHI가 버려지기 때문이다
+    (`anthropic_sdk._split_system`). 오류가 나지 않아 경고 로그를 보지 않으면 모른다.
+
+    직전까지는 "이 어댑터는 스트리밍을 못 한다"는 이유로 걸렸는데, 조각 흘리기를 구현하면서
+    (KNK-696) 그 그물이 사라졌다. 이 테스트가 그 자리를 대신한다.
+    """
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setattr(registry, "settings", _blocked_settings(chat_model="anthropic-test-model"))
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+
+    message = str(exc_info.value)
+    assert "CHAT_MODEL" in message  # 배포가 실패한 상황이다 — 무엇을 되돌릴지 있어야 한다
+    assert PROVIDER_ANTHROPIC in message
+
+
+def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:
+    """같은 모델이라도 채팅이 아닌 자리면 통과한다.
+
+    **짝으로 확인해야 의미가 있다.** 윗 테스트만 보면 "이 공급자를 아예 못 쓰게 막는" 코드도
+    똑같이 통과한다 — 막은 것이 "이 공급자"가 아니라 "채팅 자리"임을 여기서 고정한다.
+    """
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setattr(
+        registry, "settings", _blocked_settings(storylines_model="anthropic-test-model")
+    )
+
+    llm.validate_startup()  # 예외가 나면 실패다
+
+
+def test_blocked_slot_is_reported_before_a_missing_key(monkeypatch) -> None:
+    """못 쓰는 자리라는 사실을 키·주소보다 먼저 알린다.
+
+    둘 다 어긋난 상태에서 "키가 비어 있습니다"라고 답하면, 키만 채우면 될 것처럼 읽혀
+    엉뚱한 곳을 고치게 된다. 그리고 키를 채운 뒤에야 진짜 이유를 만난다.
+    """
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _blocked_settings(anthropic_api_key="", chat_model="anthropic-test-model"),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+
+    assert "ANTHROPIC_API_KEY" not in str(exc_info.value)
 
 
 # ── 클라이언트 생성·재사용 ────────────────────────────────────────────────────

@@ -48,6 +48,23 @@ _REGISTRY: dict[str, ResolvedModel] = {
 }
 
 
+# 이 자리에 쓸 수 없는 공급자. 위반하면 서버 기동에서 막는다(`validate_selected_models`).
+#
+# **채팅 본문에 Anthropic을 막는 이유**(KNK-675): 채팅은 지시문(system)을 앞에 1개, 뒤에
+# 2개(Depth·PHI) 놓는데, Anthropic은 요청 최상위의 지시문 칸이 하나뿐이라 앞의 1개만 옮기고
+# 뒤의 둘은 버려진다(`anthropic_sdk._split_system`). 그중 PHI가 안전 가드레일이다. 즉 막지
+# 않으면 **서버도 채팅도 정상으로 도는데 안전 지시만 빠진 채 호출된다** — 오류가 없어 한참
+# 뒤에야 알게 된다. 직전까지는 "이 어댑터는 스트리밍을 못 한다"는 이유로 아래 검사에 걸렸지만,
+# 조각 흘리기를 구현하면서(KNK-696) 그 그물이 사라졌다.
+#
+# 이 제약은 배치 문제를 푼 뒤에 풀린다. 대화 목록 안에 지시문 줄을 넣는 방법이 따로 있어
+# (모델별 제약 있음 — `_split_system` 주석) 버리지 않을 길이 있고, 그 검토와 안전 실측이
+# 채팅을 이 공급자로 여는 티켓의 몫이다. 그때 여기 한 줄을 지운다.
+BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
+    "CHAT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
+}
+
+
 # 조각 흘리기(스트리밍)로 부르는 용도. 이 env로 고른 모델은 담당 어댑터가 스트리밍을 할 수
 # 있어야 한다 — 못 하면 서버 기동에서 막는다(`llm.validate_startup`).
 #
@@ -105,7 +122,7 @@ def selected_models() -> tuple[tuple[str, str], ...]:
     """용도별로 선택된 모델을 (env 이름, 모델 이름) 쌍으로 돌려준다.
 
     env 이름을 함께 들고 다니는 이유가 둘이다. 기동 실패 메시지가 "무엇을 고쳐야 하는지"를
-    가리켜야 하고, 용도별 제약(예: 채팅은 Anthropic 불가 — KNK-675)의 판정 단위가 이 env다.
+    가리켜야 하고, 용도별 제약(`BLOCKED_PROVIDERS`·`STREAMING_ENVS`)의 판정 단위가 이 env다.
     """
     return (
         ("STORYLINES_MODEL", settings.storylines_model),
@@ -115,10 +132,14 @@ def selected_models() -> tuple[tuple[str, str], ...]:
 
 
 def validate_selected_models() -> None:
-    """선택된 모델이 등록돼 있고 그 공급자 키가 채워졌는지 확인한다. 위반 시 LlmConfigError.
+    """선택된 모델이 등록돼 있고, 그 자리에 쓸 수 있는 공급자이며, 키가 채워졌는지 확인한다.
+    위반 시 LlmConfigError.
 
     서버 시작 시 한 번 부른다 — 잘못 적은 모델 이름이나 빈 키는 첫 사용자 요청(502)이 아니라
     기동에서 드러나야 한다.
+
+    **자리별 금지 공급자(`BLOCKED_PROVIDERS`)를 키·주소보다 먼저 본다.** 못 쓰는 공급자를
+    꽂았는데 "키가 비어 있습니다"라고 답하면, 키만 채우면 될 것처럼 읽혀 엉뚱한 곳을 고치게 된다.
 
     주소(base_url)도 함께 본다. 키와 달리 주소는 **비어 있지 않아도 틀릴 수 있어**
     (`not-a-url`처럼) 검사를 통과한 뒤 첫 호출에서야 실패한다. 형식만 보는 것이라 실제 접속은
@@ -132,6 +153,11 @@ def validate_selected_models() -> None:
             creds = credentials(resolved.provider)
         except LlmConfigError as exc:
             raise LlmConfigError(f"{env_name}: {exc}") from exc
+        if resolved.provider in BLOCKED_PROVIDERS.get(env_name, frozenset()):
+            raise LlmConfigError(
+                f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데, 이 자리는 그 "
+                f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석)."
+            )
         if not creds.api_key.strip():
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데 "
