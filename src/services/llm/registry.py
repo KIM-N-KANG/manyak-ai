@@ -10,14 +10,21 @@ Anthropic Sonnet 4.6은 temperature를 받지만 Sonnet 5는 400으로 거부한
 """
 
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 from urllib.parse import urlparse
 
 from src.core.config import settings
 from src.services.llm.base import (
+    ADAPTER_ANTHROPIC_SDK,
     ADAPTER_OPENAI_SDK,
     PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
+    PROVIDER_OPENAI,
+    STRUCTURED_OUTPUT_JSON_OBJECT,
+    STRUCTURED_OUTPUT_JSON_SCHEMA,
     LlmConfigError,
+    ModelPricing,
     ResolvedModel,
 )
 
@@ -35,6 +42,26 @@ _REGISTRY: dict[str, ResolvedModel] = {
         adapter=ADAPTER_OPENAI_SDK,
         use_thinking=False,
         supports_temperature=True,
+        context_window_tokens=1_000_000,
+        max_output_tokens=384_000,
+        reasoning_effort=None,
+        supported_reasoning_efforts=frozenset({"high", "max"}),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
+        capabilities_verified_on=date(2026, 7, 29),
+        capabilities_source_urls=(
+            "https://api-docs.deepseek.com/quick_start/pricing",
+        ),
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.435"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.003625"),
+                output_usd_per_1m_tokens=Decimal("0.87"),
+                source_url="https://api-docs.deepseek.com/quick_start/pricing",
+                verified_on=date(2026, 7, 29),
+                effective_from=date(2026, 4, 24),
+            ),
+        ),
     ),
     # 스토리라인·채팅(STORYLINES_MODEL·CHAT_MODEL). 같은 비추론 정책이지만 따로 적는다 —
     # 첫 토큰 지연이 작아야 하는 경로라 나중에 이 모델만 조정할 여지를 남긴다(KNK-208).
@@ -44,6 +71,173 @@ _REGISTRY: dict[str, ResolvedModel] = {
         adapter=ADAPTER_OPENAI_SDK,
         use_thinking=False,
         supports_temperature=True,
+        context_window_tokens=1_000_000,
+        max_output_tokens=384_000,
+        reasoning_effort=None,
+        supported_reasoning_efforts=frozenset({"high", "max"}),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
+        capabilities_verified_on=date(2026, 7, 29),
+        capabilities_source_urls=(
+            "https://api-docs.deepseek.com/quick_start/pricing",
+        ),
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.14"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.0028"),
+                output_usd_per_1m_tokens=Decimal("0.28"),
+                source_url="https://api-docs.deepseek.com/quick_start/pricing",
+                verified_on=date(2026, 7, 29),
+                effective_from=date(2026, 4, 24),
+            ),
+        ),
+    ),
+    "gpt-5.6-terra": ResolvedModel(
+        model="gpt-5.6-terra",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=False,
+        context_window_tokens=1_050_000,
+        max_output_tokens=128_000,
+        reasoning_effort="none",
+        supported_reasoning_efforts=frozenset(
+            {"none", "low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 7, 29),
+        capabilities_source_urls=(
+            "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+        ),
+        # 공식 페이지에 이 이름과 다른 고정 스냅샷 ID가 아직 없다.
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("2.50"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.25"),
+                output_usd_per_1m_tokens=Decimal("15.00"),
+                cache_write_input_usd_per_1m_tokens=Decimal("3.125"),
+                source_url="https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+                verified_on=date(2026, 7, 29),
+                effective_from=date(2026, 7, 9),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+        ),
+    ),
+    "gpt-5.6-luna": ResolvedModel(
+        model="gpt-5.6-luna",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=False,
+        context_window_tokens=1_050_000,
+        max_output_tokens=128_000,
+        reasoning_effort="none",
+        supported_reasoning_efforts=frozenset(
+            {"none", "low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 7, 29),
+        capabilities_source_urls=(
+            "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+        ),
+        # 공식 페이지에 이 이름과 다른 고정 스냅샷 ID가 아직 없다.
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("1.00"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.10"),
+                output_usd_per_1m_tokens=Decimal("6.00"),
+                cache_write_input_usd_per_1m_tokens=Decimal("1.25"),
+                source_url="https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+                verified_on=date(2026, 7, 29),
+                effective_from=date(2026, 7, 9),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+        ),
+    ),
+    "gpt-5.4-mini": ResolvedModel(
+        model="gpt-5.4-mini",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=False,
+        context_window_tokens=400_000,
+        max_output_tokens=128_000,
+        reasoning_effort="none",
+        supported_reasoning_efforts=frozenset(
+            {"none", "low", "medium", "high", "xhigh"}
+        ),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 7, 29),
+        capabilities_source_urls=(
+            "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        ),
+        snapshot_model="gpt-5.4-mini-2026-03-17",
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.75"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.075"),
+                output_usd_per_1m_tokens=Decimal("4.50"),
+                source_url="https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+                verified_on=date(2026, 7, 29),
+                effective_from=date(2026, 3, 17),
+            ),
+        ),
+    ),
+    "claude-sonnet-5": ResolvedModel(
+        model="claude-sonnet-5",
+        provider=PROVIDER_ANTHROPIC,
+        adapter=ADAPTER_ANTHROPIC_SDK,
+        use_thinking=False,
+        supports_temperature=False,
+        context_window_tokens=1_000_000,
+        max_output_tokens=128_000,
+        # 현재 정책은 thinking을 끄고 effort도 보내지 않는다. 아래 목록은 나중에 thinking을 켤 때
+        # 고를 수 있는 값이지, 지금 적용 중인 값이 아니다.
+        reasoning_effort=None,
+        supported_reasoning_efforts=frozenset(
+            {"low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_SCHEMA}),
+        capabilities_verified_on=date(2026, 7, 29),
+        capabilities_source_urls=(
+            "https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5",
+            "https://platform.claude.com/docs/en/build-with-claude/structured-outputs",
+        ),
+        # Claude 4.6+의 dateless canonical ID는 공식적으로 고정 스냅샷이다.
+        snapshot_model="claude-sonnet-5",
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("2.00"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.20"),
+                output_usd_per_1m_tokens=Decimal("10.00"),
+                cache_write_input_usd_per_1m_tokens=Decimal("2.50"),
+                source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+                verified_on=date(2026, 7, 29),
+                effective_from=date(2026, 6, 30),
+                effective_until=date(2026, 8, 31),
+            ),
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("3.00"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.30"),
+                output_usd_per_1m_tokens=Decimal("15.00"),
+                cache_write_input_usd_per_1m_tokens=Decimal("3.75"),
+                source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+                verified_on=date(2026, 7, 29),
+                effective_from=date(2026, 9, 1),
+            ),
+        ),
     ),
 }
 
@@ -105,6 +299,13 @@ def credentials(provider: str) -> ProviderCredentials:
             base_url=settings.deepseek_api_url,
             api_key_env="DEEPSEEK_API_KEY",
             base_url_env="DEEPSEEK_API_URL",
+        )
+    if provider == PROVIDER_OPENAI:
+        return ProviderCredentials(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_api_url,
+            api_key_env="OPENAI_API_KEY",
+            base_url_env="OPENAI_API_URL",
         )
     if provider == PROVIDER_ANTHROPIC:
         # base_url이 None이면 SDK 기본 주소를 쓴다 — 자체 호스팅 주소가 없는 게 보통이라

@@ -25,6 +25,8 @@ from openai import (
 
 from src.services.llm.base import (
     PROVIDER_DEEPSEEK,
+    PROVIDER_OPENAI,
+    STRUCTURED_OUTPUT_JSON_OBJECT,
     LlmBadRequest,
     LlmConfigError,
     LlmError,
@@ -111,7 +113,7 @@ def _client(provider: str) -> AsyncOpenAI:
 
 
 def _provider_kwargs(resolved: ResolvedModel) -> dict[str, object]:
-    """등록부의 뜻을 이 SDK 계열의 문법으로 옮긴다 — OpenAI 계열은 정식 인자가 아니라 extra_body로 싣는다.
+    """등록부의 뜻을 이 SDK 계열의 공급자별 문법으로 옮긴다.
 
     매번 새 dict를 만든다. 등록부 값을 그대로 넘겨 어댑터가 제자리에서 고치면 그 모델의 설정이
     프로세스 내내 오염되기 때문이다.
@@ -120,10 +122,30 @@ def _provider_kwargs(resolved: ResolvedModel) -> dict[str, object]:
     끄라고 적어둔 모델이 추론이 켜진 채 호출된다 — 등록부가 추론 모드를 반드시 정하게 만든
     취지(`base.ResolvedModel.use_thinking`에 기본값이 없는 이유)가 여기서 무너진다.
     """
+    if (
+        resolved.reasoning_effort is not None
+        and resolved.supported_reasoning_efforts
+        and resolved.reasoning_effort not in resolved.supported_reasoning_efforts
+    ):
+        raise LlmConfigError(
+            f"모델 '{resolved.model}'의 추론 강도 '{resolved.reasoning_effort}'가 지원 목록에 "
+            f"없습니다: {sorted(resolved.supported_reasoning_efforts)}"
+        )
     if resolved.provider == PROVIDER_DEEPSEEK:
         # DeepSeek V4는 추론이 기본이라 끌 때만 인자를 싣는다 — 창작 태스크에서 비추론이 더
         # 안정적이었다(KNK-208 벤치).
-        return {} if resolved.use_thinking else {"thinking": {"type": "disabled"}}
+        if not resolved.use_thinking:
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return (
+            {}
+            if resolved.reasoning_effort is None
+            else {"reasoning_effort": resolved.reasoning_effort}
+        )
+    if resolved.provider == PROVIDER_OPENAI:
+        # GPT-5.6은 추론이 기본이므로 비추론 정책을 정식 Chat Completions 인자로 명시한다.
+        if resolved.reasoning_effort is not None:
+            return {"reasoning_effort": resolved.reasoning_effort}
+        return {} if resolved.use_thinking else {"reasoning_effort": "none"}
     if not resolved.use_thinking:
         raise LlmConfigError(
             f"공급자 '{resolved.provider}'에서 추론을 끄는 문법을 이 어댑터가 모릅니다 — "
@@ -145,6 +167,14 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
     """SDK에 넘길 인자를 조립한다. 값이 없는 인자는 **아예 넣지 않는다**(SDK 기본값에 맡긴다)."""
     kwargs: dict[str, object] = {"model": resolved.model, "messages": req.messages}
     if req.json_mode:
+        if (
+            resolved.structured_output_modes
+            and STRUCTURED_OUTPUT_JSON_OBJECT not in resolved.structured_output_modes
+        ):
+            raise LlmConfigError(
+                f"모델 '{resolved.model}'은 json_object 구조화 출력을 지원하지 않습니다: "
+                f"{sorted(resolved.structured_output_modes)}"
+            )
         kwargs["response_format"] = {"type": "json_object"}
     if req.temperature is not None:
         if resolved.supports_temperature:
@@ -158,12 +188,23 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
                 req.temperature,
             )
     if req.max_tokens is not None:
-        kwargs["max_tokens"] = req.max_tokens
+        if resolved.max_output_tokens is not None and req.max_tokens > resolved.max_output_tokens:
+            raise LlmConfigError(
+                f"모델 '{resolved.model}'의 max_tokens={req.max_tokens}이 최대 출력 "
+                f"{resolved.max_output_tokens}을 넘습니다."
+            )
+        # 최신 GPT는 max_tokens 대신 max_completion_tokens를 쓴다. DeepSeek 호환 API는
+        # 기존 max_tokens를 유지한다.
+        token_key = (
+            "max_completion_tokens"
+            if resolved.provider == PROVIDER_OPENAI
+            else "max_tokens"
+        )
+        kwargs[token_key] = req.max_tokens
     if req.timeout is not None:
         kwargs["timeout"] = req.timeout
     provider_kwargs = _provider_kwargs(resolved)
-    if provider_kwargs:
-        kwargs["extra_body"] = provider_kwargs
+    kwargs.update(provider_kwargs)
     return kwargs
 
 
@@ -189,7 +230,7 @@ def _text_of(response: object) -> str:
     return content if isinstance(content, str) else ""
 
 
-def _usage_of(payload: object) -> TokenUsage:
+def _usage_of(payload: object, resolved: ResolvedModel) -> TokenUsage:
     """usage를 옮긴다.
 
     `prompt_tokens`는 캐시 적중분을 **이미 포함한 합계**다(DeepSeek·GPT) — 여기서 캐시 값을
@@ -197,11 +238,18 @@ def _usage_of(payload: object) -> TokenUsage:
     누락된 값은 0이 아니라 None으로 남긴다(백엔드 계약: 누락 시 null).
     """
     usage = getattr(payload, "usage", None)
+    if resolved.provider == PROVIDER_OPENAI:
+        details = getattr(usage, "prompt_tokens_details", None)
+        cache_creation_input_tokens = getattr(details, "cache_write_tokens", None)
+        cache_read_input_tokens = getattr(details, "cached_tokens", None)
+    else:
+        cache_creation_input_tokens = None
+        cache_read_input_tokens = getattr(usage, "prompt_cache_hit_tokens", None)
     return TokenUsage(
         input_tokens=getattr(usage, "prompt_tokens", None),
         output_tokens=getattr(usage, "completion_tokens", None),
-        # DeepSeek 전용 진단 필드. GPT는 다른 이름이라 등록 시(다음 단계) 함께 확인한다.
-        cache_read_input_tokens=getattr(usage, "prompt_cache_hit_tokens", None),
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
     )
 
 
@@ -248,7 +296,7 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
         # 응답 meta 조립에서 터진다.
         model=getattr(response, "model", None) or req.model,
         provider=resolved.provider,
-        usage=_usage_of(response),
+        usage=_usage_of(response, resolved),
         finish_reason=_finish_reason_of(response),
     )
 
@@ -278,7 +326,7 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
             # choices 가드보다 먼저 수집한다.
             model = getattr(chunk, "model", None) or model
             if getattr(chunk, "usage", None) is not None:
-                usage = _usage_of(chunk)
+                usage = _usage_of(chunk, resolved)
             choices = getattr(chunk, "choices", None) or []
             if not choices:
                 continue

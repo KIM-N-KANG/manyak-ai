@@ -50,11 +50,23 @@ def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> Non
     assert s.chat_model == "deepseek-v4-flash"
 
 
-# ── Anthropic 접속 정보 (KNK-675) ───────────────────────────────────────────
-def test_anthropic_credentials_are_optional(monkeypatch) -> None:
-    """Anthropic 키·주소는 필수가 아니다 — 아직 이 공급자를 쓰는 모델이 없다.
+# ── 대체 공급자 접속 정보 (KNK-675, KNK-703) ────────────────────────────────
+def test_openai_credentials_are_optional(monkeypatch) -> None:
+    """OpenAI 키·주소는 선택하기 전까지 필수가 아니다."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_URL", raising=False)
 
-    DeepSeek 키처럼 필수로 만들면, 이 공급자를 안 쓰는 환경(로컬·CI·현재 운영 전부)이
+    s = Settings(_env_file=None)
+
+    assert s.openai_api_key == ""
+    assert s.openai_api_url is None
+
+
+def test_anthropic_credentials_are_optional(monkeypatch) -> None:
+    """Anthropic 키·주소는 선택하기 전까지 필수가 아니다.
+
+    DeepSeek 키처럼 필수로 만들면, 이 공급자를 안 쓰는 환경(로컬·CI·현재 운영)이
     설정 하나 때문에 기동에 실패한다.
     """
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")

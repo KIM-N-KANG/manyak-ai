@@ -201,6 +201,15 @@ def check_supported(resolved: ResolvedModel) -> None:
     생기는 날 여기가 그것을 막는 자리다.
     """
     _thinking_of(resolved)
+    if (
+        resolved.reasoning_effort is not None
+        and resolved.supported_reasoning_efforts
+        and resolved.reasoning_effort not in resolved.supported_reasoning_efforts
+    ):
+        raise LlmConfigError(
+            f"모델 '{resolved.model}'의 추론 강도 '{resolved.reasoning_effort}'가 지원 목록에 "
+            f"없습니다: {sorted(resolved.supported_reasoning_efforts)}"
+        )
 
 
 def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]:
@@ -217,6 +226,8 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         "max_tokens": req.max_tokens if req.max_tokens is not None else NOT_GIVEN,
         "thinking": _thinking_of(resolved),
     }
+    if resolved.reasoning_effort is not None:
+        kwargs["output_config"] = {"effort": resolved.reasoning_effort}
     if system is not None:
         kwargs["system"] = system
     if req.temperature is not None:
@@ -232,6 +243,12 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
             )
     if req.timeout is not None:
         kwargs["timeout"] = req.timeout
+    if req.max_tokens is not None and resolved.max_output_tokens is not None:
+        if req.max_tokens > resolved.max_output_tokens:
+            raise LlmConfigError(
+                f"모델 '{resolved.model}'의 max_tokens={req.max_tokens}이 최대 출력 "
+                f"{resolved.max_output_tokens}을 넘습니다."
+            )
     if req.json_mode:
         # 이 회사에는 "아무 JSON이나 좋으니 JSON으로만 답해"라는 스위치가 없다. 구조화 출력은
         # **JSON 스키마 전체**를 요구하는데(`output_config.format`의 schema가 필수), 통로가
