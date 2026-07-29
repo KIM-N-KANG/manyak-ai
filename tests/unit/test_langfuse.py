@@ -56,8 +56,8 @@ def test_init_langfuse_enabled_with_jp_prod_and_keys(monkeypatch) -> None:
 
     차단 테스트만 있으면 허용값 상수의 오타(예: "prod"→"production")가 스위트를 전부
     통과한 채 프로덕션 활성화를 조용히 죽인다 — 켜지는 쪽을 고정해 그 변이를 잡는다.
-    실제 계측의 부작용이 다른 테스트로 새지 않도록 OpenAI·Anthropic 계측은 가짜 모듈로,
-    SDK 생성자는 기록용 가짜로 바꾼다(무과금)."""
+    실제 계측 import의 부작용(openai 전역 몽키패치)이 다른 테스트로 새지 않도록
+    `langfuse.openai`는 빈 가짜 모듈로, SDK 생성자는 기록용 가짜로 바꾼다(무과금)."""
     import sys
     import types
 
@@ -74,58 +74,13 @@ def test_init_langfuse_enabled_with_jp_prod_and_keys(monkeypatch) -> None:
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 
-    class _FakeAnthropicInstrumentor:
-        def instrument(self) -> None:
-            captured["anthropic_instrumented"] = True
-
-        def uninstrument(self) -> None:
-            captured["anthropic_uninstrumented"] = True
-
-    fake_anthropic_module = types.ModuleType("opentelemetry.instrumentation.anthropic")
-    fake_anthropic_module.AnthropicInstrumentor = _FakeAnthropicInstrumentor
     monkeypatch.setattr(langfuse_pkg, "Langfuse", _FakeLangfuse)
     monkeypatch.setitem(sys.modules, "langfuse.openai", types.ModuleType("langfuse.openai"))
-    monkeypatch.setitem(sys.modules, "opentelemetry.instrumentation.anthropic", fake_anthropic_module)
 
     lf.init_langfuse()
     assert lf._state.enabled is True
     assert captured["host"] == "https://jp.cloud.langfuse.com"  # 정규화된 값이 SDK로 간다
     assert captured["environment"] == "prod"
-    assert captured["anthropic_instrumented"] is True
-
-
-def test_init_langfuse_survives_anthropic_instrumentation_failure(monkeypatch, caplog) -> None:
-    """Anthropic 계측 설치 실패도 서비스 기동을 막지 않고 부분 설치를 정리한다."""
-    import sys
-    import types
-
-    monkeypatch.setattr(lf.settings, "langfuse_public_key", "pk-test")
-    monkeypatch.setattr(lf.settings, "langfuse_secret_key", "sk-test")
-    monkeypatch.setattr(lf.settings, "langfuse_host", "https://jp.cloud.langfuse.com")
-    monkeypatch.setattr(lf.settings, "sentry_environment", "prod")
-    monkeypatch.setattr(lf._state, "enabled", False)
-
-    captured: dict[str, bool] = {}
-
-    class _BoomAnthropicInstrumentor:
-        def instrument(self) -> None:
-            raise RuntimeError("Anthropic 계측 실패 시뮬레이션")
-
-        def uninstrument(self) -> None:
-            captured["uninstrumented"] = True
-
-    fake_anthropic_module = types.ModuleType("opentelemetry.instrumentation.anthropic")
-    fake_anthropic_module.AnthropicInstrumentor = _BoomAnthropicInstrumentor
-    monkeypatch.setattr(langfuse_pkg, "Langfuse", lambda **kwargs: object())
-    monkeypatch.setitem(sys.modules, "opentelemetry.instrumentation.anthropic", fake_anthropic_module)
-
-    with caplog.at_level("ERROR"):
-        lf.init_langfuse()
-
-    assert lf._state.enabled is False
-    assert captured["uninstrumented"] is True
-    assert "langfuse.openai" not in sys.modules
-    assert any("초기화 실패" in r.message for r in caplog.records)
 
 
 def test_init_langfuse_survives_sdk_failure(monkeypatch, caplog) -> None:

@@ -16,9 +16,6 @@ dependencies = [
     "anthropic>=0.120.0,<1",
     "sentry-sdk[fastapi]>=2.0.0",
     "langfuse>=4.0.0,<5",
-    # Anthropic SDK 호출도 Langfuse generation으로 남긴다(KNK-703). 하한은 공식 연동 문서와
-    # 현재 PyPI 배포본을 확인한 버전이며 0.x라 major 상한도 함께 둔다.
-    "opentelemetry-instrumentation-anthropic>=0.62.1,<1",
 ]
 
 [project.optional-dependencies]
