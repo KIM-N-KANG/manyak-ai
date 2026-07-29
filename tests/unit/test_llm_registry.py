@@ -4,6 +4,9 @@ settings는 전역을 고쳐 쓰지 않고 `Settings(_env_file=None, ...)`로 �
 (test_config.py와 동일 규약) — 레포의 실제 .env 값에 결과가 흔들리지 않게.
 """
 
+from datetime import date
+from decimal import Decimal
+
 import pytest
 
 from src.core.config import Settings
@@ -14,6 +17,9 @@ from src.services.llm.base import (
     ADAPTER_OPENAI_SDK,
     PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
+    PROVIDER_OPENAI,
+    STRUCTURED_OUTPUT_JSON_OBJECT,
+    STRUCTURED_OUTPUT_JSON_SCHEMA,
     LlmConfigError,
     LlmError,
     LlmTimeout,
@@ -33,6 +39,8 @@ def _clear_llm_env(monkeypatch) -> None:
         "STORYLINES_MODEL",
         "STORY_COMPILE_MODEL",
         "CHAT_MODEL",
+        "OPENAI_API_KEY",
+        "OPENAI_API_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_API_URL",
     ):
@@ -56,6 +64,26 @@ def test_resolve_deepseek_models(model: str) -> None:
     assert resolved.adapter == ADAPTER_OPENAI_SDK
 
 
+@pytest.mark.parametrize("model", ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini"])
+def test_resolve_openai_models(model: str) -> None:
+    """등록한 GPT 3종은 OpenAI 공급자 + OpenAI SDK 어댑터로 해석된다."""
+    resolved = registry.resolve(model)
+
+    assert resolved.model == model
+    assert resolved.provider == PROVIDER_OPENAI
+    assert resolved.adapter == ADAPTER_OPENAI_SDK
+    assert (resolved.use_thinking, resolved.supports_temperature) == (False, False)
+
+
+def test_resolve_claude_sonnet_5() -> None:
+    """Claude Sonnet 5는 Anthropic 공급자 + Anthropic SDK 어댑터로 해석된다."""
+    resolved = registry.resolve("claude-sonnet-5")
+
+    assert resolved.provider == PROVIDER_ANTHROPIC
+    assert resolved.adapter == ADAPTER_ANTHROPIC_SDK
+    assert (resolved.use_thinking, resolved.supports_temperature) == (False, False)
+
+
 def test_registry_holds_meaning_not_provider_syntax() -> None:
     """호출 특성을 **뜻**으로 담는다 — 회사 문법(extra_body 등)은 등록부에 없고 어댑터가 만든다."""
     resolved = registry.resolve("deepseek-v4-flash")
@@ -75,6 +103,144 @@ def test_each_model_declares_its_own_settings() -> None:
 
     assert (pro.use_thinking, pro.supports_temperature) == (False, True)
     assert (flash.use_thinking, flash.supports_temperature) == (False, True)
+
+
+@pytest.mark.parametrize(
+    ("model", "input_price", "cache_read_price", "output_price"),
+    [
+        ("deepseek-v4-pro", "0.435", "0.003625", "0.87"),
+        ("deepseek-v4-flash", "0.14", "0.0028", "0.28"),
+        ("gpt-5.6-terra", "2.50", "0.25", "15.00"),
+        ("gpt-5.6-luna", "1.00", "0.10", "6.00"),
+        ("gpt-5.4-mini", "0.75", "0.075", "4.50"),
+        ("claude-sonnet-5", "2.00", "0.20", "10.00"),
+    ],
+)
+def test_registered_model_pricing_per_million_tokens(
+    model: str, input_price: str, cache_read_price: str, output_price: str
+) -> None:
+    """모든 실사용 모델이 2026-07-29 기준 입력·캐시 읽기·출력 USD 단가를 가진다."""
+    price = registry.resolve(model).pricing_on(date(2026, 7, 29))
+
+    assert price.input_usd_per_1m_tokens == Decimal(input_price)
+    assert price.cache_read_input_usd_per_1m_tokens == Decimal(cache_read_price)
+    assert price.output_usd_per_1m_tokens == Decimal(output_price)
+    assert price.verified_on == date(2026, 7, 29)
+    assert price.source_url.startswith("https://")
+
+
+def test_every_registered_model_has_pricing() -> None:
+    """앞으로 모델을 등록할 때 가격표를 빠뜨리면 이 테스트가 막는다."""
+    assert all(resolved.pricing for resolved in registry._REGISTRY.values())
+
+
+@pytest.mark.parametrize(
+    ("model", "context_window", "max_output", "reasoning_effort", "structured_modes"),
+    [
+        ("deepseek-v4-pro", 1_000_000, 384_000, None, {STRUCTURED_OUTPUT_JSON_OBJECT}),
+        ("deepseek-v4-flash", 1_000_000, 384_000, None, {STRUCTURED_OUTPUT_JSON_OBJECT}),
+        (
+            "gpt-5.6-terra",
+            1_050_000,
+            128_000,
+            "none",
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
+        ),
+        (
+            "gpt-5.6-luna",
+            1_050_000,
+            128_000,
+            "none",
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
+        ),
+        (
+            "gpt-5.4-mini",
+            400_000,
+            128_000,
+            "none",
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
+        ),
+        (
+            "claude-sonnet-5",
+            1_000_000,
+            128_000,
+            None,
+            {STRUCTURED_OUTPUT_JSON_SCHEMA},
+        ),
+    ],
+)
+def test_registered_model_capabilities(
+    model: str,
+    context_window: int,
+    max_output: int,
+    reasoning_effort: str | None,
+    structured_modes: set[str],
+) -> None:
+    """공식 문서에서 확인한 한도·추론·구조화 출력 능력을 모델마다 고정한다."""
+    resolved = registry.resolve(model)
+
+    assert resolved.context_window_tokens == context_window
+    assert resolved.max_output_tokens == max_output
+    assert resolved.reasoning_effort == reasoning_effort
+    assert resolved.structured_output_modes == frozenset(structured_modes)
+    assert resolved.capabilities_verified_on == date(2026, 7, 29)
+    assert resolved.capabilities_source_urls
+    assert all(url.startswith("https://") for url in resolved.capabilities_source_urls)
+
+
+def test_every_registered_model_has_complete_valid_capabilities() -> None:
+    """앞으로 모델 등록 시 한도·추론 목록·구조화 출력·근거 누락이나 모순을 막는다."""
+    for resolved in registry._REGISTRY.values():
+        assert resolved.context_window_tokens is not None
+        assert resolved.max_output_tokens is not None
+        assert 0 < resolved.max_output_tokens <= resolved.context_window_tokens
+        assert resolved.supported_reasoning_efforts
+        if resolved.reasoning_effort is not None:
+            assert resolved.reasoning_effort in resolved.supported_reasoning_efforts
+        assert resolved.structured_output_modes
+        assert resolved.capabilities_verified_on is not None
+        assert resolved.capabilities_source_urls
+
+
+def test_available_pinned_snapshots_are_recorded() -> None:
+    """공식적으로 확인되는 고정 스냅샷만 적고, 없는 ID를 지어내지 않는다."""
+    assert registry.resolve("gpt-5.4-mini").snapshot_model == "gpt-5.4-mini-2026-03-17"
+    assert registry.resolve("claude-sonnet-5").snapshot_model == "claude-sonnet-5"
+    assert registry.resolve("gpt-5.6-terra").snapshot_model is None
+    assert registry.resolve("gpt-5.6-luna").snapshot_model is None
+    assert registry.resolve("deepseek-v4-pro").snapshot_model is None
+    assert registry.resolve("deepseek-v4-flash").snapshot_model is None
+
+
+def test_claude_sonnet_5_pricing_switches_after_introductory_period() -> None:
+    """Sonnet 5의 공식 할인 종료일 다음 날부터 예정된 표준 단가를 고른다."""
+    model = registry.resolve("claude-sonnet-5")
+
+    introductory = model.pricing_on(date(2026, 8, 31))
+    standard = model.pricing_on(date(2026, 9, 1))
+
+    assert (
+        introductory.input_usd_per_1m_tokens,
+        introductory.cache_write_input_usd_per_1m_tokens,
+        introductory.cache_read_input_usd_per_1m_tokens,
+        introductory.output_usd_per_1m_tokens,
+    ) == (Decimal("2.00"), Decimal("2.50"), Decimal("0.20"), Decimal("10.00"))
+    assert (
+        standard.input_usd_per_1m_tokens,
+        standard.cache_write_input_usd_per_1m_tokens,
+        standard.cache_read_input_usd_per_1m_tokens,
+        standard.output_usd_per_1m_tokens,
+    ) == (Decimal("3.00"), Decimal("3.75"), Decimal("0.30"), Decimal("15.00"))
+
+
+def test_gpt_5_6_pricing_includes_cache_write_and_long_context_rules() -> None:
+    """GPT-5.6의 별도 캐시 쓰기 단가와 272K 초과 할증을 보존한다."""
+    terra = registry.resolve("gpt-5.6-terra").pricing_on(date(2026, 7, 29))
+
+    assert terra.cache_write_input_usd_per_1m_tokens == Decimal("3.125")
+    assert terra.long_context_threshold_tokens == 272_000
+    assert terra.long_context_input_multiplier == Decimal("2")
+    assert terra.long_context_output_multiplier == Decimal("1.5")
 
 
 def test_resolve_unknown_model_lists_known_models() -> None:
@@ -120,6 +286,17 @@ def test_credentials_for_anthropic(monkeypatch) -> None:
     assert (creds.api_key_env, creds.base_url_env) == ("ANTHROPIC_API_KEY", "ANTHROPIC_API_URL")
 
 
+def test_credentials_for_openai(monkeypatch) -> None:
+    """OpenAI 접속 정보와 고칠 env 이름을 함께 읽는다."""
+    monkeypatch.setattr(registry, "settings", _settings(openai_api_key="openai-key"))
+
+    creds = registry.credentials(PROVIDER_OPENAI)
+
+    assert creds.api_key == "openai-key"
+    assert creds.base_url is None
+    assert (creds.api_key_env, creds.base_url_env) == ("OPENAI_API_KEY", "OPENAI_API_URL")
+
+
 def test_credentials_unknown_provider_rejected() -> None:
     """접속 규칙이 없는 공급자는 조용히 넘어가지 않는다."""
     with pytest.raises(LlmConfigError):
@@ -139,17 +316,6 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
     같은 빈 키가 **고르는 순간 막는지**를 짝으로 확인한다 — 통과와 거부를 가르는 것이 정말
     "선택 여부"임을 이 대비가 고정한다.
     """
-    monkeypatch.setitem(
-        registry._REGISTRY,
-        "model-on-the-anthropic-adapter",
-        ResolvedModel(
-            model="model-on-the-anthropic-adapter",
-            provider=PROVIDER_ANTHROPIC,
-            adapter=ADAPTER_ANTHROPIC_SDK,
-            use_thinking=True,
-        ),
-    )
-
     # 안 고르면 — Anthropic 키가 비어도 기동한다
     monkeypatch.setattr(registry, "settings", _settings(anthropic_api_key=""))
     registry.validate_selected_models()
@@ -158,7 +324,7 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(anthropic_api_key="", storylines_model="model-on-the-anthropic-adapter"),
+        _settings(anthropic_api_key="", storylines_model="claude-sonnet-5"),
     )
     with pytest.raises(LlmConfigError) as exc_info:
         registry.validate_selected_models()
@@ -170,7 +336,31 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(anthropic_api_key="ant-key", storylines_model="model-on-the-anthropic-adapter"),
+        _settings(anthropic_api_key="ant-key", storylines_model="claude-sonnet-5"),
+    )
+    registry.validate_selected_models()
+
+
+def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypatch) -> None:
+    """OpenAI 키도 GPT를 고른 순간에만 필수가 된다."""
+    monkeypatch.setattr(registry, "settings", _settings(openai_api_key=""))
+    registry.validate_selected_models()
+
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(openai_api_key="", storylines_model="gpt-5.6-terra"),
+    )
+    with pytest.raises(LlmConfigError) as exc_info:
+        registry.validate_selected_models()
+    message = str(exc_info.value)
+    assert "STORYLINES_MODEL" in message
+    assert "OPENAI_API_KEY" in message
+
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(openai_api_key="openai-key", storylines_model="gpt-5.6-terra"),
     )
     registry.validate_selected_models()
 
@@ -259,8 +449,8 @@ def test_validate_rejects_malformed_base_url(monkeypatch, bad_url: str) -> None:
 def test_validate_allows_missing_base_url() -> None:
     """주소가 아예 없으면 통과한다 — SDK 기본 주소를 쓰겠다는 뜻이라 오류가 아니다.
 
-    DeepSeek은 주소에 기본값이 있어 None이 되지 않는다. 주소 없이 부르는 공급자(다음 단계에
-    등록될 GPT·Anthropic)가 이 갈래를 탄다.
+    DeepSeek은 주소에 기본값이 있어 None이 되지 않는다. 주소 없이 부르는 OpenAI·Anthropic이
+    이 갈래를 탄다.
     """
     creds = registry.ProviderCredentials(
         api_key="k", base_url=None, api_key_env="X_API_KEY", base_url_env="X_API_URL"

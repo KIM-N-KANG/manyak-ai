@@ -20,6 +20,9 @@ from src.services.llm import openai_sdk, registry
 from src.services.llm.base import (
     ADAPTER_OPENAI_SDK,
     PROVIDER_DEEPSEEK,
+    PROVIDER_OPENAI,
+    STRUCTURED_OUTPUT_JSON_OBJECT,
+    STRUCTURED_OUTPUT_JSON_SCHEMA,
     LlmBadRequest,
     LlmConfigError,
     LlmRateLimited,
@@ -38,6 +41,24 @@ _FLASH = ResolvedModel(
     adapter=ADAPTER_OPENAI_SDK,
     use_thinking=False,
     supports_temperature=True,
+    max_output_tokens=384_000,
+    supported_reasoning_efforts=frozenset({"high", "max"}),
+    structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
+)
+_GPT = ResolvedModel(
+    model="gpt-5.6-terra",
+    provider=PROVIDER_OPENAI,
+    adapter=ADAPTER_OPENAI_SDK,
+    use_thinking=False,
+    supports_temperature=False,
+    max_output_tokens=128_000,
+    reasoning_effort="none",
+    supported_reasoning_efforts=frozenset(
+        {"none", "low", "medium", "high", "xhigh", "max"}
+    ),
+    structured_output_modes=frozenset(
+        {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+    ),
 )
 # temperature를 안 받고 추론을 쓰는 다른 회사 모델(가상) — 인자 생략·문법 분기 확인용.
 _STRICT = ResolvedModel(
@@ -71,6 +92,16 @@ def _install(monkeypatch, completions: _FakeCompletions) -> None:
 def _usage(prompt=100, completion=20, cache_hit=64):
     return SimpleNamespace(
         prompt_tokens=prompt, completion_tokens=completion, prompt_cache_hit_tokens=cache_hit
+    )
+
+
+def _openai_usage(prompt=100, completion=20, cache_hit=64, cache_write=16):
+    return SimpleNamespace(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        prompt_tokens_details=SimpleNamespace(
+            cached_tokens=cache_hit, cache_write_tokens=cache_write
+        ),
     )
 
 
@@ -151,6 +182,69 @@ async def test_complete_omits_absent_values(monkeypatch) -> None:
     await openai_sdk.complete(_req(), _FLASH)
 
     assert set(completions.captured) == {"model", "messages", "extra_body"}
+
+
+async def test_complete_sends_openai_model_kwargs(monkeypatch) -> None:
+    """GPT에는 OpenAI 정식 추론·출력 한도 인자를 보내고 지원하지 않는 temperature는 뺀다."""
+    completions = _FakeCompletions(result=_response(model="gpt-5.6-terra"))
+    _install(monkeypatch, completions)
+
+    await openai_sdk.complete(
+        _req(model="gpt-5.6-terra", temperature=0.75, max_tokens=6144),
+        _GPT,
+    )
+
+    assert completions.captured == {
+        "model": "gpt-5.6-terra",
+        "messages": _req().messages,
+        "max_completion_tokens": 6144,
+        "reasoning_effort": "none",
+    }
+
+
+def test_unsupported_reasoning_effort_is_rejected() -> None:
+    """등록부 오타를 첫 사용자 호출까지 미루지 않고 기동 검사에서 막는다."""
+    invalid = ResolvedModel(
+        model="gpt-invalid",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=True,
+        reasoning_effort="maximum",
+        supported_reasoning_efforts=frozenset({"low", "high"}),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        openai_sdk.check_supported(invalid)
+
+    assert "maximum" in str(exc_info.value)
+
+
+def test_model_output_limit_is_enforced_before_request() -> None:
+    """모델 최대 출력보다 큰 요청은 공급자 400이 아니라 우리 설정 오류로 먼저 드러난다."""
+    with pytest.raises(LlmConfigError) as exc_info:
+        openai_sdk._build_kwargs(
+            _req(model="gpt-5.6-terra", max_tokens=128_001),
+            _GPT,
+        )
+
+    assert "128001" in str(exc_info.value)
+    assert "128000" in str(exc_info.value)
+
+
+def test_json_object_request_rejects_schema_only_model() -> None:
+    """json_mode를 json_object로 표현할 수 없는 모델에 거짓 강제 옵션을 보내지 않는다."""
+    schema_only = ResolvedModel(
+        model="schema-only",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_SCHEMA}),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        openai_sdk._build_kwargs(_req(model="schema-only", json_mode=True), schema_only)
+
+    assert "json_object" in str(exc_info.value)
 
 
 async def test_complete_drops_unsupported_temperature(monkeypatch) -> None:
@@ -236,6 +330,19 @@ async def test_usage_does_not_double_count_cache(monkeypatch) -> None:
 
     assert usage.input_tokens == 100  # 100 + 64가 아니다
     assert usage.output_tokens == 20
+    assert usage.cache_read_input_tokens == 64
+
+
+async def test_openai_usage_reads_cache_details(monkeypatch) -> None:
+    """OpenAI의 캐시 읽기·쓰기 토큰은 prompt_tokens_details에서 읽는다."""
+    response = _response(model="gpt-5.6-terra", usage=_openai_usage(100, 20, 64, 16))
+    _install(monkeypatch, _FakeCompletions(result=response))
+
+    usage = (await openai_sdk.complete(_req(model="gpt-5.6-terra"), _GPT)).usage
+
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 20
+    assert usage.cache_creation_input_tokens == 16
     assert usage.cache_read_input_tokens == 64
 
 
@@ -719,7 +826,7 @@ def test_validate_startup_rejects_model_the_adapter_cannot_express(monkeypatch) 
     """
     unsupported = ResolvedModel(
         model="gpt-x",
-        provider="openai",  # 키는 있다고 치지만
+        provider="unsupported-provider",  # 키는 있다고 치지만
         adapter=ADAPTER_OPENAI_SDK,
         use_thinking=False,  # 이 공급자의 "추론 끄기" 문법을 어댑터가 모른다
         supports_temperature=True,

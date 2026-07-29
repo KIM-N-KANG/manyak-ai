@@ -4,14 +4,13 @@
 계측을 **켜는 유일한 지점**이고(`init_langfuse`), 트레이스로 묶는 도구(`observe_request`)와
 종료 flush(`shutdown_langfuse`)를 함께 둔다.
 
-**계측을 왜 여기서만 켜나 (핵심 설계).** `langfuse.openai`는 import되는 순간 `openai` 모듈의
-`AsyncCompletions.create`를 프로세스 전역으로 monkey-patch한다 — 서브클래스가 아니라 원본
-클래스 메서드를 바꾼다. 그래서 서비스 모듈이 `from langfuse.openai import ...`로 바꾸면 그
-파일을 import하는 **모든** 경로(운영 서버뿐 아니라 experiment 러너·scripts 로컬 도구)가 계측을
-물려받는다. 그건 원치 않는다 — experiment는 자체 기록 체계가 있어 이중 기록이 되고, 러너는
-init_langfuse를 부르지 않으므로 키 처리도 안 된다.
+**계측을 왜 여기서만 켜나 (핵심 설계).** `langfuse.openai`와 Anthropic의 OpenTelemetry
+instrumentor는 각 SDK 호출을 프로세스 전역에서 가로챈다. 그래서 서비스 모듈에서 직접 계측을
+켜면 그 파일을 import하는 **모든** 경로(운영 서버뿐 아니라 experiment 러너·scripts 로컬 도구)가
+계측을 물려받는다. 그건 원치 않는다 — experiment는 자체 기록 체계가 있어 이중 기록이 되고,
+러너는 init_langfuse를 부르지 않으므로 키 처리도 안 된다.
 
-그래서 서비스 모듈은 순정 `openai`를 쓰고, 계측 import는 **여기 init_langfuse 안에서만** 한다.
+그래서 서비스 모듈은 순정 SDK를 쓰고, 계측 설치는 **여기 init_langfuse 안에서만** 한다.
 init_langfuse는 앱 기동 경로(main.py)에서만 불리므로, 서버를 띄우지 않고 함수를 직접 부르는
 experiment·scripts에는 계측이 아예 실리지 않는다. 뒤늦은 import여도 이미 만들어진 클라이언트에
 패치가 걸린다(monkey-patch가 인스턴스가 아니라 클래스 메서드를 바꾸기 때문).
@@ -68,7 +67,7 @@ _state = _LangfuseState()
 
 
 def init_langfuse() -> None:
-    """앱 시작 시 Langfuse를 초기화하고 openai 계측을 건다. 키가 비거나 JP·prod 조건 미충족이면 no-op.
+    """앱 시작 시 Langfuse와 OpenAI·Anthropic 계측을 건다. 키가 비거나 가드 미충족이면 no-op.
 
     계측 import(`langfuse.openai`)를 이 함수 안에서만 하는 이유는 모듈 docstring 참조 —
     서버 기동 경로에서만 계측이 실리고 experiment·scripts에는 실리지 않게 하기 위함이다.
@@ -100,8 +99,10 @@ def init_langfuse() -> None:
     # 초기화 실패가 서비스 기동을 막으면 안 된다(P1 리뷰) — SDK가 여기서 무슨 예외를 내든
     # 오류 로그만 남기고 비활성(no-op)으로 기동한다. init은 main.py 모듈 로드 시점에 불리므로
     # 여기가 뚫려 있으면 관측 도구 고장이 앱 부팅 실패가 된다.
+    anthropic_instrumentor = None
     try:
         from langfuse import Langfuse
+        from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
         from sentry_sdk.integrations.logging import ignore_logger
 
         Langfuse(
@@ -117,12 +118,18 @@ def init_langfuse() -> None:
         # 계측 import보다 먼저 부른다 — 여기가 실패해도 아직 아무것도 설치되지 않은 상태다.
         ignore_logger("opentelemetry.context")
 
-        # 계측 import(openai 전역 몽키패치)는 **되돌릴 수 없으므로 맨 마지막에** 건다(Codex P2).
-        # 앞 단계가 하나라도 실패하면 계측이 걸리지 않은 깨끗한 비활성(no-op)으로 남는다 —
-        # 반대로 계측을 먼저 걸었다가 뒤 단계가 실패하면, "비활성" 로그를 찍고도 LLM 호출이
-        # Langfuse 래퍼를 계속 지나는 어긋난 상태가 된다.
+        # 공급자 계측은 맨 마지막에 건다. Anthropic 계측은 되돌릴 수 있으므로 먼저 설치하고,
+        # 되돌릴 수 없는 OpenAI 전역 패치는 정말 마지막 작업으로 둔다. OpenAI 설치가 실패하면
+        # except에서 Anthropic 계측도 걷어 비활성 표시와 실제 상태를 맞춘다.
+        anthropic_instrumentor = AnthropicInstrumentor()
+        anthropic_instrumentor.instrument()
         import langfuse.openai  # noqa: F401 — import 부작용으로 openai를 전역 계측(위 docstring)
     except Exception:  # noqa: BLE001 — 관측 초기화 실패는 서비스보다 중요하지 않다
+        if anthropic_instrumentor is not None:
+            try:
+                anthropic_instrumentor.uninstrument()
+            except Exception:  # noqa: BLE001 — 계측 정리 실패도 서비스 기동을 막지 않는다
+                logger.warning("Anthropic 계측 정리 실패 — 서비스는 관측 없이 계속 기동", exc_info=True)
         logger.error("Langfuse 초기화 실패 — 비활성(no-op)으로 기동", exc_info=True)
         return
     _state.enabled = True

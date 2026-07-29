@@ -6,6 +6,8 @@
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 from typing import Protocol, TypeAlias
 
 # 어댑터 종류 = SDK 계열이다(회사 단위가 아니다). DeepSeek과 GPT는 같은 OpenAI SDK를 쓰고
@@ -15,10 +17,44 @@ ADAPTER_ANTHROPIC_SDK = "anthropic_sdk"
 
 # 공급자 식별자 — 로깅 메타(meta.provider)와 Sentry provider 태그(AN-4-8)에 그대로 실린다.
 PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_OPENAI = "openai"
 PROVIDER_ANTHROPIC = "anthropic"
+
+# 구조화 출력 능력. 요청 문법은 어댑터가 만들고, 등록부에는 모델이 받아들이는 방식만 적는다.
+STRUCTURED_OUTPUT_JSON_OBJECT = "json_object"
+STRUCTURED_OUTPUT_JSON_SCHEMA = "json_schema"
 
 # LLM에 보내는 대화 한 줄. role은 소문자("system"·"user"·"assistant") — OpenAI 호환 규약.
 Message: TypeAlias = dict[str, str]
+
+
+@dataclass(frozen=True)
+class ModelPricing:
+    """공급자 직결 표준 API의 USD 단가(토큰 100만 개 기준).
+
+    배치·리전 고정·서버 도구처럼 호출 옵션에 따라 붙는 별도 요금은 포함하지 않는다. 캐시 쓰기
+    단가는 공급자가 별도로 과금하고 현재 어댑터가 그 종류를 쓰는 경우에만 적는다. 예를 들어
+    Anthropic 어댑터의 ``ephemeral`` 캐시는 기본 5분이라 5분 쓰기 단가를 쓴다.
+    """
+
+    input_usd_per_1m_tokens: Decimal
+    cache_read_input_usd_per_1m_tokens: Decimal
+    output_usd_per_1m_tokens: Decimal
+    source_url: str
+    verified_on: date
+    effective_from: date | None = None
+    effective_until: date | None = None
+    cache_write_input_usd_per_1m_tokens: Decimal | None = None
+    # GPT-5.6은 입력이 이 값을 넘으면 요청 전체의 입력·출력 단가가 각각 할증된다.
+    long_context_threshold_tokens: int | None = None
+    long_context_input_multiplier: Decimal = Decimal("1")
+    long_context_output_multiplier: Decimal = Decimal("1")
+
+    def applies_on(self, on: date) -> bool:
+        """이 단가가 지정 날짜에 적용되는지 반환한다."""
+        return (self.effective_from is None or self.effective_from <= on) and (
+            self.effective_until is None or on <= self.effective_until
+        )
 
 
 @dataclass(frozen=True)
@@ -34,13 +70,41 @@ class ResolvedModel:
     provider: str  # 로깅·Sentry 태그용 공급자
     adapter: str  # 어느 SDK 어댑터로 보낼지(ADAPTER_* 중 하나)
     # 이 모델을 추론(thinking) 모드로 부를지. **뜻만 적고 회사 문법은 어댑터가 만든다** —
-    # 같은 "추론 끄기"를 OpenAI 계열은 extra_body 안에, Anthropic은 요청 최상위 인자로 넣는다.
+    # 같은 "추론 끄기"를 DeepSeek은 extra_body 안에, GPT·Anthropic은 요청 최상위 인자로 넣는다.
     # 회사 문법을 등록부에 담으면 공급자가 늘 때마다 등록부를 고쳐야 한다(사용자 결정).
     # 기본값을 두지 않는다 — 새 모델을 올릴 때 추론 모드를 반드시 정하게 한다.
     use_thinking: bool
     # 모델이 temperature를 받는지. 안 받는 모델에 보내면 400으로 거부되므로(예: Anthropic
     # Sonnet 5) 어댑터가 그 인자를 빼고 보낸다 — 값을 몰래 바꾸지 않고 뺀다.
     supports_temperature: bool = True
+    # 기간이 겹치지 않는 가격표. 빈 기본값은 테스트용 가짜 모델을 간단히 만들기 위한 것이고,
+    # 실제 등록부 모델은 tests/unit/test_llm_registry.py에서 한 개 이상인지 강제한다.
+    pricing: tuple[ModelPricing, ...] = ()
+    # 공급자 공식 문서의 모델 한도. None 기본값은 테스트용 가짜 모델을 위한 것이고, 실제 등록부는
+    # 테스트에서 양의 정수와 max_output <= context 관계를 강제한다.
+    context_window_tokens: int | None = None
+    max_output_tokens: int | None = None
+    # 실제 요청에 보낼 추론 강도. None은 "공급자 기본값"이 아니라 "이 모델 설정에서는 effort
+    # 인자를 쓰지 않는다"는 뜻이다. 허용값 목록과 함께 적어 오타를 기동 검사에서 막는다.
+    reasoning_effort: str | None = None
+    supported_reasoning_efforts: frozenset[str] = frozenset()
+    structured_output_modes: frozenset[str] = frozenset()
+    # 기능 정보도 가격처럼 언제 어느 공식 문서로 확인했는지 남긴다. 고정 스냅샷이 따로 없으면
+    # snapshot_model은 None이다. Claude 4.6+의 dateless ID는 그 자체가 고정 스냅샷이다.
+    capabilities_verified_on: date | None = None
+    capabilities_source_urls: tuple[str, ...] = ()
+    snapshot_model: str | None = None
+
+    def pricing_on(self, on: date | None = None) -> ModelPricing:
+        """지정 날짜(기본값 오늘)에 적용되는 가격표를 반환한다."""
+        target = on or date.today()
+        matches = [price for price in self.pricing if price.applies_on(target)]
+        if len(matches) != 1:
+            raise ValueError(
+                f"모델 '{self.model}'의 {target.isoformat()} 가격표가 정확히 하나가 아닙니다: "
+                f"{len(matches)}개"
+            )
+        return matches[0]
 
 
 @dataclass(frozen=True)

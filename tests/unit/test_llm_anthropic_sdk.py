@@ -261,6 +261,68 @@ async def test_thinking_is_always_explicit(monkeypatch, resolved, expected) -> N
     assert messages.captured["thinking"] == expected
 
 
+async def test_claude_sonnet_5_disables_thinking_without_effort(monkeypatch) -> None:
+    """현재 Sonnet 5 정책은 추론을 끄고 effort를 아예 보내지 않는다.
+
+    thinking을 끈 채 effort=high를 함께 보내는 모순된 설정이 다시 생기지 않게 실제 등록값과
+    SDK에 넘어가는 전체 인자를 함께 확인한다.
+    """
+    resolved = registry.resolve("claude-sonnet-5")
+    messages = _FakeMessages(result=_response(model="claude-sonnet-5"))
+    _install(monkeypatch, messages)
+
+    await anthropic_sdk.complete(
+        _req(model="claude-sonnet-5"),
+        resolved,
+    )
+
+    assert resolved.reasoning_effort is None
+    assert messages.captured["thinking"] == {"type": "disabled"}
+    assert "output_config" not in messages.captured
+
+
+async def test_configured_effort_is_sent_only_when_present(monkeypatch) -> None:
+    """나중에 추론을 켜고 강도를 고르면 그때만 Anthropic effort 문법으로 옮긴다."""
+    effort_model = ResolvedModel(
+        model="anthropic-effort-model",
+        provider=PROVIDER_ANTHROPIC,
+        adapter=ADAPTER_ANTHROPIC_SDK,
+        use_thinking=True,
+        reasoning_effort="medium",
+        supported_reasoning_efforts=frozenset({"low", "medium", "high"}),
+    )
+    messages = _FakeMessages(result=_response(model="anthropic-effort-model"))
+    _install(monkeypatch, messages)
+
+    await anthropic_sdk.complete(
+        _req(model="anthropic-effort-model"),
+        effort_model,
+    )
+
+    assert messages.captured["thinking"] == {"type": "adaptive"}
+    assert messages.captured["output_config"] == {"effort": "medium"}
+
+
+def test_model_output_limit_is_enforced_before_anthropic_request() -> None:
+    """Anthropic 모델 최대 출력보다 큰 요청도 네트워크 전에 막는다."""
+    limited = ResolvedModel(
+        model="anthropic-limited",
+        provider=PROVIDER_ANTHROPIC,
+        adapter=ADAPTER_ANTHROPIC_SDK,
+        use_thinking=False,
+        max_output_tokens=128_000,
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        anthropic_sdk._build_kwargs(
+            _req(model="anthropic-limited", max_tokens=128_001),
+            limited,
+        )
+
+    assert "128001" in str(exc_info.value)
+    assert "128000" in str(exc_info.value)
+
+
 async def test_complete_drops_unsupported_temperature(monkeypatch) -> None:
     """모델이 temperature를 안 받으면 인자를 뺀다 — 다른 값으로 바꾸지 않는다."""
     messages = _FakeMessages(result=_response(model="anthropic-strict-model"))
