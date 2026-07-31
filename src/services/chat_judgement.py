@@ -191,14 +191,26 @@ def _sanitize(req: ChatTurnRequest, data: dict) -> JudgementResult:
     )
 
 
-async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementResult:
+async def generate_judgement(
+    req: ChatTurnRequest, ai_output: str, budget_seconds: float | None = None
+) -> JudgementResult:
     """방금 턴을 사후 판정한다. 재료가 없으면 호출 없이 스킵, 실패하면 흡수해 null.
 
     단일 호출이다(재호출 없음) — 판정은 폴백으로 지어낼 수 없는 값이라, 실패는
     '판정 없음(null)'이 가장 안전한 결과다.
+
+    `budget_seconds`는 호출부가 아는 **이 턴에 남은 시간**이다(KNK-750). 본문 스트리밍이
+    이미 오래 걸린 턴에서는 판정에 `_TIMEOUT_SECONDS`를 통째로 주면 턴 전체 상한을 넘겨
+    턴이 죽는다 — 그래서 둘 중 작은 값을 쓴다. 남은 시간이 없으면 부르지 않는다: 결과를
+    받아도 실을 자리가 없고, 부르는 만큼 completed만 더 늦어진다.
     """
     if not req.main_events and not req.endings:
         return _EMPTY  # 사건·엔딩 없는 스토리(재료 없음) — 비용·지연 0
+
+    budget = _TIMEOUT_SECONDS if budget_seconds is None else min(_TIMEOUT_SECONDS, budget_seconds)
+    if budget <= 0:
+        logger.warning("판정 스킵 — 이 턴에 남은 시간이 없다(남은 예산 %.1f초)", budget)
+        return _EMPTY
 
     # 이 호출이 어느 공급자로 갈지는 부르기 전에 정한다 — 등록부 해석이 실패하면 LLM을
     # 부르기도 전에 막혀 헛돈이 안 나가고, 네 호출부(본문·선택지·판정·스토리)가 모두 같은
@@ -221,11 +233,11 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
                         {"role": "user", "content": _build_user(req, ai_output)},
                     ],
                     max_tokens=_MAX_TOKENS,
-                    timeout=_TIMEOUT_SECONDS,
+                    timeout=budget,
                     json_mode=True,
                 )
             ),
-            timeout=_TIMEOUT_SECONDS,
+            timeout=budget,
         )
         # 통로는 응답 모양이 깨져도 예외를 던지지 않고 빈 문자열을 준다 — 아래가 그대로 받는다.
         if not result_llm.text:

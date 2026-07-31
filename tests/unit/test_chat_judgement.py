@@ -417,3 +417,53 @@ async def test_total_timeout_bounds_slow_call(monkeypatch, install_llm_sdk) -> N
     assert len(captures) == 1, f"Sentry 보고는 한 번이어야 한다 — {len(captures)}회"
     assert isinstance(captures[0]["exc"], TimeoutError), captures[0]["exc"]
     assert captures[0]["error_code"] == "provider_timeout"
+
+
+# ── 남은 시간에 맞춰 예산을 줄인다 (KNK-750 회귀) ─────────────────────────────
+# 호출부가 넘긴 남은 시간이 상수보다 짧으면 그쪽을 쓴다. 안 그러면 본문이 오래 걸린 턴에서
+# 판정이 턴 전체 상한을 넘겨 턴을 죽인다.
+async def test_budget_is_capped_by_what_the_caller_has_left(install_llm_sdk) -> None:
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    await generate_judgement(_request(main_events=_EVENTS), "*장면*", budget_seconds=12.0)
+
+    assert captured["timeout"] == 12.0
+
+
+# 반대로 남은 시간이 넉넉해도 상수를 넘기지는 않는다 — 둘 중 작은 값이다.
+async def test_budget_never_exceeds_the_constant(install_llm_sdk) -> None:
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    await generate_judgement(_request(main_events=_EVENTS), "*장면*", budget_seconds=9999.0)
+
+    assert captured["timeout"] == chat_judgement._TIMEOUT_SECONDS == 60.0
+
+
+# 남은 시간이 없으면 아예 부르지 않는다 — 결과를 받아도 실을 자리가 없고, 부르는 만큼
+# completed만 더 늦어져 턴이 죽을 확률만 올라간다.
+async def test_no_call_when_nothing_is_left(install_llm_sdk) -> None:
+    calls = {"n": 0}
+
+    async def _create(**kwargs):
+        calls["n"] += 1
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*", budget_seconds=0.0)
+
+    assert calls["n"] == 0, "남은 시간이 없으면 LLM을 부르면 안 된다"
+    assert (res.target_main_event, res.occurred_main_event_name, res.ending_name) == (
+        None,
+        None,
+        None,
+    )

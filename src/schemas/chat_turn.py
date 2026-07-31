@@ -148,13 +148,37 @@ class ChatTurnRequest(BaseModel):
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────
 # manyak-server의 SSE 규격(started→token→completed→error)과 통일한다.
-# AI(manyak-ai)가 발행하는 이벤트는 token·completed·error 3개뿐이다.
+# AI(manyak-ai)가 발행하는 이벤트는 token·completed·error·ping 4개다.
 # started는 백엔드가 SSE 스트림을 열며 자체 발행한다(chatId 신호 — AI 미발행).
 # chatId·turnId도 백엔드가 부착하므로 AI 페이로드에는 넣지 않는다.
 
 EVENT_TOKEN = "token"
 EVENT_COMPLETED = "completed"
 EVENT_ERROR = "error"
+
+# 본문이 끝난 뒤 판정을 기다리는 동안만 주기적으로 내보내는 신호다(KNK-750).
+#
+# 백엔드의 이벤트 간 상한(`RestChatTurnAiClient.timeout(60s)`)은 **프레임을 하나라도 받으면
+# 처음부터 다시 센다**. 판정 구간에 아무 프레임도 안 나가면 그 시계가 60초를 다 세고 정상
+# 턴을 끊는다 — ping이 그 시계를 되돌린다.
+#
+# 백엔드는 이 이름을 모른다. 모르는 이벤트는 조용히 넘기므로(`when`에 else 가지가 없다)
+# 처리는 안 되지만 **프레임을 받았다는 사실만으로 시계는 초기화된다.** 그래서 백엔드를
+# 고치지 않고 AI만 배포해도 동작한다(2026-08-01 백엔드 테스트로 확인).
+#
+# 페이로드는 빈 객체다. 다만 `data:` 줄 자체는 반드시 있어야 한다 — 주석만 있는 프레임은
+# 디코더가 항목으로 만들지 않고 버릴 수 있어 시계가 안 돌아간다.
+EVENT_PING = "ping"
+
+
+class PingData(BaseModel):
+    """event: ping — 담는 값이 없다. 이 프레임은 '도착했다'는 사실 자체가 전부다.
+
+    **비어 있어도 모델로 둔다.** 다른 세 이벤트가 전부 모델로 모양이 정해져 있는데 이것만
+    호출부가 손으로 dict를 적으면, 나중에 값을 담고 싶어질 때 계약을 거치지 않고 아무 데서나
+    아무 모양으로 늘어난다.
+    """
+
 
 
 class TokenData(BaseModel):

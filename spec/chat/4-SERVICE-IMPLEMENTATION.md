@@ -1,6 +1,6 @@
 ---
-version: 7
-updated: 2026-07-27
+version: 8
+updated: 2026-08-01
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -594,7 +594,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 5. 입력 스키마 정의 · 6. `PromptCompiler` 구현
 
 **Phase 3 — 런타임 조립기 + 채팅 API (시점 B)** (4절)
-7. `PromptAssembler`(받은 재료 → 슬롯 치환 + 6레이어 조립) · 8. PHI 내부 순서 보장 · 9. `ChatProvider` 연동(본문 `stream=True`) · 10. `CHOICES-TEMPLATE.md` + 선택지 생성기(별도 JSON 호출 → 코드가 정확히 3개 보장, 2.5) · 11. SSE 채팅 턴 엔드포인트(`token`·`completed`·`error`) — 처음엔 completed에 선택지 3개를 합산 발행했고, 이후 KNK-625에서 선택지를 전용 엔드포인트 `/chat/choices`로 분리(completed의 choices는 하위호환 빈 배열)
+7. `PromptAssembler`(받은 재료 → 슬롯 치환 + 6레이어 조립) · 8. PHI 내부 순서 보장 · 9. `ChatProvider` 연동(본문 `stream=True`) · 10. `CHOICES-TEMPLATE.md` + 선택지 생성기(별도 JSON 호출 → 코드가 정확히 3개 보장, 2.5) · 11. SSE 채팅 턴 엔드포인트(`token`·`completed`·`error`·`ping`) — 처음엔 completed에 선택지 3개를 합산 발행했고, 이후 KNK-625에서 선택지를 전용 엔드포인트 `/chat/choices`로 분리(completed의 choices는 하위호환 빈 배열). `ping`은 KNK-750에서 추가했다 — 본문이 끝난 뒤 판정을 기다리는 구간에 프레임이 하나도 안 나가면 백엔드의 이벤트 간 상한(60초)이 정상 턴을 끊어서, 그 시계를 되돌리려고 주기적으로 내보내는 빈 신호다(백엔드는 모르는 이벤트를 무시하므로 백엔드 변경 없이 동작한다)
 
 **Phase 4 — 메모리 요약 생성 (백엔드 주도, 별개 기능)** (5절)
 11. 백엔드가 History → `summary`로 요약·갱신해 다음 턴 request로 전달한다. AI는 받은 summary를 참조만 하므로 조립기 구조는 그대로 두고 Depth에 채워 넣기만 한다(참조와 생성 분리).
