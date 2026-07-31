@@ -89,6 +89,10 @@
 - 배치 규칙 상세(프로젝트 스킬과 하네스 공용 스킬 구분, 추적 여부 확인법, 폴더 구성, Windows 주의)는
   스킬을 만들거나 고칠 때 `.agents/skills/README.md`를 엽니다.
 - 하네스 공용 스킬은 복사하지도 수정하지도 않습니다(하네스 수정 금지 규칙과 동일).
+- **매일 오전 10시(KST) claude.ai 클라우드 루틴이 `daily-sentry-digest` 스킬을 굴려** 지난 24시간
+  Sentry 오류(ai·server·web 3개 프로젝트)를 슬랙에 요약해 올립니다(KNK-711). 조회·분류 규칙과
+  결정 이력은 `.agents/skills/daily-sentry-digest/reference.md`가 정본입니다.
+  루틴은 **`dev`에 머지된 스킬**을 읽습니다 — 규칙을 고쳐도 머지 전에는 반영되지 않습니다.
 
 ### 프롬프트·명세 변경
 - `prompt/` 파일 수정은 반드시 `prompt-authoring` 스킬의 설계 원칙을 적용합니다.
