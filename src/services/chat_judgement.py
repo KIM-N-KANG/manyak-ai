@@ -6,14 +6,16 @@
 되어 백엔드가 채팅 상태로 저장한다(D11 — 상태는 백엔드, 판정은 AI).
 
 설계 결정(plan-1 승인): 본문 마커 파싱(KNK-194에서 폐기)도, 본문 생성 전 선행
-판정(첫 토큰 지연)도 아닌 **사후 판정 전용 호출**이다. 선택지 호출과 병렬로 돌아
-지연 증가를 최소화한다(엔드포인트가 gather).
+판정(첫 토큰 지연)도 아닌 **사후 판정 전용 호출**이다. 처음에는 선택지 호출과 나란히
+돌렸지만, 선택지가 전용 엔드포인트로 떨어져 나가(KNK-625) 지금은 본문 스트림이 끝난 뒤
+판정만 단독으로 돈다.
 
 **판정 실패가 턴을 깨지 않는다** — 호출·파싱이 실패하면 흡수하고 3필드 null로
 돌아간다(선택지 폴백과 같은 원칙). 재료가 아예 없는 턴(사건·엔딩 없는 스토리)은
 호출 자체를 스킵해 비용·지연이 0이다(하위호환).
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -23,6 +25,7 @@ from pathlib import Path
 from src.core.config import settings
 from src.core.sentry import (
     ERROR_INVALID_AI_RESPONSE,
+    ERROR_PROVIDER_TIMEOUT,
     FEATURE_CHAT_RESPONSE,
     capture_ai_exception,
 )
@@ -44,6 +47,16 @@ JUDGEMENT_VERSION = read_version(_TEMPLATE_PATH)
 _MAX_TOKENS = 256
 # 이 호출의 제한 시간(초). 짧은 생성이라 본문(90초)보다 짧게 둔다(선택지와 동일).
 # **호출마다 반드시 넘긴다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
+#
+# 이 값은 두 자리에 쓴다. SDK에는 요청 하나의 상한으로 넘기고, `asyncio.wait_for`에는
+# 재시도까지 포함한 전체 상한으로 건다. **두 자리 모두 필요하다** — SDK에만 넘기면
+# 시도당 상한이라, 시간 초과도 재시도 대상이라서(`openai_sdk._MAX_RETRIES = 2`, 총 3회)
+# 실제 대기가 180초까지 늘어난다. 그러면 백엔드의 SSE 전체 상한(120초)을 넘겨 판정만
+# 늦는 게 아니라 턴이 통째로 실패한다(KNK-749).
+#
+# 재시도가 전부 죽는 것은 아니다 — 빠르게 돌아오는 실패(503·429 같은 것)는 몇 초면 끝나
+# 남은 시간 안에서 그대로 다시 시도된다. 막히는 것은 **시간 초과 재시도**뿐이고 그것이
+# 이 상한의 목적이다.
 _TIMEOUT_SECONDS = 60.0
 
 # LLM 호출은 공통 통로(src.services.llm)를 통한다(KNK-673) — 클라이언트 생성·추론 모드 같은
@@ -197,17 +210,22 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
     provider = llm.provider_of(settings.chat_model)
     start = time.monotonic()
     try:
-        result_llm = await llm.complete(
-            LlmRequest(
-                model=settings.chat_model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM},
-                    {"role": "user", "content": _build_user(req, ai_output)},
-                ],
-                max_tokens=_MAX_TOKENS,
-                timeout=_TIMEOUT_SECONDS,
-                json_mode=True,
-            )
+        # wait_for가 재시도까지 포함한 전체 상한이다(위 상수 주석 참조). 시간이 다 되면
+        # 안쪽 호출을 취소하므로 남은 재시도도 함께 멈춘다.
+        result_llm = await asyncio.wait_for(
+            llm.complete(
+                LlmRequest(
+                    model=settings.chat_model,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM},
+                        {"role": "user", "content": _build_user(req, ai_output)},
+                    ],
+                    max_tokens=_MAX_TOKENS,
+                    timeout=_TIMEOUT_SECONDS,
+                    json_mode=True,
+                )
+            ),
+            timeout=_TIMEOUT_SECONDS,
         )
         # 통로는 응답 모양이 깨져도 예외를 던지지 않고 빈 문자열을 준다 — 아래가 그대로 받는다.
         if not result_llm.text:
@@ -219,7 +237,7 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
         result.input_tokens = result_llm.usage.input_tokens
         result.output_tokens = result_llm.usage.output_tokens
         return result
-    except (LlmError, json.JSONDecodeError, ValueError) as e:
+    except (LlmError, TimeoutError, json.JSONDecodeError, ValueError) as e:
         # 판정 실패가 턴을 깨지 않는다 — Sentry로만 보고하고 null로 돌아간다. 예외가 밖으로
         # 새면 gather가 그것을 전파해 턴 자체가 깨진다.
         #
@@ -230,18 +248,24 @@ async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementR
         # 오타까지 "판정 없음"으로 조용히 덮인다.
         # 별도 feature 신설은 관측 카탈로그(6-analytics) 개정 사안이라 chat_response로 묶는다.
         logger.warning("판정 호출 실패(흡수 — 메타 null): %s", e)
+        # wait_for가 낸 TimeoutError는 우리 예외라 classify_error_code가 모른다(그대로 두면
+        # unexpected_error로 떨어져 AN-4-7 관측이 흐려진다). 여기서 시간 초과로 못 박는다.
+        if isinstance(e, TimeoutError):
+            error_code = ERROR_PROVIDER_TIMEOUT
+        elif isinstance(e, (json.JSONDecodeError, ValueError)):
+            error_code = ERROR_INVALID_AI_RESPONSE
+        else:
+            error_code = None  # LlmError 계열은 classify_error_code가 종류별로 나눈다
         capture_ai_exception(
             e,
             feature=FEATURE_CHAT_RESPONSE,
             provider=provider,
-            error_code=(
-                ERROR_INVALID_AI_RESPONSE
-                if isinstance(e, (json.JSONDecodeError, ValueError))
-                else None
-            ),
+            error_code=error_code,
             model=settings.chat_model,
             prompt_versions={"JUDGEMENT": JUDGEMENT_VERSION},
-            retry_count=0,  # 단일 호출 — 재호출 없음(D12)
+            # 우리 코드가 다시 부르지 않는다는 뜻이다(선택지처럼 재호출 루프가 없다 — D12).
+            # SDK가 안에서 최대 3회까지 시도하는 것은 이 숫자에 안 잡힌다(위 상수 주석).
+            retry_count=0,
             latency_ms=int((time.monotonic() - start) * 1000),
         )
         return _EMPTY

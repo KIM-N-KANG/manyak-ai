@@ -5,7 +5,9 @@ SDK 경계를 모킹해(통로 이관 후의 목 지점 — `install_llm_sdk`) �
 (D7 보정) 확인한다.
 """
 
+import asyncio
 import json
+import time
 
 import pytest
 from openai import OpenAIError
@@ -368,3 +370,50 @@ async def test_provider_is_resolved_before_the_call_not_inside_the_handler(
         await generate_judgement(_request(main_events=_EVENTS), "*장면*")
 
     assert calls["n"] == 0  # LLM을 부르기도 전에 막힌다
+
+
+# ── 전체 시간 상한 (KNK-749 회귀) ─────────────────────────────────────────────
+# `_TIMEOUT_SECONDS`를 SDK에만 넘기면 그것은 **시도 하나의 상한**이다. 시간 초과도 재시도
+# 대상이라 SDK가 총 3회까지 부르고(`openai_sdk._MAX_RETRIES = 2`) 실제 대기가 세 배로
+# 늘어난다. 그러면 백엔드의 SSE 전체 상한(120초)을 넘겨 판정만 늦는 게 아니라 턴이 통째로
+# 실패한다. wait_for로 전체를 묶었는지 고정한다 — 안쪽 호출이 아무리 길어도 예산에서 끊고,
+# 그 호출을 취소하며(남은 재시도도 함께 멈춘다), 결과는 판정 null로 흡수한다.
+async def test_total_timeout_bounds_slow_call(monkeypatch, install_llm_sdk) -> None:
+    captures: list[dict] = []
+    monkeypatch.setattr(
+        chat_judgement,
+        "capture_ai_exception",
+        lambda exc, **k: captures.append({"exc": exc, **k}),
+    )
+    monkeypatch.setattr(chat_judgement, "_TIMEOUT_SECONDS", 0.05)
+    state = {"called": False, "cancelled": False}
+
+    async def _create(**kwargs):
+        state["called"] = True
+        try:
+            await asyncio.sleep(5)  # 예산의 100배 — 묶여 있지 않으면 여기서 5초를 기다린다
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    began = time.monotonic()
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+    elapsed = time.monotonic() - began
+
+    assert state["called"], "호출 자체는 나갔어야 한다(스킵이 아니라 시간 초과 경로)"
+    # 묶여 있지 않으면 안쪽 sleep(5초)을 그대로 기다린다. 기준을 2초로 둬도 5초와 뚜렷이
+    # 갈리므로, 도커·CI가 잠깐 밀려도 흔들리지 않는다.
+    assert elapsed < 2.0, f"전체 상한이 안 걸렸다 — {elapsed:.2f}초 기다림"
+    assert state["cancelled"], "시간이 다 되면 안쪽 호출을 취소해야 남은 재시도가 멈춘다"
+    assert (res.target_main_event, res.occurred_main_event_name, res.ending_name) == (
+        None,
+        None,
+        None,
+    )
+    # "무슨 예외든 잡혔다"가 아니라 **시간 초과로** 끝났는지까지 못 박는다. 보고도 딱 한 번이어야
+    # 한다 — 흡수 경로가 두 번 돌면 같은 실패가 Sentry에 겹쳐 쌓인다.
+    assert len(captures) == 1, f"Sentry 보고는 한 번이어야 한다 — {len(captures)}회"
+    assert isinstance(captures[0]["exc"], TimeoutError), captures[0]["exc"]
+    assert captures[0]["error_code"] == "provider_timeout"
