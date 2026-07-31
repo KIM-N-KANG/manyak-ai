@@ -394,7 +394,7 @@ Sentry MCP는 쿼리를 내부 에이전트로 고쳐 쓴 뒤 던지는데, 그 
 | 루틴 ID | `trig_01913HSFq6Cpnenrj2JmRU8i` |
 | 이름 | 센트리 오류 일일 요약 (KNK-711) |
 | 주기 | cron `0 1 * * *` (UTC) = 매일 오전 10시 KST |
-| 모델 | `claude-sonnet-5` |
+| 모델 | `claude-opus-5` |
 | 도구 | Bash · Read · Glob · Grep |
 | 소스 | `KIM-N-KANG/manyak-ai` + `KIM-N-KANG/knk-harness` |
 | 설정 화면 | `https://claude.ai/code/routines/trig_01913HSFq6Cpnenrj2JmRU8i` |
