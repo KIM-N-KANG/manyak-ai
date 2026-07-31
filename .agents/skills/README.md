@@ -15,7 +15,7 @@
 
 - **실디렉터리면 프로젝트 스킬** — 이 레포가 정본이다.
   예: create-jira-subtasks, planning, prompt-authoring, request-codex-review, readability-audit,
-  daily-sentry-digest
+  daily-sentry-report
 - **심링크면 하네스 공용 스킬** — 정본은 `../../../knk-harness/.agents/skills/<이름>`이다.
   예: create-branch, create-commit, create-pr, karpathy-guidelines, technical-writing
 
