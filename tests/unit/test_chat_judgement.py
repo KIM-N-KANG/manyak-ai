@@ -407,6 +407,8 @@ async def test_total_timeout_bounds_slow_call(monkeypatch, install_llm_sdk) -> N
     # 갈리므로, 도커·CI가 잠깐 밀려도 흔들리지 않는다.
     assert elapsed < 2.0, f"전체 상한이 안 걸렸다 — {elapsed:.2f}초 기다림"
     assert state["cancelled"], "시간이 다 되면 안쪽 호출을 취소해야 남은 재시도가 멈춘다"
+    # 이 요청에는 진행 중이던 목표가 없다 — 그래서 3필드 전부 null이 맞다. 목표가 있는
+    # 요청은 되돌려 보내야 하며, 그쪽은 아래 test_timeout_keeps_the_target...이 본다.
     assert (res.target_main_event, res.occurred_main_event_name, res.ending_name) == (
         None,
         None,
@@ -417,6 +419,49 @@ async def test_total_timeout_bounds_slow_call(monkeypatch, install_llm_sdk) -> N
     assert len(captures) == 1, f"Sentry 보고는 한 번이어야 한다 — {len(captures)}회"
     assert isinstance(captures[0]["exc"], TimeoutError), captures[0]["exc"]
     assert captures[0]["error_code"] == "provider_timeout"
+
+
+# 시간이 다 돼 끊긴 턴도 **진행 중이던 목표는 그대로 되돌려 보낸다**. 이 상한은 우리가 건
+# 것이라(본문이 오래 걸린 턴에는 판정에 몇 초만 준다), 그 몇 초를 넘겼다고 사용자가 쌓아온
+# 사건 진행을 지우는 것은 앞뒤가 안 맞는다. 안 부른 턴과 결과가 같아야 한다.
+async def test_timeout_keeps_the_target_the_request_carried(monkeypatch, install_llm_sdk) -> None:
+    monkeypatch.setattr(chat_judgement, "capture_ai_exception", lambda *a, **k: None)
+    state = {"called": False}
+
+    async def _create(**kwargs):
+        state["called"] = True
+        await asyncio.sleep(5)  # 예산보다 훨씬 오래 — 시간 초과로 끊긴다
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    req = _request(
+        main_events=_EVENTS,
+        target=TargetMainEvent(name="선왕의 유언", progress_turns=4),
+    )
+    # 예산이 **양수**다 — 스킵 분기가 아니라 호출 후 시간 초과 경로를 타야 한다.
+    res = await generate_judgement(req, "*장면*", budget_seconds=0.05)
+
+    assert state["called"], "호출은 나갔어야 한다(스킵이 아니라 시간 초과 경로)"
+    assert res.target_main_event is not None, "목표가 null로 나가면 백엔드가 진행을 지운다"
+    assert res.target_main_event.name == "선왕의 유언"
+    assert res.target_main_event.progress_turns == 4, "판정이 없었으니 카운터는 동결한다"
+    assert (res.occurred_main_event_name, res.ending_name) == (None, None)
+
+
+# 시간 초과가 아닌 실패(빈 응답·깨진 JSON·전송 오류)는 종전대로 3필드 null이다.
+# 이번 티켓 앞에도 있던 문제라 백엔드 가드와 함께 따로 다룬다 — 범위를 넓히지 않았다는 고정.
+async def test_other_failures_still_return_null(install_llm_sdk) -> None:
+    async def _create(**kwargs):
+        return _Resp("이건 JSON이 아니다", usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    req = _request(
+        main_events=_EVENTS,
+        target=TargetMainEvent(name="선왕의 유언", progress_turns=4),
+    )
+    res = await generate_judgement(req, "*장면*")
+
+    assert res.target_main_event is None, "시간 초과가 아닌 실패까지 되돌리면 범위가 넓어진다"
 
 
 # ── 남은 시간에 맞춰 예산을 줄인다 (KNK-750 회귀) ─────────────────────────────
