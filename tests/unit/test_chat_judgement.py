@@ -5,7 +5,9 @@ SDK 경계를 모킹해(통로 이관 후의 목 지점 — `install_llm_sdk`) �
 (D7 보정) 확인한다.
 """
 
+import asyncio
 import json
+import time
 
 import pytest
 from openai import OpenAIError
@@ -368,3 +370,170 @@ async def test_provider_is_resolved_before_the_call_not_inside_the_handler(
         await generate_judgement(_request(main_events=_EVENTS), "*장면*")
 
     assert calls["n"] == 0  # LLM을 부르기도 전에 막힌다
+
+
+# ── 전체 시간 상한 (KNK-749 회귀) ─────────────────────────────────────────────
+# `_TIMEOUT_SECONDS`를 SDK에만 넘기면 그것은 **시도 하나의 상한**이다. 시간 초과도 재시도
+# 대상이라 SDK가 총 3회까지 부르고(`openai_sdk._MAX_RETRIES = 2`) 실제 대기가 세 배로
+# 늘어난다. 그러면 백엔드의 SSE 전체 상한(120초)을 넘겨 판정만 늦는 게 아니라 턴이 통째로
+# 실패한다. wait_for로 전체를 묶었는지 고정한다 — 안쪽 호출이 아무리 길어도 예산에서 끊고,
+# 그 호출을 취소하며(남은 재시도도 함께 멈춘다), 결과는 판정 null로 흡수한다.
+async def test_total_timeout_bounds_slow_call(monkeypatch, install_llm_sdk) -> None:
+    captures: list[dict] = []
+    monkeypatch.setattr(
+        chat_judgement,
+        "capture_ai_exception",
+        lambda exc, **k: captures.append({"exc": exc, **k}),
+    )
+    monkeypatch.setattr(chat_judgement, "_TIMEOUT_SECONDS", 0.05)
+    state = {"called": False, "cancelled": False}
+
+    async def _create(**kwargs):
+        state["called"] = True
+        try:
+            await asyncio.sleep(5)  # 예산의 100배 — 묶여 있지 않으면 여기서 5초를 기다린다
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    began = time.monotonic()
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*")
+    elapsed = time.monotonic() - began
+
+    assert state["called"], "호출 자체는 나갔어야 한다(스킵이 아니라 시간 초과 경로)"
+    # 묶여 있지 않으면 안쪽 sleep(5초)을 그대로 기다린다. 기준을 2초로 둬도 5초와 뚜렷이
+    # 갈리므로, 도커·CI가 잠깐 밀려도 흔들리지 않는다.
+    assert elapsed < 2.0, f"전체 상한이 안 걸렸다 — {elapsed:.2f}초 기다림"
+    assert state["cancelled"], "시간이 다 되면 안쪽 호출을 취소해야 남은 재시도가 멈춘다"
+    # 이 요청에는 진행 중이던 목표가 없다 — 그래서 3필드 전부 null이 맞다. 목표가 있는
+    # 요청은 되돌려 보내야 하며, 그쪽은 아래 test_timeout_keeps_the_target...이 본다.
+    assert (res.target_main_event, res.occurred_main_event_name, res.ending_name) == (
+        None,
+        None,
+        None,
+    )
+    # "무슨 예외든 잡혔다"가 아니라 **시간 초과로** 끝났는지까지 못 박는다. 보고도 딱 한 번이어야
+    # 한다 — 흡수 경로가 두 번 돌면 같은 실패가 Sentry에 겹쳐 쌓인다.
+    assert len(captures) == 1, f"Sentry 보고는 한 번이어야 한다 — {len(captures)}회"
+    assert isinstance(captures[0]["exc"], TimeoutError), captures[0]["exc"]
+    assert captures[0]["error_code"] == "provider_timeout"
+
+
+# 시간이 다 돼 끊긴 턴도 **진행 중이던 목표는 그대로 되돌려 보낸다**. 이 상한은 우리가 건
+# 것이라(본문이 오래 걸린 턴에는 판정에 몇 초만 준다), 그 몇 초를 넘겼다고 사용자가 쌓아온
+# 사건 진행을 지우는 것은 앞뒤가 안 맞는다. 안 부른 턴과 결과가 같아야 한다.
+async def test_timeout_keeps_the_target_the_request_carried(monkeypatch, install_llm_sdk) -> None:
+    monkeypatch.setattr(chat_judgement, "capture_ai_exception", lambda *a, **k: None)
+    state = {"called": False}
+
+    async def _create(**kwargs):
+        state["called"] = True
+        await asyncio.sleep(5)  # 예산보다 훨씬 오래 — 시간 초과로 끊긴다
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    req = _request(
+        main_events=_EVENTS,
+        target=TargetMainEvent(name="선왕의 유언", progress_turns=4),
+    )
+    # 예산이 **양수**다 — 스킵 분기가 아니라 호출 후 시간 초과 경로를 타야 한다.
+    res = await generate_judgement(req, "*장면*", budget_seconds=0.05)
+
+    assert state["called"], "호출은 나갔어야 한다(스킵이 아니라 시간 초과 경로)"
+    assert res.target_main_event is not None, "목표가 null로 나가면 백엔드가 진행을 지운다"
+    assert res.target_main_event.name == "선왕의 유언"
+    assert res.target_main_event.progress_turns == 4, "판정이 없었으니 카운터는 동결한다"
+    assert (res.occurred_main_event_name, res.ending_name) == (None, None)
+
+
+# 시간 초과가 아닌 실패(빈 응답·깨진 JSON·전송 오류)는 종전대로 3필드 null이다.
+# 이번 티켓 앞에도 있던 문제라 백엔드 가드와 함께 따로 다룬다 — 범위를 넓히지 않았다는 고정.
+async def test_other_failures_still_return_null(install_llm_sdk) -> None:
+    async def _create(**kwargs):
+        return _Resp("이건 JSON이 아니다", usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    req = _request(
+        main_events=_EVENTS,
+        target=TargetMainEvent(name="선왕의 유언", progress_turns=4),
+    )
+    res = await generate_judgement(req, "*장면*")
+
+    assert res.target_main_event is None, "시간 초과가 아닌 실패까지 되돌리면 범위가 넓어진다"
+
+
+# ── 남은 시간에 맞춰 예산을 줄인다 (KNK-750 회귀) ─────────────────────────────
+# 호출부가 넘긴 남은 시간이 상수보다 짧으면 그쪽을 쓴다. 안 그러면 본문이 오래 걸린 턴에서
+# 판정이 턴 전체 상한을 넘겨 턴을 죽인다.
+async def test_budget_is_capped_by_what_the_caller_has_left(install_llm_sdk) -> None:
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    await generate_judgement(_request(main_events=_EVENTS), "*장면*", budget_seconds=12.0)
+
+    assert captured["timeout"] == 12.0
+
+
+# 반대로 남은 시간이 넉넉해도 상수를 넘기지는 않는다 — 둘 중 작은 값이다.
+async def test_budget_never_exceeds_the_constant(install_llm_sdk) -> None:
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    await generate_judgement(_request(main_events=_EVENTS), "*장면*", budget_seconds=9999.0)
+
+    assert captured["timeout"] == chat_judgement._TIMEOUT_SECONDS == 60.0
+
+
+# 남은 시간이 없으면 아예 부르지 않는다 — 결과를 받아도 실을 자리가 없고, 부르는 만큼
+# completed만 더 늦어져 턴이 죽을 확률만 올라간다.
+async def test_no_call_when_nothing_is_left(install_llm_sdk) -> None:
+    calls = {"n": 0}
+
+    async def _create(**kwargs):
+        calls["n"] += 1
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    res = await generate_judgement(_request(main_events=_EVENTS), "*장면*", budget_seconds=0.0)
+
+    assert calls["n"] == 0, "남은 시간이 없으면 LLM을 부르면 안 된다"
+    assert (res.target_main_event, res.occurred_main_event_name, res.ending_name) == (
+        None,
+        None,
+        None,
+    )
+
+
+# 남은 시간이 없어 판정을 건너뛰더라도 **진행 중이던 목표는 그대로 되돌려 보낸다**.
+# null로 보내면 백엔드가 그것을 목표 해제로 읽어 사용자가 쌓아온 진행을 지운다
+# (`ChatTurnPersister.applyMainEventState`). 판정을 못 돌렸을 뿐인데 상태가 바뀌면 안 된다.
+async def test_skipping_judgement_keeps_the_target_the_request_carried(install_llm_sdk) -> None:
+    calls = {"n": 0}
+
+    async def _create(**kwargs):
+        calls["n"] += 1
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    req = _request(
+        main_events=_EVENTS,
+        target=TargetMainEvent(name="선왕의 유언", progress_turns=4),
+    )
+    res = await generate_judgement(req, "*장면*", budget_seconds=0.0)
+
+    assert calls["n"] == 0, "남은 시간이 없으면 LLM을 부르면 안 된다"
+    assert res.target_main_event is not None, "목표가 null로 나가면 백엔드가 진행을 지운다"
+    assert res.target_main_event.name == "선왕의 유언"
+    assert res.target_main_event.progress_turns == 4, "판정이 없었으니 카운터는 동결한다"
+    # 이번 턴에 무슨 일이 있었는지는 판정만 알 수 있다 — 안 돌렸으니 지어내지 않는다.
+    assert (res.occurred_main_event_name, res.ending_name) == (None, None)
