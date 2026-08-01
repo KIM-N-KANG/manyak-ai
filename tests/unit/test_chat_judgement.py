@@ -467,3 +467,28 @@ async def test_no_call_when_nothing_is_left(install_llm_sdk) -> None:
         None,
         None,
     )
+
+
+# 남은 시간이 없어 판정을 건너뛰더라도 **진행 중이던 목표는 그대로 되돌려 보낸다**.
+# null로 보내면 백엔드가 그것을 목표 해제로 읽어 사용자가 쌓아온 진행을 지운다
+# (`ChatTurnPersister.applyMainEventState`). 판정을 못 돌렸을 뿐인데 상태가 바뀌면 안 된다.
+async def test_skipping_judgement_keeps_the_target_the_request_carried(install_llm_sdk) -> None:
+    calls = {"n": 0}
+
+    async def _create(**kwargs):
+        calls["n"] += 1
+        return _Resp('{"target_main_event": null}', usage=_Usage(11, 3))
+
+    install_llm_sdk(_create)
+    req = _request(
+        main_events=_EVENTS,
+        target=TargetMainEvent(name="선왕의 유언", progress_turns=4),
+    )
+    res = await generate_judgement(req, "*장면*", budget_seconds=0.0)
+
+    assert calls["n"] == 0, "남은 시간이 없으면 LLM을 부르면 안 된다"
+    assert res.target_main_event is not None, "목표가 null로 나가면 백엔드가 진행을 지운다"
+    assert res.target_main_event.name == "선왕의 유언"
+    assert res.target_main_event.progress_turns == 4, "판정이 없었으니 카운터는 동결한다"
+    # 이번 턴에 무슨 일이 있었는지는 판정만 알 수 있다 — 안 돌렸으니 지어내지 않는다.
+    assert (res.occurred_main_event_name, res.ending_name) == (None, None)

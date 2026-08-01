@@ -91,6 +91,35 @@ class JudgementResult:
 _EMPTY = JudgementResult(None, None, None, None, None)
 
 
+def _frozen(req: ChatTurnRequest) -> JudgementResult:
+    """판정을 아예 못 돌린 턴의 결과 — 받은 목표를 그대로 되돌려 보낸다(KNK-750 리뷰).
+
+    3필드를 전부 null로 보내면 백엔드가 그것을 **목표 해제**로 읽어 사용자가 쌓아온 사건
+    진행을 지운다(`ChatTurnPersister.applyMainEventState` — target이 null이면
+    `targetMainEventId = null, targetProgressTurns = 0`). 판정을 못 돌렸을 뿐인데 상태가
+    바뀌는 것은 틀렸다. 받은 목표를 되돌려 보내면 백엔드는 같은 값을 다시 저장하므로
+    상태가 그대로 있는다 — 계약도 백엔드도 바뀌지 않는다.
+
+    진행 턴 수는 늘지 않고 그 자리에 멈춘다. 판정이 없었으니 늘릴 근거도 없고, 설계상
+    이탈한 턴에 카운터를 동결하는 것은 이미 정상 동작이다.
+
+    호출이 실패한 경우(`_EMPTY`)는 여기 해당하지 않는다 — 이번 티켓 앞에도 있던 문제라
+    따로 다룬다.
+    """
+    if req.target_main_event is None:
+        return _EMPTY
+    return JudgementResult(
+        target_main_event=TargetMainEventOut(
+            name=req.target_main_event.name,
+            progress_turns=req.target_main_event.progress_turns,
+        ),
+        occurred_main_event_name=None,
+        ending_name=None,
+        input_tokens=None,
+        output_tokens=None,
+    )
+
+
 # 주요 사건·목표 사건 포맷은 조립기(chat_assembler)와 공용이다 — 표기가 갈리지 않게
 # 한 곳(assembler)에서 import해 재사용한다(F3). 엔딩은 판정 재료에 epilogue를 싣지
 # 않으므로 아래 _format_endings로 따로 둔다(의도적 분기).
@@ -202,7 +231,8 @@ async def generate_judgement(
     `budget_seconds`는 호출부가 아는 **이 턴에 남은 시간**이다(KNK-750). 본문 스트리밍이
     이미 오래 걸린 턴에서는 판정에 `_TIMEOUT_SECONDS`를 통째로 주면 턴 전체 상한을 넘겨
     턴이 죽는다 — 그래서 둘 중 작은 값을 쓴다. 남은 시간이 없으면 부르지 않는다: 결과를
-    받아도 실을 자리가 없고, 부르는 만큼 completed만 더 늦어진다.
+    받아도 실을 자리가 없고, 부르는 만큼 completed만 더 늦어진다. 이때는 받은 목표를
+    그대로 되돌려 보내 진행이 지워지지 않게 한다(`_frozen`).
     """
     if not req.main_events and not req.endings:
         return _EMPTY  # 사건·엔딩 없는 스토리(재료 없음) — 비용·지연 0
@@ -210,7 +240,7 @@ async def generate_judgement(
     budget = _TIMEOUT_SECONDS if budget_seconds is None else min(_TIMEOUT_SECONDS, budget_seconds)
     if budget <= 0:
         logger.warning("판정 스킵 — 이 턴에 남은 시간이 없다(남은 예산 %.1f초)", budget)
-        return _EMPTY
+        return _frozen(req)
 
     # 이 호출이 어느 공급자로 갈지는 부르기 전에 정한다 — 등록부 해석이 실패하면 LLM을
     # 부르기도 전에 막혀 헛돈이 안 나가고, 네 호출부(본문·선택지·판정·스토리)가 모두 같은

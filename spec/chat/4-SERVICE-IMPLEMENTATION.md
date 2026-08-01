@@ -174,7 +174,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 | 필드 | 내용 |
 |---|---|
-| `targetMainEvent` | 이번 턴 판정 후 목표 `{name, progressTurns}`. 목표 없음·완결 직후 null |
+| `targetMainEvent` | 이번 턴 판정 후 목표 `{name, progressTurns}`. 목표 없음·완결 직후 null. 남은 시간이 없어 판정을 아예 못 돌린 턴은 **요청에 실려 온 목표를 그대로 되돌려 보낸다**(KNK-750) — null로 보내면 백엔드가 목표 해제로 읽어 진행이 지워진다 |
 | `occurredMainEventName` | 이번 턴 완결된 사건 이름 — 한 턴 최대 1건 |
 | `endingName` | 엔딩 응답 턴이면 도달한 엔딩 이름(요청 `endings`의 `name`), 아니면 null |
 

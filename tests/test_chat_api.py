@@ -458,6 +458,43 @@ async def test_no_budget_left_still_completes_the_turn(
     assert _data_of(body, "completed")["aiOutput"] == "안녕"
 
 
+# 예산이 없어 판정을 건너뛴 턴의 completed가 **진행 중이던 목표를 그대로 싣는지** 와이어에서
+# 확인한다. 여기서는 판정을 모킹하지 않는다 — 실제 generate_judgement를 태워야 직렬화 키
+# (targetMainEvent.progressTurns)까지 계약대로 나가는지 볼 수 있다. 예산이 0 이하면 LLM은
+# 부르지 않으므로 이 테스트도 과금되지 않는다.
+async def test_skipped_judgement_sends_the_target_back_on_the_wire(
+    client, mock_events, monkeypatch
+) -> None:
+    monkeypatch.setattr(chat_module, "_TURN_BUDGET_SECONDS", 10.0)
+    monkeypatch.setattr(chat_module, "_SAFETY_MARGIN_SECONDS", 15.0)  # 여유가 전체보다 크다
+    mock_events(
+        [
+            {"event": "token", "text": "안녕"},
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+             "provider": "deepseek"},
+        ]
+    )
+    payload = _payload() | {
+        "main_events": [
+            {
+                "name": "선왕의 유언",
+                "description": "숨겨진 유언장이 드러난다.",
+                "key_sentence": "유언장의 행방을 쫓는다.",
+            }
+        ],
+        "target_main_event": {"name": "선왕의 유언", "progress_turns": 4},
+    }
+
+    body = (await client.post("/api/v1/chat/turns", json=payload)).text
+
+    completed = _data_of(body, "completed")
+    assert completed["targetMainEvent"] == {"name": "선왕의 유언", "progressTurns": 4}, (
+        f"목표가 null로 나가면 백엔드가 사건 진행을 지운다 — {completed['targetMainEvent']}"
+    )
+    assert completed["occurredMainEventName"] is None
+    assert completed["endingName"] is None
+
+
 # ping 페이로드는 스키마가 만든 것이어야 한다 — 호출부가 손으로 적은 dict가 아니라.
 async def test_ping_payload_comes_from_the_schema(
     client, monkeypatch
