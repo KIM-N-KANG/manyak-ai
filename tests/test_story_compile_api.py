@@ -50,7 +50,16 @@ async def test_compile_endpoint_returns_nested_contract(
     monkeypatch.setattr(story_module, "observe_request", fake_observe)
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
-    response = await client.post("/api/v1/story/compile", json=_REQUEST)
+    response = await client.post(
+        "/api/v1/story/compile",
+        json=_REQUEST,
+        headers={
+            "X-Manyak-Creation-Id": "11111111-1111-1111-1111-111111111111",
+            "X-Manyak-Storyline-Id": "42",
+            "X-Manyak-Storyline-Order": "2",
+            "X-Manyak-Chat-Id": "22222222-2222-2222-2222-222222222222",
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -80,6 +89,12 @@ async def test_compile_endpoint_returns_nested_contract(
     assert captured["input_data"] == StoryCompileRequest.model_validate(_REQUEST).model_dump(
         mode="json"
     )
+    assert captured["metadata"] == {
+        "creation_id": "11111111-1111-1111-1111-111111111111",
+        "storyline_id": 42,
+        "storyline_order": 2,
+        "prompt_versions": {"COMPILE": meta["prompt_versions"]["COMPILE"]},
+    }
 
 
 async def test_compile_endpoint_502_on_llm_error(

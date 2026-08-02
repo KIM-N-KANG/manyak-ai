@@ -63,7 +63,10 @@ async def create_story_compile(request: StoryCompileRequest) -> StoryCompileResp
         "스토리 컴파일",
         input_data=request.model_dump(mode="json"),
         tags=dimension_tags(genre_tags=request.genre_tags),  # 장르만(위와 동일 이유)
-        metadata={"prompt_versions": {"COMPILE": COMPILE_VERSION}},
+        metadata={
+            **select_connection_metadata("creation_id", "storyline_id", "storyline_order"),
+            "prompt_versions": {"COMPILE": COMPILE_VERSION},
+        },
     ) as trace:
         response = await story_llm.compile_story(request)
         # meta는 항상 채워지지만(compile_story 계약), 관측이 서비스를 깨지 않도록 None을 방어한다.
