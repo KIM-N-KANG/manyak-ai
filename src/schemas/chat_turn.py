@@ -9,11 +9,14 @@ spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
         started·chatId·turnId는 백엔드가 발행·부착한다(manyak-server 규격과 통일).
 """
 
+import logging
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.schemas.response_meta import ChatResponseMeta
+
+logger = logging.getLogger(__name__)
 
 
 # ── 입력 (백엔드 → AI, 매 턴) ───────────────────────────────────────────────
@@ -130,6 +133,9 @@ class ChatTurnRequest(BaseModel):
     start_settings: ChatStartSettings
     history: list[ChatHistoryItem] = Field(default_factory=list)
     user_input: str
+    # 사용자 입력 출처 — 프롬프트 재료가 아니라 Langfuse 선호 분석 metadata다(KNK-770).
+    # 알려진 값만 기록하고 없거나 잘못됐으면 비워, 관측용 값이 채팅을 막지 않게 한다.
+    user_source: Literal["choice", "edited_choice", "typed"] | None = None
     # MEMORY(대화 요약) — 채팅별로 하나씩 존재하는 요약 문자열(특정 채팅 수마다 압축·최신화).
     # 메모리 참조는 채팅 기능의 일부이므로 매 턴 받아 조립기가 Depth(`[현재 상태]`)에 그대로
     # 넣는다(빈 문자열이면 빈 칸 그대로). 메모리를 요약·기록(생성)하는 로직은 별개 기능(Phase 4)
@@ -144,6 +150,21 @@ class ChatTurnRequest(BaseModel):
     target_main_event: TargetMainEvent | None = None
     occurred_main_event_names: list[str] = Field(default_factory=list)
     endings: list[EndingCandidate] = Field(default_factory=list)
+
+    @field_validator("user_source", mode="before")
+    @classmethod
+    def _normalize_user_source(cls, value: object) -> object:
+        """관측용 입력 출처가 잘못돼도 채팅은 막지 않고 해당 metadata만 생략한다."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned or cleaned == "unknown":
+                return None
+            if cleaned in ("choice", "edited_choice", "typed"):
+                return cleaned
+        logger.warning("Langfuse user_source 값 무시 — 허용된 입력 출처가 아님")
+        return None
 
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────

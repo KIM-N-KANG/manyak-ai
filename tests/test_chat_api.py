@@ -184,8 +184,10 @@ async def test_chat_turn_completed_serializes_judgement_meta(
     assert meta["outputTokenCount"] == 5
 
 
-async def test_chat_turn_trace_receives_no_tags(client, mock_events, monkeypatch) -> None:
-    """채팅 턴 트레이스에 태그(장르)가 실리지 않음을 호출부에서 고정한다(KNK-652 적대 리뷰).
+async def test_chat_turn_trace_receives_connection_metadata(
+    client, mock_events, monkeypatch
+) -> None:
+    """채팅 턴 트레이스는 호출별 연결값만 받고 장르 태그는 받지 않는다.
 
     dimension_tags 시그니처 테스트는 헬퍼 경유 부활만 막는다 — 인라인 태그(tags=[...])로
     되돌려도 잡히도록, 엔드포인트가 observe_request에 tags 인자 자체를 넘기지 않음을 본다
@@ -213,11 +215,129 @@ async def test_chat_turn_trace_receives_no_tags(client, mock_events, monkeypatch
              "provider": "deepseek"},
         ]
     )
-    resp = await client.post("/api/v1/chat/turns", json=_payload())
+    payload = {**_payload(), "user_source": "edited_choice"}
+    resp = await client.post(
+        "/api/v1/chat/turns",
+        json=payload,
+        headers={
+            "X-Manyak-Creation-Id": "11111111-1111-1111-1111-111111111111",
+            "X-Manyak-Story-Id": "22222222-2222-2222-2222-222222222222",
+            "X-Manyak-Chat-Id": "33333333-3333-3333-3333-333333333333",
+            "X-Manyak-Start-Setting-Id": "44444444-4444-4444-4444-444444444444",
+            "X-Manyak-Turn-Number": "7",
+            "X-Manyak-Is-Regenerated": "true",
+            "X-Manyak-Storyline-Id": "42",
+        },
+    )
 
     assert resp.status_code == 200
     assert captured["name"] == "채팅 턴"
+    assert captured["input_data"] == ChatTurnRequest.model_validate(payload).model_dump(
+        mode="json"
+    )
+    assert captured["metadata"] == {
+        "creation_id": "11111111-1111-1111-1111-111111111111",
+        "story_id": "22222222-2222-2222-2222-222222222222",
+        "chat_id": "33333333-3333-3333-3333-333333333333",
+        "start_setting_id": "44444444-4444-4444-4444-444444444444",
+        "turn_number": 7,
+        "is_regenerated": True,
+        "user_source": "edited_choice",
+        "prompt_versions": {
+            **chat_module.LAYER_VERSIONS,
+            "JUDGEMENT": chat_module.JUDGEMENT_VERSION,
+        },
+        "retry_count": 0,
+    }
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
+
+
+async def test_chat_turn_ignores_unknown_user_source(client, mock_events, caplog) -> None:
+    """관측용 입력 출처가 새 값이어도 채팅은 422로 거부하지 않는다."""
+    raw_user_source = "random_new_value_from_backend"
+    mock_events([{"event": "error", "code": "LLM_ERROR", "message": "실패"}])
+
+    response = await client.post(
+        "/api/v1/chat/turns",
+        json={**_payload(), "user_source": raw_user_source},
+    )
+
+    assert response.status_code == 200
+    assert "Langfuse user_source 값 무시" in caplog.text
+    assert raw_user_source not in caplog.text
+
+
+async def test_concurrent_chat_turn_streams_keep_connection_metadata_isolated(
+    client, monkeypatch
+) -> None:
+    """동시에 흐르는 SSE 두 건이 각 요청의 연결값을 스트림 안까지 따로 가져간다."""
+    from contextlib import contextmanager
+
+    captured: list[tuple[str, dict[str, object]]] = []
+    both_streams_started = asyncio.Event()
+    started = 0
+
+    @contextmanager
+    def _fake_observe(_name, **kwargs):
+        captured.append((kwargs["input_data"]["user_input"], kwargs["metadata"]))
+
+        class _Trace:
+            def set_metadata(self, **kw) -> None: ...
+
+        yield _Trace()
+
+    async def _events(_messages):
+        nonlocal started
+        started += 1
+        if started == 2:
+            both_streams_started.set()
+        await asyncio.wait_for(both_streams_started.wait(), timeout=5)
+        yield {
+            "event": "completed",
+            "ai_output": "응답",
+            "model": "deepseek-v4-flash",
+            "provider": "deepseek",
+        }
+
+    monkeypatch.setattr(chat_module, "observe_request", _fake_observe)
+    monkeypatch.setattr(chat_module, "stream_chat_turn", lambda messages: _events(messages))
+
+    async def _post(label: str, chat_id: str, turn_number: int):
+        return await client.post(
+            "/api/v1/chat/turns",
+            json={**_payload(), "user_input": label, "user_source": "typed"},
+            headers={
+                "X-Manyak-Chat-Id": chat_id,
+                "X-Manyak-Turn-Number": str(turn_number),
+                "X-Manyak-Is-Regenerated": "false",
+            },
+        )
+
+    responses = await asyncio.gather(
+        _post("요청 A", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 1),
+        _post("요청 B", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", 2),
+    )
+
+    assert all(response.status_code == 200 for response in responses)
+    by_input = {user_input: metadata for user_input, metadata in captured}
+    assert {
+        key: by_input["요청 A"][key]
+        for key in ("chat_id", "turn_number", "is_regenerated", "user_source")
+    } == {
+        "chat_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "turn_number": 1,
+        "is_regenerated": False,
+        "user_source": "typed",
+    }
+    assert {
+        key: by_input["요청 B"][key]
+        for key in ("chat_id", "turn_number", "is_regenerated", "user_source")
+    } == {
+        "chat_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "turn_number": 2,
+        "is_regenerated": False,
+        "user_source": "typed",
+    }
 
 
 async def test_chat_turn_survives_completed_without_provider(
@@ -350,7 +470,7 @@ async def test_closing_the_stream_cancels_the_judgement_call(
         ]
     )
 
-    stream = chat_module._event_stream(ChatTurnRequest(**_payload()))
+    stream = chat_module._event_stream(ChatTurnRequest(**_payload()), {})
     async for frame in stream:
         if f"event: {EVENT_PING}" in frame:
             break  # 판정이 아직 도는 중이다

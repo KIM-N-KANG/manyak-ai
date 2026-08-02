@@ -1,10 +1,13 @@
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException, status
 from httpx import AsyncClient
 
+from src.api.v1 import story as story_module
+from src.schemas.story_compile import StoryCompileRequest
 from src.services import story_llm
 
 _FIXTURES = Path(__file__).parent / "unit" / "fixtures"
@@ -29,12 +32,34 @@ async def test_compile_endpoint_returns_nested_contract(
 ) -> None:
     """200 경로: LLM을 가짜로 두고 ERD 4테이블 nested 계약이 그대로 내려오는지 확인."""
 
+    captured: dict = {}
+
+    @contextmanager
+    def fake_observe(name: str, **kwargs: object):
+        captured["name"] = name
+        captured.update(kwargs)
+
+        class _Trace:
+            def set_metadata(self, **_kwargs: object) -> None: ...
+
+        yield _Trace()
+
     async def fake_complete(system: str, user: str, **_kwargs: object):
         return _spec_valid(), story_llm.LlmUsage("deepseek-test", 100, 200, provider="not-deepseek")
 
+    monkeypatch.setattr(story_module, "observe_request", fake_observe)
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
-    response = await client.post("/api/v1/story/compile", json=_REQUEST)
+    response = await client.post(
+        "/api/v1/story/compile",
+        json=_REQUEST,
+        headers={
+            "X-Manyak-Creation-Id": "11111111-1111-1111-1111-111111111111",
+            "X-Manyak-Storyline-Id": "42",
+            "X-Manyak-Storyline-Order": "2",
+            "X-Manyak-Chat-Id": "22222222-2222-2222-2222-222222222222",
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -60,6 +85,16 @@ async def test_compile_endpoint_returns_nested_contract(
     assert meta["output_token_count"] == 200
     assert meta["retry_count"] == 0
     assert "promptVersions" not in meta  # camelCase 아님(story는 snake)
+    assert captured["name"] == "스토리 컴파일"
+    assert captured["input_data"] == StoryCompileRequest.model_validate(_REQUEST).model_dump(
+        mode="json"
+    )
+    assert captured["metadata"] == {
+        "creation_id": "11111111-1111-1111-1111-111111111111",
+        "storyline_id": 42,
+        "storyline_order": 2,
+        "prompt_versions": {"COMPILE": meta["prompt_versions"]["COMPILE"]},
+    }
 
 
 async def test_compile_endpoint_502_on_llm_error(

@@ -185,6 +185,7 @@ class _Trace:
 def observe_request(
     name: str,
     *,
+    input_data: object | None = None,
     tags: list[str] | None = None,
     metadata: dict[str, object] | None = None,
 ) -> Iterator[_Trace]:
@@ -192,6 +193,9 @@ def observe_request(
 
     이 블록 안에서 일어난 LLM 호출은 전부 하위 관측으로 들어간다. 그래서 compile의 부분
     재호출(최대 3회)이나 선택지 누적 재호출도 흩어지지 않고 한 트레이스에 모인다.
+
+    백엔드가 보낸 구조화된 요청은 루트 관측 input에 싣는다. LLM 프롬프트를 다시 해석하지 않고도
+    태그·스토리 설정·사용자 입력을 정확히 복원하기 위한 원본이다.
 
     트레이스 정체성(session_id·user_id·tags·trace_name)은 propagate_attributes로 싣는다 —
     session_id는 대화 묶음 검색, user_id는 사용자별 집계(원본 아닌 기기 해시), tags는 장르 필터.
@@ -216,7 +220,10 @@ def observe_request(
 
         request_id, session_id, device_id_hash = get_correlation_ids()
         client = get_client()
-        span = stack.enter_context(client.start_as_current_observation(name=name, as_type="span"))
+        observation_kwargs: dict[str, object] = {"name": name, "as_type": "span"}
+        if input_data is not None:
+            observation_kwargs["input"] = input_data
+        span = stack.enter_context(client.start_as_current_observation(**observation_kwargs))
         stack.enter_context(
             propagate_attributes(
                 session_id=session_id,
