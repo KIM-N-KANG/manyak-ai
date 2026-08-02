@@ -1,3 +1,4 @@
+import pytest
 import sentry_sdk
 from httpx import ASGITransport, AsyncClient
 
@@ -98,6 +99,44 @@ def test_parse_connection_metadata_omits_only_malformed_fields(caplog) -> None:
     assert metadata == {"creation_id": "creation-1", "turn_number": 3}
     assert "X-Manyak-Storyline-Id는 정수여야 함" in caplog.text
     assert "X-Manyak-Is-Regenerated는 true 또는 false여야 함" in caplog.text
+
+
+def test_parse_connection_metadata_accepts_backend_integer_upper_bounds() -> None:
+    metadata = parse_connection_metadata(
+        {
+            "X-Manyak-Storyline-Id": "9223372036854775807",
+            "X-Manyak-Storyline-Order": "3",
+            "X-Manyak-Turn-Number": "2147483647",
+        }
+    )
+
+    assert metadata == {
+        "storyline_id": 9_223_372_036_854_775_807,
+        "storyline_order": 3,
+        "turn_number": 2_147_483_647,
+    }
+
+
+@pytest.mark.parametrize(
+    ("header", "value"),
+    [
+        ("X-Manyak-Storyline-Id", "0"),
+        ("X-Manyak-Storyline-Id", "-1"),
+        ("X-Manyak-Storyline-Id", "9223372036854775808"),
+        ("X-Manyak-Storyline-Order", "0"),
+        ("X-Manyak-Storyline-Order", "4"),
+        ("X-Manyak-Turn-Number", "0"),
+        ("X-Manyak-Turn-Number", "2147483648"),
+        ("X-Manyak-Turn-Number", "1_000"),
+        ("X-Manyak-Turn-Number", "+7"),
+        ("X-Manyak-Turn-Number", "٧"),
+    ],
+)
+def test_parse_connection_metadata_omits_out_of_range_or_noncanonical_integers(
+    header: str, value: str, caplog
+) -> None:
+    assert parse_connection_metadata({header: value}) == {}
+    assert header in caplog.text
 
 
 # ── 미들웨어: 헤더 → 요청별 Sentry isolation scope ───────────────────────────

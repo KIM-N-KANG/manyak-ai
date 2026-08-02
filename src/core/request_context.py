@@ -59,9 +59,9 @@ _STRING_CONNECTION_HEADERS = {
     HEADER_START_SETTING_ID: "start_setting_id",
 }
 _INTEGER_CONNECTION_HEADERS = {
-    HEADER_STORYLINE_ID: "storyline_id",
-    HEADER_STORYLINE_ORDER: "storyline_order",
-    HEADER_TURN_NUMBER: "turn_number",
+    HEADER_STORYLINE_ID: ("storyline_id", 1, 9_223_372_036_854_775_807),
+    HEADER_STORYLINE_ORDER: ("storyline_order", 1, 3),
+    HEADER_TURN_NUMBER: ("turn_number", 1, 2_147_483_647),
 }
 
 
@@ -94,14 +94,27 @@ def parse_connection_metadata(headers: Mapping[str, str]) -> ConnectionMetadata:
         if value is not None:
             metadata[key] = value
 
-    for header, key in _INTEGER_CONNECTION_HEADERS.items():
+    for header, (key, minimum, maximum) in _INTEGER_CONNECTION_HEADERS.items():
         value = _clean_connection_value(headers.get(header))
         if value is None:
             continue
+        if not value.isascii() or not value.isdecimal():
+            logger.warning("Langfuse 연결 헤더 값 무시 — %s는 정수여야 함", header)
+            continue
         try:
-            metadata[key] = int(value)
+            parsed = int(value)
         except ValueError:
             logger.warning("Langfuse 연결 헤더 값 무시 — %s는 정수여야 함", header)
+            continue
+        if not minimum <= parsed <= maximum:
+            logger.warning(
+                "Langfuse 연결 헤더 값 무시 — %s는 %d~%d 범위여야 함",
+                header,
+                minimum,
+                maximum,
+            )
+            continue
+        metadata[key] = parsed
 
     regenerated = _clean_connection_value(headers.get(HEADER_IS_REGENERATED))
     if regenerated is not None:
