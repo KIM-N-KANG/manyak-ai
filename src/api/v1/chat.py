@@ -239,8 +239,18 @@ async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(5-ai-server §5-6).
     with observe_request(
         "채팅 선택지",
-        input_data=request.model_dump(mode="json"),
-        metadata={"prompt_versions": {"NEXT_ACTIONS": NEXT_ACTIONS_VERSION}},
+        input_data=request.model_dump(mode="json", exclude={"user_source"}),
+        metadata={
+            **select_connection_metadata(
+                "creation_id",
+                "story_id",
+                "chat_id",
+                "start_setting_id",
+                "turn_number",
+                "is_regenerated",
+            ),
+            "prompt_versions": {"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
+        },
     ) as trace:
         result = await generate_choices(request, request.ai_output)
         trace.set_metadata(retry_count=result.retry_count)
