@@ -15,6 +15,7 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
     # 요청 1건 = 트레이스 1건(KNK-624). 장르·태그·프롬프트 버전을 분석 차원으로 싣는다(KNK-640).
     with observe_request(
         "스토리라인 생성",
+        input_data=request.model_dump(mode="json"),
         # 장르만 태그로 — 주인공·조연 태그는 사용자 자유입력이 섞여 제외(dimension_tags 참조).
         tags=dimension_tags(genre_tags=request.genre_tags),
         metadata={
@@ -58,6 +59,7 @@ async def create_story_compile(request: StoryCompileRequest) -> StoryCompileResp
     # 장르·태그·프롬프트 버전은 미리, 재호출 횟수는 응답 meta에서 사후에 싣는다.
     with observe_request(
         "스토리 컴파일",
+        input_data=request.model_dump(mode="json"),
         tags=dimension_tags(genre_tags=request.genre_tags),  # 장르만(위와 동일 이유)
         metadata={"prompt_versions": {"COMPILE": COMPILE_VERSION}},
     ) as trace:

@@ -1,6 +1,10 @@
+from contextlib import contextmanager
+
 import pytest
 from httpx import AsyncClient
 
+from src.api.v1 import story as story_module
+from src.schemas.story import StorylinesRequest
 from src.services import story_llm
 
 # storylines 엔드포인트의 정상 요청 본문(백엔드가 보내는 태그 3종).
@@ -25,9 +29,22 @@ async def test_storylines_endpoint_attaches_meta(
 ) -> None:
     """200 경로: 응답에 로깅 메타(snake_case)가 붙고 prompt_versions 키가 STORYLINES인지 확인."""
 
+    captured: dict = {}
+
+    @contextmanager
+    def fake_observe(name: str, **kwargs: object):
+        captured["name"] = name
+        captured.update(kwargs)
+
+        class _Trace:
+            def set_metadata(self, **_kwargs: object) -> None: ...
+
+        yield _Trace()
+
     async def fake_complete(system: str, user: str, **_kwargs: object):
         return _FAKE, story_llm.LlmUsage("deepseek-test", 50, 80, provider="not-deepseek")
 
+    monkeypatch.setattr(story_module, "observe_request", fake_observe)
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
     response = await client.post("/api/v1/story/storylines", json=_REQUEST)
@@ -47,6 +64,10 @@ async def test_storylines_endpoint_attaches_meta(
     assert meta["output_token_count"] == 80
     assert meta["retry_count"] == 0
     assert "promptVersions" not in meta  # camelCase 아님(story는 snake)
+    assert captured["name"] == "스토리라인 생성"
+    assert captured["input_data"] == StorylinesRequest.model_validate(_REQUEST).model_dump(
+        mode="json"
+    )
 
 
 async def test_storylines_endpoint_serializes_missing_tokens_as_null(

@@ -105,6 +105,7 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(5-ai-server §5-6).
     with observe_request(
         "채팅 턴",
+        input_data=req.model_dump(mode="json"),
         metadata={
             "prompt_versions": {**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
             "retry_count": 0,
@@ -220,6 +221,7 @@ async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(5-ai-server §5-6).
     with observe_request(
         "채팅 선택지",
+        input_data=request.model_dump(mode="json"),
         metadata={"prompt_versions": {"NEXT_ACTIONS": NEXT_ACTIONS_VERSION}},
     ) as trace:
         result = await generate_choices(request, request.ai_output)

@@ -255,11 +255,14 @@ def test_teardown_failure_log_does_not_leak_business_exception(monkeypatch, capl
 
 def test_observe_request_passthrough_when_disabled(monkeypatch) -> None:
     # 비활성이면 observe_request는 Langfuse SDK를 건드리지 않고 블록을 그대로 통과시킨다.
-    # 차원 인자(tags·metadata)를 줘도 no-op이어야 하고, 핸들의 set_metadata도 안전해야 한다.
+    # 입력·차원 인자를 줘도 no-op이어야 하고, 핸들의 set_metadata도 안전해야 한다.
     monkeypatch.setattr(lf._state, "enabled", False)
     ran = False
     with observe_request(
-        "테스트", tags=["genre:무협"], metadata={"prompt_versions": {"CORE": 1}}
+        "테스트",
+        input_data={"user_input": "원문"},
+        tags=["genre:무협"],
+        metadata={"prompt_versions": {"CORE": 1}},
     ) as trace:
         ran = True
         trace.set_metadata(retry_count=2)  # 비활성 핸들 — 예외 없이 통과해야 한다
@@ -299,8 +302,8 @@ class _FakeSpan:
 
 
 def test_observe_request_active_attaches_dimensions(monkeypatch) -> None:
-    """활성 경로: tags는 propagate_attributes로, metadata(버전·request_id·retry_count)는
-    루트 관측에 1회 기록되는지 가짜 SDK로 확인한다(무과금)."""
+    """활성 경로: 구조화 입력은 루트 관측 input, tags는 propagate_attributes,
+    metadata(버전·request_id·retry_count)는 루트 관측 metadata에 기록된다(무과금)."""
     monkeypatch.setattr(lf._state, "enabled", True)
     monkeypatch.setattr(lf, "get_correlation_ids", lambda: ("req-1", "sess-1", "hash-1"))
 
@@ -308,8 +311,9 @@ def test_observe_request_active_attaches_dimensions(monkeypatch) -> None:
     captured: dict = {}
 
     @contextmanager
-    def fake_current_observation(*, name, as_type):
+    def fake_current_observation(*, name, as_type, input):
         captured["name"] = name
+        captured["input"] = input
         yield fake_span
 
     @contextmanager
@@ -318,8 +322,8 @@ def test_observe_request_active_attaches_dimensions(monkeypatch) -> None:
         yield
 
     class _FakeClient:
-        def start_as_current_observation(self, *, name, as_type):
-            return fake_current_observation(name=name, as_type=as_type)
+        def start_as_current_observation(self, *, name, as_type, input):
+            return fake_current_observation(name=name, as_type=as_type, input=input)
 
     # observe_request가 함수 안에서 `from langfuse import ...` 하므로 langfuse 패키지를 패치한다.
     monkeypatch.setattr(langfuse_pkg, "get_client", lambda: _FakeClient(), raising=False)
@@ -328,6 +332,7 @@ def test_observe_request_active_attaches_dimensions(monkeypatch) -> None:
     # 픽스처는 스토리 컴파일로 — 장르 태그를 싣는 트레이스는 스토리 제작뿐이다(KNK-652).
     with observe_request(
         "스토리 컴파일",
+        input_data={"selected_storyline": "선택한 스토리라인"},
         tags=["genre:판타지"],
         metadata={"prompt_versions": {"CORE": 3}, "retry_count": 0},
     ) as trace:
@@ -338,6 +343,7 @@ def test_observe_request_active_attaches_dimensions(monkeypatch) -> None:
     assert captured["propagated"]["user_id"] == "hash-1"
     assert captured["propagated"]["tags"] == ["genre:판타지"]
     assert captured["propagated"]["trace_name"] == "스토리 컴파일"
+    assert captured["input"] == {"selected_storyline": "선택한 스토리라인"}
     # 분석 metadata는 루트 관측에 1회로 모여 기록 — 사후 retry_count(2)가 미리값(0)을 덮는다
     assert fake_span.metadata == {
         "request_id": "req-1",

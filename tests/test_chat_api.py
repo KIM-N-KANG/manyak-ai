@@ -217,6 +217,9 @@ async def test_chat_turn_trace_receives_no_tags(client, mock_events, monkeypatch
 
     assert resp.status_code == 200
     assert captured["name"] == "채팅 턴"
+    assert captured["input_data"] == ChatTurnRequest.model_validate(_payload()).model_dump(
+        mode="json"
+    )
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
 
 

@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.api.v1 import chat as chat_module
-from src.schemas.chat_choices import ChatChoicesResponse
+from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
 from src.schemas.response_meta import StoryResponseMeta
 from src.services.chat_choices import ChoicesResult
 
@@ -166,4 +166,7 @@ async def test_chat_choices_trace_receives_no_tags(client, mock_choices, monkeyp
 
     assert resp.status_code == 200
     assert captured["name"] == "채팅 선택지"
+    assert captured["input_data"] == ChatChoicesRequest.model_validate(_payload()).model_dump(
+        mode="json"
+    )
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
