@@ -2,9 +2,13 @@ import sentry_sdk
 from httpx import ASGITransport, AsyncClient
 
 from src.api.v1 import story as story_module
+from src.core import middleware as middleware_module
 from src.core.request_context import (
     clean_identifier,
+    get_connection_metadata,
     get_correlation_ids,
+    parse_connection_metadata,
+    set_connection_metadata,
     set_correlation_ids,
 )
 from src.main import app
@@ -37,6 +41,62 @@ def test_clean_identifier_drops_empty_and_none() -> None:
 def test_clean_identifier_drops_unknown_sentinel() -> None:
     # 백엔드 필터가 헤더 누락 시 채우는 "unknown"은 버린다(백엔드 SentryMdcEventProcessor와 동일).
     assert clean_identifier("unknown") is None
+
+
+# ── Langfuse 연결 헤더 정규화 (KNK-767) ─────────────────────────────────────
+def test_parse_connection_metadata_converts_all_types() -> None:
+    metadata = parse_connection_metadata(
+        {
+            "X-Manyak-Creation-Id": " creation-1 ",
+            "X-Manyak-Parent-Creation-Id": "creation-0",
+            "X-Manyak-Storyline-Id": "42",
+            "X-Manyak-Storyline-Order": "2",
+            "X-Manyak-Story-Id": "story-1",
+            "X-Manyak-Chat-Id": "chat-1",
+            "X-Manyak-Start-Setting-Id": "setting-1",
+            "X-Manyak-Turn-Number": "7",
+            "X-Manyak-Is-Regenerated": "true",
+        }
+    )
+
+    assert metadata == {
+        "creation_id": "creation-1",
+        "parent_creation_id": "creation-0",
+        "storyline_id": 42,
+        "storyline_order": 2,
+        "story_id": "story-1",
+        "chat_id": "chat-1",
+        "start_setting_id": "setting-1",
+        "turn_number": 7,
+        "is_regenerated": True,
+    }
+
+
+def test_parse_connection_metadata_omits_missing_blank_and_unknown() -> None:
+    metadata = parse_connection_metadata(
+        {
+            "X-Manyak-Creation-Id": " ",
+            "X-Manyak-Story-Id": "unknown",
+            "X-Manyak-Is-Regenerated": " false ",
+        }
+    )
+
+    assert metadata == {"is_regenerated": False}
+
+
+def test_parse_connection_metadata_omits_only_malformed_fields(caplog) -> None:
+    metadata = parse_connection_metadata(
+        {
+            "X-Manyak-Creation-Id": "creation-1",
+            "X-Manyak-Storyline-Id": "not-an-integer",
+            "X-Manyak-Turn-Number": "3",
+            "X-Manyak-Is-Regenerated": "yes",
+        }
+    )
+
+    assert metadata == {"creation_id": "creation-1", "turn_number": 3}
+    assert "X-Manyak-Storyline-Id는 정수여야 함" in caplog.text
+    assert "X-Manyak-Is-Regenerated는 true 또는 false여야 함" in caplog.text
 
 
 # ── 미들웨어: 헤더 → 요청별 Sentry isolation scope ───────────────────────────
@@ -125,6 +185,14 @@ def test_correlation_contextvar_overwrites_with_none() -> None:
     assert get_correlation_ids() == (None, None, None)
 
 
+def test_connection_metadata_contextvar_roundtrip_and_overwrite() -> None:
+    set_connection_metadata({"creation_id": "creation-1", "turn_number": 3})
+    assert get_connection_metadata() == {"creation_id": "creation-1", "turn_number": 3}
+
+    set_connection_metadata({})
+    assert get_connection_metadata() == {}
+
+
 async def test_middleware_populates_correlation_contextvar(client, monkeypatch) -> None:
     # 미들웨어가 Sentry scope와 별개로 contextvar에도 실어, 엔드포인트가 읽을 수 있어야 한다.
     monkeypatch.setattr(sentry_sdk, "get_isolation_scope", lambda: _FakeScope())
@@ -148,3 +216,46 @@ async def test_middleware_populates_correlation_contextvar(client, monkeypatch) 
             },
         )
     assert seen["ids"] == ("req_ctx", "sess_ctx", "hash_ctx")
+
+
+async def test_middleware_populates_connection_metadata_contextvar(client, monkeypatch) -> None:
+    monkeypatch.setattr(sentry_sdk, "get_isolation_scope", lambda: _FakeScope())
+    seen: dict = {}
+
+    async def _spy(*_a, **_k):
+        seen["metadata"] = get_connection_metadata()
+        raise RuntimeError("stop")  # LLM 호출 전에 멈춘다(무과금)
+
+    monkeypatch.setattr(story_module.story_llm, "generate_storylines", _spy)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as c:
+        await c.post(
+            "/api/v1/story/storylines",
+            json={"genre_tags": ["무협"], "protagonist_tags": ["천마"], "supporting_tags": ["x"]},
+            headers={
+                "X-Manyak-Creation-Id": "creation-1",
+                "X-Manyak-Storyline-Order": "2",
+            },
+        )
+
+    assert seen["metadata"] == {"creation_id": "creation-1", "storyline_order": 2}
+
+
+async def test_middleware_survives_connection_metadata_parse_failure(
+    client, monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(sentry_sdk, "get_isolation_scope", lambda: _FakeScope())
+    set_connection_metadata({"creation_id": "stale-value"})
+
+    def _fail(_headers):
+        raise RuntimeError("raw header must not reach logs")
+
+    monkeypatch.setattr(middleware_module, "parse_connection_metadata", _fail)
+
+    response = await client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    assert get_connection_metadata() == {}
+    assert "Langfuse 연결 헤더 파싱 실패(RuntimeError)" in caplog.text
+    assert "raw header must not reach logs" not in caplog.text

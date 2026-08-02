@@ -16,6 +16,8 @@ scope는 Starlette ServerErrorMiddleware(미처리 500을 캡처하는 최외곽
 전체에서 일관된다. 헤더가 없거나 "unknown"이면 아무것도 싣지 않는다(forward-compatible).
 """
 
+import logging
+
 import sentry_sdk
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -28,8 +30,12 @@ from src.core.request_context import (
     KEY_REQUEST_ID,
     KEY_SESSION_ID,
     clean_identifier,
+    parse_connection_metadata,
     set_correlation_ids,
+    set_connection_metadata,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RequestContextMiddleware:
@@ -64,5 +70,14 @@ class RequestContextMiddleware:
         # Langfuse 트레이스용 — 엔드포인트가 읽을 수 있게 contextvar에도 담는다(KNK-624).
         # Sentry scope 경로는 위 그대로 두고 갈래만 추가한다(F1 회귀 방지 — request_context 참조).
         set_correlation_ids(request_id, session_id, device_id_hash)
+        try:
+            connection_metadata = parse_connection_metadata(headers)
+        except Exception as e:  # noqa: BLE001 — 관측용 파싱 실패가 사용자 요청을 막으면 안 된다
+            logger.warning(
+                "Langfuse 연결 헤더 파싱 실패(%s) — metadata 없이 요청 계속",
+                type(e).__name__,
+            )
+            connection_metadata = {}
+        set_connection_metadata(connection_metadata)
 
         await self.app(scope, receive, send)
