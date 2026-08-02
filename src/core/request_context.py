@@ -152,3 +152,9 @@ def set_connection_metadata(metadata: ConnectionMetadata) -> None:
 def get_connection_metadata() -> ConnectionMetadata:
     """현재 요청의 연결 metadata를 복사해 반환한다. 없으면 빈 dict다."""
     return dict(_connection_metadata.get() or {})
+
+
+def select_connection_metadata(*allowed_keys: str) -> ConnectionMetadata:
+    """현재 요청의 연결 metadata에서 해당 API가 허용한 키만 반환한다."""
+    metadata = get_connection_metadata()
+    return {key: metadata[key] for key in allowed_keys if key in metadata}

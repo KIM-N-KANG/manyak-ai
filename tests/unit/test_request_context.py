@@ -8,6 +8,7 @@ from src.core.request_context import (
     get_connection_metadata,
     get_correlation_ids,
     parse_connection_metadata,
+    select_connection_metadata,
     set_connection_metadata,
     set_correlation_ids,
 )
@@ -191,6 +192,14 @@ def test_connection_metadata_contextvar_roundtrip_and_overwrite() -> None:
 
     set_connection_metadata({})
     assert get_connection_metadata() == {}
+
+
+def test_select_connection_metadata_returns_only_allowed_keys() -> None:
+    set_connection_metadata({"creation_id": "creation-1", "chat_id": "chat-1"})
+
+    assert select_connection_metadata("creation_id", "parent_creation_id") == {
+        "creation_id": "creation-1"
+    }
 
 
 async def test_middleware_populates_correlation_contextvar(client, monkeypatch) -> None:

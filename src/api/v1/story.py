@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from src.core.langfuse import dimension_tags, observe_request
+from src.core.request_context import select_connection_metadata
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
@@ -19,6 +20,7 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
         # 장르만 태그로 — 주인공·조연 태그는 사용자 자유입력이 섞여 제외(dimension_tags 참조).
         tags=dimension_tags(genre_tags=request.genre_tags),
         metadata={
+            **select_connection_metadata("creation_id", "parent_creation_id"),
             "prompt_versions": {"STORYLINES": STORYLINES_VERSION},
             # 기본값 0을 미리 싣는다 — 예외로 조기 이탈해도 실패 트레이스에 값이 비지 않게(KNK-312 리뷰 F2).
             "retry_count": 0,

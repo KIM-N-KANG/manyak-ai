@@ -47,7 +47,15 @@ async def test_storylines_endpoint_attaches_meta(
     monkeypatch.setattr(story_module, "observe_request", fake_observe)
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
-    response = await client.post("/api/v1/story/storylines", json=_REQUEST)
+    response = await client.post(
+        "/api/v1/story/storylines",
+        json=_REQUEST,
+        headers={
+            "X-Manyak-Creation-Id": "11111111-1111-1111-1111-111111111111",
+            "X-Manyak-Parent-Creation-Id": "00000000-0000-0000-0000-000000000000",
+            "X-Manyak-Chat-Id": "22222222-2222-2222-2222-222222222222",
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -68,6 +76,43 @@ async def test_storylines_endpoint_attaches_meta(
     assert captured["input_data"] == StorylinesRequest.model_validate(_REQUEST).model_dump(
         mode="json"
     )
+    assert captured["metadata"] == {
+        "creation_id": "11111111-1111-1111-1111-111111111111",
+        "parent_creation_id": "00000000-0000-0000-0000-000000000000",
+        "prompt_versions": {"STORYLINES": meta["prompt_versions"]["STORYLINES"]},
+        "retry_count": 0,
+    }
+
+
+async def test_storylines_trace_omits_missing_parent_creation_id(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict = {}
+
+    @contextmanager
+    def fake_observe(_name: str, **kwargs: object):
+        captured.update(kwargs)
+
+        class _Trace:
+            def set_metadata(self, **_kwargs: object) -> None: ...
+
+        yield _Trace()
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _FAKE, story_llm.LlmUsage("deepseek-test", 50, 80, provider="deepseek")
+
+    monkeypatch.setattr(story_module, "observe_request", fake_observe)
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    response = await client.post(
+        "/api/v1/story/storylines",
+        json=_REQUEST,
+        headers={"X-Manyak-Creation-Id": "11111111-1111-1111-1111-111111111111"},
+    )
+
+    assert response.status_code == 200
+    assert captured["metadata"]["creation_id"] == "11111111-1111-1111-1111-111111111111"
+    assert "parent_creation_id" not in captured["metadata"]
 
 
 async def test_storylines_endpoint_serializes_missing_tokens_as_null(
