@@ -39,6 +39,7 @@ _MAIN_EVENT = {
 # ── 하위호환: 재료 없는 기존 요청 ───────────────────────────────────────────
 def test_request_without_event_materials_passes_with_defaults() -> None:
     req = ChatTurnRequest.model_validate(_BASE_PAYLOAD)
+    assert req.user_source is None
     assert req.main_events == []
     assert req.target_main_event is None
     assert req.occurred_main_event_names == []
@@ -66,6 +67,26 @@ def test_request_with_event_materials_parses() -> None:
     assert req.target_main_event.progress_turns == 3
     assert req.occurred_main_event_names == ["선왕의 죽음"]
     assert req.endings[0].name == "왕좌를 되찾다"
+
+
+@pytest.mark.parametrize("user_source", ["choice", "edited_choice", "typed"])
+def test_request_accepts_known_user_source(user_source: str) -> None:
+    req = ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "user_source": user_source})
+    assert req.user_source == user_source
+
+
+def test_request_omits_unknown_user_source_without_rejecting(caplog) -> None:
+    req = ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "user_source": "guessed"})
+
+    assert req.user_source is None
+    assert "Langfuse user_source 값 무시" in caplog.text
+    assert "guessed" not in caplog.text
+
+
+@pytest.mark.parametrize("user_source", [None, "", " ", "unknown"])
+def test_request_omits_missing_user_source(user_source: str | None) -> None:
+    req = ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "user_source": user_source})
+    assert req.user_source is None
 
 
 # ── 형식 위반 거부 ──────────────────────────────────────────────────────────

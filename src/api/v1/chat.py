@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 
 from src.core.config import settings
 from src.core.langfuse import observe_request
+from src.core.request_context import ConnectionMetadata, select_connection_metadata
 from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
 from src.schemas.chat_turn import (
     EVENT_COMPLETED,
@@ -92,7 +93,9 @@ def _add_tokens(a: int | None, b: int | None) -> int | None:
     return (a or 0) + (b or 0)
 
 
-async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
+async def _event_stream(
+    req: ChatTurnRequest, connection_metadata: ConnectionMetadata
+) -> AsyncIterator[str]:
     """조립 → 본문 스트리밍 → (종료 후) 판정 호출 → 합쳐 SSE 프레임으로 낸다.
 
     본문 스트림이 error로 끝나면 그 error만 relay하고 판정 호출은 하지 않는다.
@@ -107,6 +110,7 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
         "채팅 턴",
         input_data=req.model_dump(mode="json"),
         metadata={
+            **connection_metadata,
             "prompt_versions": {**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
             "retry_count": 0,
         },
@@ -204,7 +208,21 @@ async def _event_stream(req: ChatTurnRequest) -> AsyncIterator[str]:
 @router.post("/chat/turns")
 async def chat_turn(request: ChatTurnRequest) -> StreamingResponse:
     """채팅 한 턴을 SSE로 스트리밍한다(완전 stateless — 받은 재료로 조립·응답만)."""
-    return StreamingResponse(_event_stream(request), media_type="text/event-stream")
+    # ContextVar도 자식 태스크에 복사돼 안전하지만, 요청별 연결값 전달을 코드에 명확히
+    # 드러내기 위해 핸들러에서 스냅샷을 만들어 제너레이터에 넘긴다(KNK-770).
+    connection_metadata = select_connection_metadata(
+        "creation_id",
+        "story_id",
+        "chat_id",
+        "start_setting_id",
+        "turn_number",
+        "is_regenerated",
+    )
+    if request.user_source is not None:
+        connection_metadata["user_source"] = request.user_source
+    return StreamingResponse(
+        _event_stream(request, connection_metadata), media_type="text/event-stream"
+    )
 
 
 @router.post("/chat/choices", response_model=ChatChoicesResponse)
