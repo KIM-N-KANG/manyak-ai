@@ -23,6 +23,8 @@ updated: 2026-08-07
 
 컴파일은 스토리라인보다 출력이 길고 구조가 복잡해(인물 카드 최대 5명 등) 더 큰 모델을 쓰고, 빈 칸을 채우기 위한 부분 재호출이 추가됩니다.
 
+컴파일 모델과 추론 강도는 동일한 입력으로 Terra와 Luna의 여러 추론 강도를 실측해 결정했습니다. 응답 품질뿐 아니라 응답 시간과 토큰 비용을 함께 비교했고, 세 기준의 균형이 가장 나은 `gpt-5.6-terra`의 `medium`을 선택했습니다.
+
 | 항목 | 스토리라인 생성 | 컴파일 |
 |---|---|---|
 | 입력 | 태그 3종 | 선택 스토리라인 + 추가정보 + 태그 3종 |
@@ -116,7 +118,7 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 
 ### 4-7. 프롬프트 캐싱
 
-`[SYSTEM]` 블록은 모든 호출에서 동일하므로, DeepSeek이 동일한 접두 컨텍스트를 자동으로 컨텍스트 캐시 처리합니다. 별도 캐시 설정은 필요하지 않으며, 적중 여부는 응답의 `usage.prompt_cache_hit_tokens`로 확인합니다.
+Terra 호출에는 매번 동일한 `[SYSTEM]` 블록을 보내며 서버가 별도 캐시 옵션을 지정하지는 않습니다. OpenAI 응답의 `usage.prompt_tokens_details.cached_tokens`가 있으면 어댑터가 `cache_read_input_tokens`로 옮기고, 스토리 호출 진단 로그에 캐시 적중 토큰 수를 남깁니다.
 
 ---
 
@@ -182,9 +184,9 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
     { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." }
   ],
   "meta": {
-    "model": "deepseek-v4-pro",
+    "model": "gpt-5.6-terra",
     "prompt_versions": { "COMPILE": 7 },
-    "provider": "deepseek",
+    "provider": "openai",
     "input_token_count": 3500,
     "output_token_count": 2200,
     "retry_count": 0

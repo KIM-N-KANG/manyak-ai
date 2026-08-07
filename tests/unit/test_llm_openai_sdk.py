@@ -814,7 +814,7 @@ def test_gateway_rejects_unregistered_model_immediately() -> None:
 
 
 def test_validate_startup_passes_with_registered_models() -> None:
-    """지금 설정(DeepSeek 2종)은 기동 검사를 통과한다 — CI·팀 로컬이 그대로 뜬다."""
+    """지금 설정(Terra 컴파일·DeepSeek 스토리라인/채팅)은 기동 검사를 통과한다."""
     llm.validate_startup()  # 예외 없이 통과
 
 
