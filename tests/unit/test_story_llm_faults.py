@@ -305,15 +305,15 @@ async def test_complete_json_call_contract_compile(monkeypatch) -> None:
         {"role": "user", "content": "USER"},
     ]
     assert captured["response_format"] == {"type": "json_object"}
-    assert story_llm._MAX_TOKENS == 16_384
+    assert story_llm._COMPILE_MAX_TOKENS == 16_384
     if resolved.provider == PROVIDER_DEEPSEEK:
         assert captured["temperature"] == story_llm._TEMPERATURE
-        assert captured["max_tokens"] == story_llm._MAX_TOKENS
+        assert captured["max_tokens"] == story_llm._COMPILE_MAX_TOKENS
         assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
         assert "max_completion_tokens" not in captured
         assert "reasoning_effort" not in captured
     elif resolved.provider == PROVIDER_OPENAI:
-        assert captured["max_completion_tokens"] == story_llm._MAX_TOKENS
+        assert captured["max_completion_tokens"] == story_llm._COMPILE_MAX_TOKENS
         assert captured["reasoning_effort"] == resolved.reasoning_effort
         assert "temperature" not in captured
         assert "max_tokens" not in captured
@@ -331,6 +331,7 @@ async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
     _result, usage = await story_llm.generate_storylines("SYS", "USER")
 
     assert captured["model"] == story_llm.settings.storylines_model  # storylines = flash
+    assert captured["max_tokens"] == story_llm._STORYLINES_MAX_TOKENS == 6_144
     assert usage.model == story_llm.settings.storylines_model
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}

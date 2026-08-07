@@ -74,8 +74,10 @@ def _add_tokens(a: int | None, b: int | None) -> int | None:
 # 보낼지는 모델 등록부와 어댑터가 정하므로, 여기서는 "무엇을 원하는지"만 넘긴다 —
 # 클라이언트 생성·추론 모드(thinking) 같은 회사 문법은 이 파일에서 사라졌다.
 
-# 추론 토큰과 본문이 함께 쓰는 출력 상한. Terra medium 실측 조건과 같은 16,384로 둔다.
-_MAX_TOKENS = 16_384
+# 스토리라인은 기존 출력 상한을 유지하고, 컴파일은 Terra medium 실측 조건과 같은
+# 16,384를 쓴다. Terra의 한도는 추론 토큰과 본문이 함께 사용한다.
+_STORYLINES_MAX_TOKENS = 6_144
+_COMPILE_MAX_TOKENS = 16_384
 
 # 생성 온도. 스토리라인 블라인드 독자 평가에서 0.75가 0.5보다 읽기 품질(감정 밀도·창의성)
 # 우세이면서 파싱 성공률·속도는 동급이고, 기본값 1.0보다 분량 폭주·파싱 실패 꼬리위험이
@@ -140,6 +142,7 @@ async def _complete_json(
     prompt_versions: dict | None = None,
     max_invalid_retries: int = 0,
     validate: Callable[[dict], None] | None = None,
+    max_tokens: int = _COMPILE_MAX_TOKENS,
 ) -> tuple[dict, LlmUsage]:
     """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
@@ -179,7 +182,7 @@ async def _complete_json(
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    max_tokens=_MAX_TOKENS,
+                    max_tokens=max_tokens,
                     # 시도별 타임아웃 = 전체 예산(90초)의 남은 시간 — 60초 직전에 시작한 재호출이
                     # 총 90초를 넘겨 끌지 못하게 한다(Codex P2). 첫 시도는 남은 시간이 90초라 종전과 같다.
                     # **반드시 채운다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
@@ -333,6 +336,7 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
         prompt_versions={"STORYLINES": STORYLINES_VERSION},
         max_invalid_retries=2,
         validate=_validate_storylines,
+        max_tokens=_STORYLINES_MAX_TOKENS,
     )
     _normalize_storyline_ids(result)
     return result, usage
