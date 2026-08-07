@@ -466,6 +466,30 @@ def test_validate_rejects_blank_provider_key(monkeypatch) -> None:
     assert "DEEPSEEK_API_KEY" in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("bad_key", "problem"),
+    [
+        ("openai—test-key", "ASCII"),
+        (" openai-test-key", "앞뒤 공백"),
+        ("openai-test\nkey", "개행"),
+        ("openai-test\x0bkey", "제어문자"),
+    ],
+)
+def test_validate_rejects_malformed_openai_key(
+    monkeypatch, bad_key: str, problem: str
+) -> None:
+    """잘못 저장된 OpenAI 키는 첫 컴파일 500이 아니라 기동에서 막고 원문은 숨긴다."""
+    monkeypatch.setattr(registry, "settings", _settings(openai_api_key=bad_key))
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+
+    message = str(exc_info.value)
+    assert "OPENAI_API_KEY" in message
+    assert problem in message
+    assert bad_key not in message
+
+
 def test_validate_names_the_env_for_provider_without_credentials(monkeypatch) -> None:
     """접속 정보 규칙이 없는 공급자에서 막힐 때도 어느 env가 문제인지 붙인다.
 
