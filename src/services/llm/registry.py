@@ -377,6 +377,22 @@ def validate_selected_models() -> None:
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데 "
                 f"{creds.api_key_env}가 비어 있습니다."
             )
+        if "\n" in creds.api_key or "\r" in creds.api_key:
+            raise LlmConfigError(
+                f"{env_name}={model}이 쓰는 {creds.api_key_env}에 개행이 있습니다."
+            )
+        if creds.api_key != creds.api_key.strip():
+            raise LlmConfigError(
+                f"{env_name}={model}이 쓰는 {creds.api_key_env}에 앞뒤 공백이 있습니다."
+            )
+        if not creds.api_key.isascii():
+            raise LlmConfigError(
+                f"{env_name}={model}이 쓰는 {creds.api_key_env}에 ASCII가 아닌 문자가 있습니다."
+            )
+        if not creds.api_key.isprintable() or any(ch.isspace() for ch in creds.api_key):
+            raise LlmConfigError(
+                f"{env_name}={model}이 쓰는 {creds.api_key_env}에 공백 또는 제어문자가 있습니다."
+            )
         _validate_base_url(creds, env_name=env_name, model=model, provider=resolved.provider)
 
 
