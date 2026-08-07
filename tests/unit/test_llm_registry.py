@@ -49,7 +49,10 @@ def _clear_llm_env(monkeypatch) -> None:
 
 def _settings(**overrides: str) -> Settings:
     """레포의 .env를 무시하고 필요한 값만 채운 Settings."""
-    values: dict[str, str] = {"deepseek_api_key": "test-key"} | overrides
+    values: dict[str, str] = {
+        "deepseek_api_key": "deepseek-test-key",
+        "openai_api_key": "openai-test-key",
+    } | overrides
     return Settings(_env_file=None, **values)
 
 
@@ -308,8 +311,8 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
     """기동 검사는 **선택된** 모델의 공급자 키만 본다 — 안 쓰는 공급자의 키가 비어도 뜬다(KNK-675).
 
     이 성질이 Anthropic 키를 필수로 만들지 않은 근거다. 깨지면 이 공급자를 안 쓰는 환경이
-    통째로 안 뜬다 — CI는 `DEEPSEEK_API_KEY` 하나만 주입해 컨테이너를 실제로 띄워 스모크
-    검사를 한다(`docker-image.yml`).
+    통째로 안 뜬다 — CI는 현재 선택 가능한 DeepSeek·OpenAI의 더미 키를 주입해 컨테이너를
+    실제로 띄워 스모크 검사한다(`docker-image.yml`).
 
     **"빈 키로 통과한다"만 보면 아무것도 증명되지 않는다.** 선택된 모델이 그 공급자를 안 쓰니
     당연히 통과하고, 키를 필수로 되돌려도 이 테스트는 그대로 통과한다(실제로 그랬다). 그래서
@@ -377,7 +380,7 @@ def test_selected_models_covers_three_env_vars(monkeypatch) -> None:
 
 
 def test_validate_passes_with_default_models(monkeypatch) -> None:
-    """코드 기본값(DeepSeek 2종) + 키가 있으면 통과한다 — CI·팀 로컬이 그대로 뜬다."""
+    """코드 기본 모델들이 요구하는 공급자 키가 있으면 기동 검사를 통과한다."""
     monkeypatch.setattr(registry, "settings", _settings())
 
     registry.validate_selected_models()  # 예외 없이 통과

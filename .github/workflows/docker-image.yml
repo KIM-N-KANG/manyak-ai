@@ -46,6 +46,7 @@ jobs:
       - name: Run tests
         env:
           DEEPSEEK_API_KEY: dummy-key-for-ci
+          OPENAI_API_KEY: dummy-key-for-ci
         run: pytest --cov --cov-report=term-missing --cov-fail-under=90
 
   # 빌드한 이미지를 실제로 기동해 /api/v1/health 200을 PR 단계에서 확인한다(KNK-574 감사 3장).
@@ -76,7 +77,10 @@ jobs:
 
       - name: Run container and check health
         run: |
-          docker run -d --name ai-smoke -e DEEPSEEK_API_KEY=dummy-key-for-ci -p 8000:8000 manyak-ai:smoke
+          docker run -d --name ai-smoke \
+            -e DEEPSEEK_API_KEY=dummy-key-for-ci \
+            -e OPENAI_API_KEY=dummy-key-for-ci \
+            -p 8000:8000 manyak-ai:smoke
           for i in $(seq 1 30); do
             code=$(curl -s -o /tmp/health.json -w '%{http_code}' http://localhost:8000/api/v1/health || true)
             if [ "$code" = "200" ] && grep -q '"status":"ok"' /tmp/health.json; then
@@ -97,6 +101,7 @@ jobs:
         run: |
           docker run -d --name ai-smoke-lf \
             -e DEEPSEEK_API_KEY=dummy-key-for-ci \
+            -e OPENAI_API_KEY=dummy-key-for-ci \
             -e LANGFUSE_PUBLIC_KEY=pk-lf-dummy-ci \
             -e LANGFUSE_SECRET_KEY=sk-lf-dummy-ci \
             -e LANGFUSE_HOST=https://jp.cloud.langfuse.com \

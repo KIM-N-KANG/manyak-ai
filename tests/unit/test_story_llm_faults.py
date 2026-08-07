@@ -28,22 +28,33 @@ from src.core.sentry import (
     ERROR_PROVIDER_UNAVAILABLE,
 )
 from src.services import story_llm
-from src.services.llm import openai_sdk
-from src.services.llm.base import LlmConfigError
+from src.services.llm import openai_sdk, registry
+from src.services.llm.base import (
+    ADAPTER_OPENAI_SDK,
+    PROVIDER_DEEPSEEK,
+    PROVIDER_OPENAI,
+    LlmConfigError,
+)
 
 
 def _req() -> httpx.Request:
     return httpx.Request("POST", "https://api.deepseek.com/v1")
 
 
-def _install(monkeypatch, create) -> None:
+def _install(monkeypatch, create, provider_calls: list[str] | None = None) -> None:
     """SDK 경계에 fake를 심는다 — 어댑터가 쓰는 클라이언트 자체를 가짜로 바꾼다.
 
     통로 위(story_llm)나 어댑터 함수를 가로채면 인자 조립·응답 해석·예외 번역이 통째로
     건너뛰어져, 정작 이관에서 깨지기 쉬운 부분을 검증하지 못한다.
     """
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    monkeypatch.setattr(openai_sdk, "_client", lambda provider: client)
+
+    def fake_client(provider: str) -> SimpleNamespace:
+        if provider_calls is not None:
+            provider_calls.append(provider)
+        return client
+
+    monkeypatch.setattr(openai_sdk, "_client", fake_client)
 
 
 class _Msg:
@@ -66,15 +77,15 @@ class _Usage:
 
 
 class _Resp:
-    def __init__(self, content):
+    def __init__(self, content, model):
         self.choices = [_Choice(content)]
-        self.model = "deepseek-v4-pro"
+        self.model = model
         self.usage = _Usage()
 
 
 def _returns(content):
     async def _create(**kwargs):
-        return _Resp(content)
+        return _Resp(content, kwargs["model"])
 
     return _create
 
@@ -154,9 +165,10 @@ async def test_code_fenced_json_passes(monkeypatch, captures) -> None:
     fenced = '```json\n{"meta": {"title": "제목"}}\n```'
     _install(monkeypatch, _returns(fenced))
     parsed, usage = await story_llm._complete_json("sys", "user")
+    resolved = registry.resolve(story_llm.settings.story_compile_model)
     assert parsed == {"meta": {"title": "제목"}}  # _strip_code_fence가 실제로 실행됨
-    assert usage.model == "deepseek-v4-pro"
-    assert usage.provider == "deepseek"  # 모델 이름을 등록부가 해석한 값(KNK-674)
+    assert usage.model == resolved.model
+    assert usage.provider == resolved.provider  # 모델 이름을 등록부가 해석한 값(KNK-674)
     assert usage.input_tokens == 11 and usage.output_tokens == 13
     assert captures == []  # 성공 경로이므로 실패 캡처 없음
 
@@ -210,7 +222,7 @@ class _NoUsageResp:
 
     def __init__(self, content: str = '{"meta": {"title": "t"}}') -> None:
         self.choices = [_Choice(content)]
-        self.model = "deepseek-v4-pro"
+        self.model = story_llm.settings.story_compile_model
 
 
 class _NoModelResp:
@@ -268,31 +280,45 @@ _VALID_STORYLINES_JSON = (
 
 # ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
 # 가짜가 kwargs를 버리면 model·json 모드·temperature·max_tokens 회귀를 못 잡는다.
-# 넘긴 인자를 붙잡아, compile은 pro(기본)·storylines는 flash로 호출하고 나머지 인자는
-# 공통임을 고정한다(모델 오배선·인자 누락 방지).
+# 넘긴 인자를 붙잡아, compile은 현재 설정 모델의 공급자 방식·storylines는 flash 방식으로
+# 호출됨을 고정한다(모델 오배선·인자 누락 방지).
 def _capture(store: dict, content: str = '{"meta": {"title": "t"}}'):
     async def _create(**kwargs):
         store.update(kwargs)
-        return _Resp(content)
+        return _Resp(content, kwargs["model"])
 
     return _create
 
 
 async def test_complete_json_call_contract_compile(monkeypatch) -> None:
     captured: dict = {}
-    _install(monkeypatch, _capture(captured))
+    provider_calls: list[str] = []
+    _install(monkeypatch, _capture(captured), provider_calls)
     await story_llm._complete_json("SYS", "USER")  # model 미지정 → 컴파일 기본
 
-    assert captured["model"] == story_llm.settings.story_compile_model  # compile 기본 = pro
+    resolved = registry.resolve(story_llm.settings.story_compile_model)
+    assert resolved.adapter == ADAPTER_OPENAI_SDK
+    assert provider_calls == [resolved.provider]
+    assert captured["model"] == resolved.model
     assert captured["messages"] == [
         {"role": "system", "content": "SYS"},
         {"role": "user", "content": "USER"},
     ]
     assert captured["response_format"] == {"type": "json_object"}
-    assert captured["temperature"] == story_llm._TEMPERATURE
-    assert captured["max_tokens"] == story_llm._MAX_TOKENS
-    # 추론 끄기는 이제 story_llm이 아니라 등록부(use_thinking=False)의 뜻을 어댑터가 옮긴 것이다.
-    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    if resolved.provider == PROVIDER_DEEPSEEK:
+        assert captured["temperature"] == story_llm._TEMPERATURE
+        assert captured["max_tokens"] == story_llm._MAX_TOKENS
+        assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "max_completion_tokens" not in captured
+        assert "reasoning_effort" not in captured
+    elif resolved.provider == PROVIDER_OPENAI:
+        assert captured["max_completion_tokens"] == story_llm._MAX_TOKENS
+        assert captured["reasoning_effort"] == resolved.reasoning_effort
+        assert "temperature" not in captured
+        assert "max_tokens" not in captured
+        assert "extra_body" not in captured
+    else:
+        pytest.fail(f"컴파일 기본 모델의 테스트 경로가 없는 공급자: {resolved.provider}")
 
 
 async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
@@ -301,9 +327,10 @@ async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
     monkeypatch.setattr(story_llm.settings, "storylines_model", "deepseek-v4-flash")
     # storylines 경로는 stories 계약 검증(_validate_storylines)을 타므로 유효한 결과를 돌려준다.
     _install(monkeypatch, _capture(captured, _VALID_STORYLINES_JSON))
-    await story_llm.generate_storylines("SYS", "USER")
+    _result, usage = await story_llm.generate_storylines("SYS", "USER")
 
     assert captured["model"] == story_llm.settings.storylines_model  # storylines = flash
+    assert usage.model == story_llm.settings.storylines_model
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
@@ -327,7 +354,7 @@ def _returns_sequence(contents: list):
         calls["count"] += 1
         if isinstance(content, BaseException):
             raise content
-        return _Resp(content)
+        return _Resp(content, kwargs["model"])
 
     return _create, calls
 
@@ -435,8 +462,8 @@ def _create_then_advance(clock: _FakeClock, elapsed: float, timeouts: list[float
         timeouts.append(kwargs["timeout"])
         if len(timeouts) == 1:
             clock.now = elapsed  # 이 호출에 그만큼 걸렸다고 친다
-            return _Resp('{"broken')  # 깨진 JSON → 재호출 유도
-        return _Resp('{"meta": {"title": "t"}}')
+            return _Resp('{"broken', kwargs["model"])  # 깨진 JSON → 재호출 유도
+        return _Resp('{"meta": {"title": "t"}}', kwargs["model"])
 
     return _create
 
@@ -582,6 +609,7 @@ async def test_provider_follows_the_selected_model(monkeypatch, other_provider_m
 
     _parsed, usage = await story_llm._complete_json("sys", "user", "not-deepseek-model")
 
+    assert usage.model == "not-deepseek-model"
     assert usage.provider == "not-deepseek"
 
 
