@@ -305,6 +305,7 @@ async def test_complete_json_call_contract_compile(monkeypatch) -> None:
         {"role": "user", "content": "USER"},
     ]
     assert captured["response_format"] == {"type": "json_object"}
+    assert story_llm._MAX_TOKENS == 16_384
     if resolved.provider == PROVIDER_DEEPSEEK:
         assert captured["temperature"] == story_llm._TEMPERATURE
         assert captured["max_tokens"] == story_llm._MAX_TOKENS

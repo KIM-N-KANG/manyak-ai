@@ -49,10 +49,10 @@ _GPT = ResolvedModel(
     model="gpt-5.6-terra",
     provider=PROVIDER_OPENAI,
     adapter=ADAPTER_OPENAI_SDK,
-    use_thinking=False,
+    use_thinking=True,
     supports_temperature=False,
     max_output_tokens=128_000,
-    reasoning_effort="none",
+    reasoning_effort="medium",
     supported_reasoning_efforts=frozenset(
         {"none", "low", "medium", "high", "xhigh", "max"}
     ),
@@ -198,7 +198,7 @@ async def test_complete_sends_openai_model_kwargs(monkeypatch) -> None:
         "model": "gpt-5.6-terra",
         "messages": _req().messages,
         "max_completion_tokens": 6144,
-        "reasoning_effort": "none",
+        "reasoning_effort": "medium",
     }
 
 
