@@ -38,6 +38,10 @@ docker_args=(
 )
 if [ "$LIVE" -eq 1 ]; then
     docker_args+=(-e RUN_LIVE_TESTS=1)
+else
+    # 일반 테스트는 실제 공급자 키를 쓰지 않는다. 기본 모델이 DeepSeek↔GPT로 바뀌어도
+    # 기동 검사와 라우팅 테스트가 같은 더미 키로 결정적으로 실행된다.
+    docker_args+=(-e DEEPSEEK_API_KEY=test-key -e OPENAI_API_KEY=test-key)
 fi
 docker_args+=(python:3.11-slim sh -c "$inner")
 

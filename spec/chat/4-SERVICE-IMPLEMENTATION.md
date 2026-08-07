@@ -1,6 +1,6 @@
 ---
-version: 6
-updated: 2026-07-20
+version: 8
+updated: 2026-08-01
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -101,12 +101,14 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 근거: 순수 치환만으로는 캐릭터 카드가 얇아져 긴 세션 몰입이 약해지고, 풀 컴파일은 비용·지연·검증 난도가 크다. 하이브리드가 **풍부함과 결정성**을 동시에 확보한다.
 
-### 2.3 모델 추상화 — 인터페이스 1개 + OpenAI 호환 구현 1개
+### 2.3 모델 추상화 — 공통 통로 + 모델 등록부 + SDK 어댑터
 
-- **얇은 `ChatProvider` 인터페이스**(예: `async def complete(messages, **opts) -> str`) 하나만 정의한다.
-- 1차 구현은 **OpenAI 호환 chat completions** 클라이언트 하나(`chat_llm.py`의 `AsyncOpenAI` + `base_url` 교체 방식). DeepSeek·Upstage·OpenAI 대부분이 그대로 붙는다.
-- 모델·`base_url`·키는 `config.py`에서 주입한다.
-- **과잉 추상화 금지**: provider별 클래스를 처음부터 만들지 않는다. messages 구조가 다른 provider(예: Anthropic)가 실제 필요해질 때 **어댑터를 추가**한다.
+- **공통 통로**는 `src/services/llm`이다. 공개 함수는 `complete(req)`(단발)와 `stream(req)`(조각 흘리기) 둘뿐이고, 호출부는 "무엇을 원하는지"(messages·길이 상한·제한 시간·JSON 모드)만 넘긴다. 재호출·검증·시간 예산은 호출부가 관장한다(통로는 단발).
+- **모델 등록부**(`registry.py`)가 모델 이름을 공급자·어댑터·호출 특성(추론 모드·temperature 수용)으로 해석한다. 등록되지 않은 모델은 서버 기동에서 막는다.
+- **어댑터**는 SDK 계열 단위다. 지금은 `openai_sdk.py` 하나이고 DeepSeek·GPT가 이걸 공유한다(OpenAI 호환 API). 등록부의 *뜻*을 그 SDK의 *문법*으로 옮기고, 회사별 예외를 공급자 중립 예외로 접는다.
+- 모델·`base_url`·키는 `config.py`에서 읽고, 등록부가 호출 시점에 조회한다.
+- **과잉 추상화 금지**는 유지한다: 공급자마다 클래스를 만들지 않는다. messages 구조가 다른 provider(Anthropic)가 실제 필요해질 때 어댑터를 하나 더 추가한다(KNK-675).
+- 이 구조라서 **모델을 바꿀 때 호출부를 고치지 않는다** — 환경변수의 모델 이름만 바꾼다. 다만 채팅 본문 × Anthropic은 예외다(system 배치 문제 — 7절).
 
 ### 2.4 세션 상태 저장소 — 두지 않는다 (완전 stateless)
 
@@ -172,7 +174,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 | 필드 | 내용 |
 |---|---|
-| `targetMainEvent` | 이번 턴 판정 후 목표 `{name, progressTurns}`. 목표 없음·완결 직후 null |
+| `targetMainEvent` | 이번 턴 판정 후 목표 `{name, progressTurns}`. 목표 없음·완결 직후 null. 남은 시간이 없어 판정을 아예 못 돌린 턴은 **요청에 실려 온 목표를 그대로 되돌려 보낸다**(KNK-750) — null로 보내면 백엔드가 목표 해제로 읽어 진행이 지워진다 |
 | `occurredMainEventName` | 이번 턴 완결된 사건 이름 — 한 턴 최대 1건 |
 | `endingName` | 엔딩 응답 턴이면 도달한 엔딩 이름(요청 `endings`의 `name`), 아니면 null |
 
@@ -558,7 +560,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 | 추상 경계 | 역할 | 1차 구현 | 교체 대상 |
 |---|---|---|---|
-| **ChatProvider** | LLM 호출 단일 통로 | OpenAI 호환 클라이언트 1개 — 본문은 `stream=True`, 선택지는 JSON(비스트림) | DeepSeek·Anthropic 어댑터 |
+| **ChatProvider** | LLM 호출 단일 통로 | 공통 통로 `src/services/llm` — 본문은 `stream()`, 선택지·판정은 `complete()`(JSON). 등록부가 공급자·어댑터를 정한다(2.3) | Anthropic 어댑터(KNK-675) |
 | **PromptCompiler** | 시점 A-1: 희소 입력 → 스토리 명세 JSON | 하이브리드(LLM+치환) | — |
 | **PromptAssembler** | 시점 B: 매 턴 슬롯 치환 + 6레이어 조립 | 받은 재료 → 슬롯 치환 → 시스템+History+Depth(받은 summary)+PHI | — |
 | **Choices 생성기** | 전용 엔드포인트(`/chat/choices`)의 선택지 생성 + 정확히 3개 보장(KNK-625) | `CHOICES-TEMPLATE.md` 렌더 → ChatProvider(JSON) 호출 → 코드 검증·보충(최대 2회)·기본값 패딩 | — |
@@ -592,7 +594,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 5. 입력 스키마 정의 · 6. `PromptCompiler` 구현
 
 **Phase 3 — 런타임 조립기 + 채팅 API (시점 B)** (4절)
-7. `PromptAssembler`(받은 재료 → 슬롯 치환 + 6레이어 조립) · 8. PHI 내부 순서 보장 · 9. `ChatProvider` 연동(본문 `stream=True`) · 10. `CHOICES-TEMPLATE.md` + 선택지 생성기(별도 JSON 호출 → 코드가 정확히 3개 보장, 2.5) · 11. SSE 채팅 턴 엔드포인트(`token`·`completed`·`error`) — 처음엔 completed에 선택지 3개를 합산 발행했고, 이후 KNK-625에서 선택지를 전용 엔드포인트 `/chat/choices`로 분리(completed의 choices는 하위호환 빈 배열)
+7. `PromptAssembler`(받은 재료 → 슬롯 치환 + 6레이어 조립) · 8. PHI 내부 순서 보장 · 9. `ChatProvider` 연동(본문 `stream=True`) · 10. `CHOICES-TEMPLATE.md` + 선택지 생성기(별도 JSON 호출 → 코드가 정확히 3개 보장, 2.5) · 11. SSE 채팅 턴 엔드포인트(`token`·`completed`·`error`·`ping`) — 처음엔 completed에 선택지 3개를 합산 발행했고, 이후 KNK-625에서 선택지를 전용 엔드포인트 `/chat/choices`로 분리(completed의 choices는 하위호환 빈 배열). `ping`은 KNK-750에서 추가했다 — 본문이 끝난 뒤 판정을 기다리는 구간에 프레임이 하나도 안 나가면 백엔드의 이벤트 간 상한(60초)이 정상 턴을 끊어서, 그 시계를 되돌리려고 주기적으로 내보내는 빈 신호다(백엔드는 모르는 이벤트를 무시하므로 백엔드 변경 없이 동작한다)
 
 **Phase 4 — 메모리 요약 생성 (백엔드 주도, 별개 기능)** (5절)
 11. 백엔드가 History → `summary`로 요약·갱신해 다음 턴 request로 전달한다. AI는 받은 summary를 참조만 하므로 조립기 구조는 그대로 두고 Depth에 채워 넣기만 한다(참조와 생성 분리).

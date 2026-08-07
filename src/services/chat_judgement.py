@@ -6,26 +6,35 @@
 되어 백엔드가 채팅 상태로 저장한다(D11 — 상태는 백엔드, 판정은 AI).
 
 설계 결정(plan-1 승인): 본문 마커 파싱(KNK-194에서 폐기)도, 본문 생성 전 선행
-판정(첫 토큰 지연)도 아닌 **사후 판정 전용 호출**이다. 선택지 호출과 병렬로 돌아
-지연 증가를 최소화한다(엔드포인트가 gather).
+판정(첫 토큰 지연)도 아닌 **사후 판정 전용 호출**이다. 처음에는 선택지 호출과 나란히
+돌렸지만, 선택지가 전용 엔드포인트로 떨어져 나가(KNK-625) 지금은 본문 스트림이 끝난 뒤
+판정만 단독으로 돈다.
 
 **판정 실패가 턴을 깨지 않는다** — 호출·파싱이 실패하면 흡수하고 3필드 null로
-돌아간다(선택지 폴백과 같은 원칙). 재료가 아예 없는 턴(사건·엔딩 없는 스토리)은
-호출 자체를 스킵해 비용·지연이 0이다(하위호환).
+돌아간다(선택지 폴백과 같은 원칙). 다만 **우리가 건 시간 상한 때문에 판정을 못 돌린
+경우**(안 부름·시간 초과)는 목표 사건만 받은 그대로 되돌려 보낸다 — null로 보내면
+백엔드가 목표 해제로 읽어 사건 진행을 지운다(`_frozen`). 재료가 아예 없는 턴(사건·엔딩
+없는 스토리)은 호출 자체를 스킵해 비용·지연이 0이다(하위호환).
 """
 
+import asyncio
 import json
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from openai import AsyncOpenAI, OpenAIError
-
 from src.core.config import settings
-from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
+from src.core.sentry import (
+    ERROR_INVALID_AI_RESPONSE,
+    ERROR_PROVIDER_TIMEOUT,
+    FEATURE_CHAT_RESPONSE,
+    capture_ai_exception,
+)
 from src.schemas.chat_turn import ChatTurnRequest, TargetMainEventOut
+from src.services import llm
 from src.services.chat_assembler import format_main_events, format_target_main_event
+from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt_meta import read_version
 
 logger = logging.getLogger(__name__)
@@ -38,14 +47,22 @@ JUDGEMENT_VERSION = read_version(_TEMPLATE_PATH)
 
 # 판정 출력은 작은 JSON 하나뿐이라 상한을 작게 둔다.
 _MAX_TOKENS = 256
-# DeepSeek V4 비추론 호출(thinking 비활성) — 본문·선택지 호출과 동일 정책.
-_THINKING_DISABLED = {"thinking": {"type": "disabled"}}
+# 이 호출의 제한 시간(초). 짧은 생성이라 본문(90초)보다 짧게 둔다(선택지와 동일).
+# **호출마다 반드시 넘긴다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
+#
+# 이 값은 두 자리에 쓴다. SDK에는 요청 하나의 상한으로 넘기고, `asyncio.wait_for`에는
+# 재시도까지 포함한 전체 상한으로 건다. **두 자리 모두 필요하다** — SDK에만 넘기면
+# 시도당 상한이라, 시간 초과도 재시도 대상이라서(`openai_sdk._MAX_RETRIES = 2`, 총 3회)
+# 실제 대기가 180초까지 늘어난다. 그러면 백엔드의 SSE 전체 상한(120초)을 넘겨 판정만
+# 늦는 게 아니라 턴이 통째로 실패한다(KNK-749).
+#
+# 재시도가 전부 죽는 것은 아니다 — 빠르게 돌아오는 실패(503·429 같은 것)는 몇 초면 끝나
+# 남은 시간 안에서 그대로 다시 시도된다. 막히는 것은 **시간 초과 재시도**뿐이고 그것이
+# 이 상한의 목적이다.
+_TIMEOUT_SECONDS = 60.0
 
-_client = AsyncOpenAI(
-    api_key=settings.deepseek_api_key,
-    base_url=settings.deepseek_api_url,
-    timeout=60.0,  # 짧은 생성이라 본문(90s)보다 짧게 둔다(선택지와 동일).
-)
+# LLM 호출은 공통 통로(src.services.llm)를 통한다(KNK-673) — 클라이언트 생성·추론 모드 같은
+# 회사 문법은 이 파일에서 사라졌다.
 
 
 def _load_template(path: Path) -> tuple[str, str]:
@@ -74,6 +91,38 @@ class JudgementResult:
 
 
 _EMPTY = JudgementResult(None, None, None, None, None)
+
+
+def _frozen(req: ChatTurnRequest) -> JudgementResult:
+    """판정을 아예 못 돌린 턴의 결과 — 받은 목표를 그대로 되돌려 보낸다(KNK-750 리뷰).
+
+    3필드를 전부 null로 보내면 백엔드가 그것을 **목표 해제**로 읽어 사용자가 쌓아온 사건
+    진행을 지운다(`ChatTurnPersister.applyMainEventState` — target이 null이면
+    `targetMainEventId = null, targetProgressTurns = 0`). 판정을 못 돌렸을 뿐인데 상태가
+    바뀌는 것은 틀렸다. 받은 목표를 되돌려 보내면 백엔드는 같은 값을 다시 저장하므로
+    상태가 그대로 있는다 — 계약도 백엔드도 바뀌지 않는다.
+
+    진행 턴 수는 늘지 않고 그 자리에 멈춘다. 판정이 없었으니 늘릴 근거도 없고, 설계상
+    이탈한 턴에 카운터를 동결하는 것은 이미 정상 동작이다.
+
+    쓰는 자리는 둘이다 — 남은 시간이 없어 아예 안 부른 턴과, 불렀는데 시간이 다 돼 끊긴 턴.
+    둘 다 우리가 건 상한 때문에 판정을 못 돌린 것이라 결과가 같아야 한다.
+
+    나머지 실패(빈 응답·깨진 JSON·전송 오류)는 `_EMPTY` 그대로다 — 이번 티켓 앞에도 있던
+    문제라 백엔드 가드와 함께 따로 다룬다.
+    """
+    if req.target_main_event is None:
+        return _EMPTY
+    return JudgementResult(
+        target_main_event=TargetMainEventOut(
+            name=req.target_main_event.name,
+            progress_turns=req.target_main_event.progress_turns,
+        ),
+        occurred_main_event_name=None,
+        ending_name=None,
+        input_tokens=None,
+        output_tokens=None,
+    )
 
 
 # 주요 사건·목표 사건 포맷은 조립기(chat_assembler)와 공용이다 — 표기가 갈리지 않게
@@ -176,50 +225,103 @@ def _sanitize(req: ChatTurnRequest, data: dict) -> JudgementResult:
     )
 
 
-async def generate_judgement(req: ChatTurnRequest, ai_output: str) -> JudgementResult:
+async def generate_judgement(
+    req: ChatTurnRequest, ai_output: str, budget_seconds: float | None = None
+) -> JudgementResult:
     """방금 턴을 사후 판정한다. 재료가 없으면 호출 없이 스킵, 실패하면 흡수해 null.
 
     단일 호출이다(재호출 없음) — 판정은 폴백으로 지어낼 수 없는 값이라, 실패는
     '판정 없음(null)'이 가장 안전한 결과다.
+
+    `budget_seconds`는 호출부가 아는 **이 턴에 남은 시간**이다(KNK-750). 본문 스트리밍이
+    이미 오래 걸린 턴에서는 판정에 `_TIMEOUT_SECONDS`를 통째로 주면 턴 전체 상한을 넘겨
+    턴이 죽는다 — 그래서 둘 중 작은 값을 쓴다. 남은 시간이 없으면 부르지 않는다: 결과를
+    받아도 실을 자리가 없고, 부르는 만큼 completed만 더 늦어진다. 이때는 받은 목표를
+    그대로 되돌려 보내 진행이 지워지지 않게 한다(`_frozen`).
     """
     if not req.main_events and not req.endings:
         return _EMPTY  # 사건·엔딩 없는 스토리(재료 없음) — 비용·지연 0
 
+    budget = _TIMEOUT_SECONDS if budget_seconds is None else min(_TIMEOUT_SECONDS, budget_seconds)
+    if budget <= 0:
+        logger.warning("판정 스킵 — 이 턴에 남은 시간이 없다(남은 예산 %.1f초)", budget)
+        return _frozen(req)
+
+    # 이 호출이 어느 공급자로 갈지는 부르기 전에 정한다 — 등록부 해석이 실패하면 LLM을
+    # 부르기도 전에 막혀 헛돈이 안 나가고, 네 호출부(본문·선택지·판정·스토리)가 모두 같은
+    # 자리에서 provider를 구해 읽는 사람이 규칙을 한 번만 익히면 된다(KNK-674 리뷰 L1).
+    #
+    # **아래 except가 이 예외를 흡수해 주지는 않는다.** 여기서 나는 예외는 LlmConfigError
+    # 하나인데 LlmError를 상속하지 않아, 어디에 두든 밖으로 샌다. 그 경로는 기동 검사
+    # (`validate_startup`)가 막는 몫이다 — CHAT_MODEL이 등록부에 없으면 서버가 안 뜬다.
+    provider = llm.provider_of(settings.chat_model)
     start = time.monotonic()
     try:
-        response = await _client.chat.completions.create(
-            model=settings.chat_model,
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": _build_user(req, ai_output)},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=_MAX_TOKENS,
-            extra_body=_THINKING_DISABLED,
+        # wait_for가 재시도까지 포함한 전체 상한이다(위 상수 주석 참조). 시간이 다 되면
+        # 안쪽 호출을 취소하므로 남은 재시도도 함께 멈춘다.
+        result_llm = await asyncio.wait_for(
+            llm.complete(
+                LlmRequest(
+                    model=settings.chat_model,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM},
+                        {"role": "user", "content": _build_user(req, ai_output)},
+                    ],
+                    max_tokens=_MAX_TOKENS,
+                    timeout=budget,
+                    json_mode=True,
+                )
+            ),
+            timeout=budget,
         )
-        content = response.choices[0].message.content
-        if not content:
+        # 통로는 응답 모양이 깨져도 예외를 던지지 않고 빈 문자열을 준다 — 아래가 그대로 받는다.
+        if not result_llm.text:
             raise ValueError("LLM이 빈 응답을 반환했습니다.")
-        data = json.loads(_strip_code_fence(content))
+        data = json.loads(_strip_code_fence(result_llm.text))
         if not isinstance(data, dict):
             raise ValueError("판정 응답이 JSON 객체가 아닙니다.")
-        usage = response.usage
         result = _sanitize(req, data)
-        result.input_tokens = getattr(usage, "prompt_tokens", None)
-        result.output_tokens = getattr(usage, "completion_tokens", None)
+        result.input_tokens = result_llm.usage.input_tokens
+        result.output_tokens = result_llm.usage.output_tokens
         return result
-    except (OpenAIError, json.JSONDecodeError, ValueError, IndexError, AttributeError) as e:
-        # 판정 실패가 턴을 깨지 않는다 — Sentry로만 보고하고 null로 돌아간다.
-        # IndexError(빈 choices 배열)·AttributeError(message=None)까지 흡수해, 응답 형태
-        # 이상으로도 gather가 예외를 전파해 턴을 깨는 일이 없게 한다(F2 — 모듈 불변식 보강).
+    except (LlmError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+        # 판정 실패가 턴을 깨지 않는다 — Sentry로만 보고하고 null로 돌아간다. 예외가 밖으로
+        # 새면 gather가 그것을 전파해 턴 자체가 깨진다.
+        #
+        # 전송 오류(LlmError)는 통로가 접어 준 것이고, 내용물 오류(깨진 JSON·빈 응답·비객체)는
+        # 여기 남는다. 예전에는 응답 껍데기가 깨졌을 때의 IndexError·AttributeError도 잡았지만,
+        # 이제 통로가 그런 응답을 빈 문자열로 정규화해 위 `if not result_llm.text`가 받는다 —
+        # 결과(판정 null)는 같고 경로만 옮겨졌다. **두 예외를 다시 넣지 않는다**: 우리 코드의
+        # 오타까지 "판정 없음"으로 조용히 덮인다.
         # 별도 feature 신설은 관측 카탈로그(6-analytics) 개정 사안이라 chat_response로 묶는다.
         logger.warning("판정 호출 실패(흡수 — 메타 null): %s", e)
+        # wait_for가 낸 TimeoutError는 우리 예외라 classify_error_code가 모른다(그대로 두면
+        # unexpected_error로 떨어져 AN-4-7 관측이 흐려진다). 여기서 시간 초과로 못 박는다.
+        if isinstance(e, TimeoutError):
+            error_code = ERROR_PROVIDER_TIMEOUT
+        elif isinstance(e, (json.JSONDecodeError, ValueError)):
+            error_code = ERROR_INVALID_AI_RESPONSE
+        else:
+            error_code = None  # LlmError 계열은 classify_error_code가 종류별로 나눈다
         capture_ai_exception(
             e,
             feature=FEATURE_CHAT_RESPONSE,
+            provider=provider,
+            error_code=error_code,
             model=settings.chat_model,
             prompt_versions={"JUDGEMENT": JUDGEMENT_VERSION},
-            retry_count=0,  # 단일 호출 — 재호출 없음(D12)
+            # 우리 코드가 다시 부르지 않는다는 뜻이다(선택지처럼 재호출 루프가 없다 — D12).
+            # SDK가 안에서 최대 3회까지 시도하는 것은 이 숫자에 안 잡힌다(위 상수 주석).
+            retry_count=0,
             latency_ms=int((time.monotonic() - start) * 1000),
         )
+        # 시간이 다 돼 끊긴 경우도 목표를 되돌려 보낸다(KNK-750 리뷰). 이 상한은 우리가
+        # 건 것이다 — 본문이 오래 걸린 턴에서는 판정에 몇 초만 주고, 그 몇 초를 넘겼다고
+        # 사용자가 쌓아온 사건 진행을 지우는 것은 앞뒤가 안 맞는다. 판정을 못 돌린 것은
+        # 위 스킵 분기와 같으므로 결과도 같아야 한다.
+        #
+        # 나머지 실패(응답이 비었거나 JSON이 깨졌거나 전송이 실패한 것)는 그대로 null이다 —
+        # 이번 티켓 앞에도 있던 문제라 백엔드 가드와 함께 따로 다룬다.
+        if isinstance(e, TimeoutError):
+            return _frozen(req)
         return _EMPTY

@@ -1,10 +1,19 @@
+import io
 import json
 
 import httpx
 import pytest
+import sentry_sdk
 
 from src.core import sentry
 from src.core.sentry import capture_ai_exception, classify_error_code, init_sentry
+from src.services.llm.base import (
+    LlmBadRequest,
+    LlmError,
+    LlmRateLimited,
+    LlmTimeout,
+    LlmUnavailable,
+)
 
 
 def _req() -> httpx.Request:
@@ -44,6 +53,143 @@ def test_classify_connection_unavailable() -> None:
     assert classify_error_code(APIConnectionError(request=_req())) == "provider_unavailable"
 
 
+# ── 시크릿·원문이 스택 프레임으로 새지 않는지 (KNK-671 리뷰) ─────────────────
+# 두 층으로 나눈다. "운영 코드가 그 옵션을 넘기는가"는 아래 test_init_with_dsn_passes_options가
+# init을 가로채 확인하고(전역 오염 없음), "그 옵션이 정말 값을 막는가"는 실제 초기화가 필요해
+# 여기서 확인한다.
+
+
+class _CollectingTransport(sentry_sdk.transport.Transport):
+    """전송 대신 직렬화된 봉투(envelope) 원문을 모은다.
+
+    함수 하나를 `transport=`로 넘기는 옛 방식은 폐기 예정 경고가 뜬다. 그리고 모은 것을
+    `str()`로 훑으면 실제 전송될 바이트가 아니라 객체 표기를 보게 돼 검증이 헛돈다 —
+    직렬화까지 해서 **나가는 내용 그대로**를 본다.
+    """
+
+    def __init__(self, sink: list[str]) -> None:
+        super().__init__()
+        self._sink = sink
+
+    def capture_envelope(self, envelope: object) -> None:
+        buf = io.BytesIO()
+        envelope.serialize_into(buf)  # type: ignore[attr-defined]
+        self._sink.append(buf.getvalue().decode("utf-8", errors="replace"))
+
+
+def test_secrets_in_locals_do_not_reach_sentry() -> None:
+    """설정만 확인하지 않고 **실제 전송되는 이벤트**에 시크릿이 없는지 본다.
+
+    옵션 이름만 단언하면 "그 옵션이 정말 그 일을 하는가"는 증명되지 않는다.
+
+    통합(integration)은 전부 끄고 켠다 — sentry_sdk.init은 프로세스 전역이라, 켜두면 이
+    테스트 이후의 모든 테스트가 HTTP·예외 처리에 후크가 붙은 다른 환경에서 돌게 된다.
+    """
+    sent: list[str] = []
+    api_key = "sk-live-must-not-leak"
+    prompt = "사용자가 쓴 프롬프트 원문"
+    isolated = {"default_integrations": False, "auto_enabling_integrations": False}
+
+    try:
+        sentry_sdk.init(
+            dsn="https://pub@example.invalid/1",
+            transport=_CollectingTransport(sent),  # 실제 전송 대신 여기로 모은다
+            include_local_variables=False,
+            before_send=sentry._before_send,
+            **isolated,
+        )
+
+        def _fails_with_secrets_in_scope() -> None:
+            creds = {"api_key": api_key}  # noqa: F841 — 프레임에 남기는 것이 시험 대상
+            messages = [{"role": "user", "content": prompt}]  # noqa: F841
+            raise RuntimeError("접속 준비 실패")
+
+        try:
+            _fails_with_secrets_in_scope()
+        except RuntimeError as exc:
+            sentry_sdk.capture_exception(exc)
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.init(dsn="", **isolated)  # 전역 상태 원복(이후 테스트가 실제 전송을 하지 않도록)
+
+    assert sent, "이벤트가 전송되지 않아 검증이 무의미하다"
+    payload = "\n".join(sent)
+    for secret in (api_key, prompt):
+        # 봉투는 ASCII로 이스케이프된 JSON이라 한국어 원문이 \uXXXX 형태로 들어간다.
+        # 원문 그대로만 찾으면 프롬프트 검사가 **무슨 일이 있어도 통과**해 버린다(실측 확인).
+        assert secret not in payload
+        assert json.dumps(secret)[1:-1] not in payload
+
+
+# ── 채팅 오류의 명시 캡처 순서 ────────────────────────────────────────────────
+# 채팅 오류의 명시 캡처가 로그 자동 캡처보다 먼저 실행되는지 검증한다.
+async def test_chat_stream_error_keeps_ai_tags_after_logging_dedup(install_llm_sdk) -> None:
+    """채팅 오류의 명시 캡처가 로그 자동 캡처보다 먼저여야 AI 태그가 남는다.
+
+    Sentry는 같은 예외를 ``logger.exception``과 ``capture_exception``으로 연달아 보내면
+    뒤 이벤트를 중복으로 버린다. 로그가 먼저면 feature·provider·error_code가 없는 이벤트만
+    남으므로, 실제 SDK와 직렬화된 봉투를 써서 운영 동작을 고정한다.
+    """
+    from openai import OpenAIError
+
+    from src.services import chat_llm
+
+    async def _create(**kwargs):
+        raise OpenAIError("boom")
+
+    install_llm_sdk(_create)
+    sent: list[str] = []
+    isolated = {"default_integrations": False, "auto_enabling_integrations": False}
+
+    try:
+        sentry_sdk.init(
+            dsn="https://pub@example.invalid/1",
+            transport=_CollectingTransport(sent),
+            include_local_variables=False,
+            before_send=sentry._before_send,
+        )
+        events = [event async for event in chat_llm.stream_chat_turn([])]
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.init(dsn="", **isolated)
+
+    assert [event["event"] for event in events] == ["error"]
+    envelopes = [json.loads(raw.splitlines()[-1]) for raw in sent]
+    assert len(envelopes) == 1
+    tags = envelopes[0]["tags"]
+    assert tags["feature"] == "chat_response"
+    assert tags["provider"] == "deepseek"
+    assert tags["error_code"] == "provider_unavailable"
+
+
+# ── 공급자 중립 예외 분류 (KNK-670) ──────────────────────────────────────────
+# 이 분기가 없으면 통로 이관 후 모든 전송 실패가 unexpected_error로 떨어진다.
+@pytest.mark.parametrize(
+    ("exc_class", "expected"),
+    [
+        (LlmTimeout, "provider_timeout"),
+        (LlmRateLimited, "provider_rate_limited"),
+        (LlmBadRequest, "provider_bad_request"),
+        (LlmUnavailable, "provider_unavailable"),
+    ],
+)
+def test_classify_neutral_llm_errors(exc_class: type[LlmError], expected: str) -> None:
+    exc = exc_class("실패", provider="deepseek", model="deepseek-v4-flash")
+
+    assert classify_error_code(exc) == expected
+
+
+def test_classify_unknown_neutral_error_falls_back_to_unavailable() -> None:
+    """중립 예외가 늘어나도 unexpected_error로 새지 않는다 — LlmError 계열은 전부 잡힌다."""
+
+    class _FutureLlmError(LlmError):
+        pass
+
+    exc = _FutureLlmError("실패", provider="deepseek", model="deepseek-v4-flash")
+
+    assert classify_error_code(exc) == "provider_unavailable"
+
+
 def test_classify_json_decode_invalid_response() -> None:
     try:
         json.loads("{not json")
@@ -73,6 +219,9 @@ def test_init_with_dsn_passes_options(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called["dsn"] == "https://k@o.ingest.sentry.io/1"
     assert called["environment"] == "test-env"
     assert called["send_default_pii"] is False  # AN-4-10
+    # 지역변수 수집 끄기(KNK-671). 이 단언이 없으면 운영 코드에서 옵션을 지워도 테스트는
+    # 통과한다 — 실제 차단 효과는 test_secrets_in_locals_do_not_reach_sentry가 따로 본다.
+    assert called["include_local_variables"] is False
 
 
 # ── before_send PII 차단 (AN-4-10) ──────────────────────────────────────────
@@ -112,6 +261,9 @@ def test_capture_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
     capture_ai_exception(
         err,
         feature="chat_response",
+        # 일부러 "deepseek"이 아닌 값 — 함수가 인자를 무시하고 상수를 달아도
+        # 둘 다 deepseek이면 통과해 버린다(KNK-674 리뷰 H2).
+        provider="not-deepseek",
         error_code="unexpected_error",
         model="deepseek-v4-flash",
         prompt_versions={"SAFETY": 1, "CORE": 2},
@@ -120,7 +272,8 @@ def test_capture_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert scope.tags["feature"] == "chat_response"
     assert scope.tags["error_code"] == "unexpected_error"
-    assert scope.tags["provider"] == "deepseek"
+    # provider는 이제 설정 전역값이 아니라 호출부가 넘긴 값이다(KNK-674).
+    assert scope.tags["provider"] == "not-deepseek"
     assert scope.tags["model"] == "deepseek-v4-flash"
     # prompt_versions는 dict 그대로 context에 싣는다(KNK-246 계약과 일치)
     assert scope.contexts["ai"]["prompt_versions"] == {"SAFETY": 1, "CORE": 2}
@@ -135,5 +288,27 @@ def test_capture_classifies_when_error_code_omitted(monkeypatch: pytest.MonkeyPa
 
     from openai import APITimeoutError
 
-    capture_ai_exception(APITimeoutError(request=_req()), feature="story_completion")
+    capture_ai_exception(
+        APITimeoutError(request=_req()), feature="story_completion", provider="deepseek"
+    )
     assert scope.tags["error_code"] == "provider_timeout"  # 미지정 시 타입으로 분류
+
+
+def test_capture_requires_an_explicit_provider() -> None:
+    """provider에 기본값을 두지 않는다 — 두면 새 호출부가 조용히 그 값을 물려받는다(KNK-674).
+
+    없애려던 전역 폴백이 이름만 바꿔 되살아나는 것을 막는 가드다. 값이 틀린 태그는 없는
+    태그보다 나쁘다: 다른 회사로 나간 호출이 전부 한 공급자 탓으로 보인다.
+    """
+    with pytest.raises(TypeError):
+        capture_ai_exception(ValueError("boom"), feature="chat_response")
+
+
+def test_capture_rejects_positional_feature_and_provider() -> None:
+    """feature·provider는 이름으로만 넘긴다(KNK-674 2차 리뷰 6번).
+
+    둘 다 문자열이라 순서를 바꿔 적어도 파이썬은 아무 말을 하지 않는다 — 기능 이름 자리에
+    공급자가, 공급자 자리에 기능 이름이 태그로 박힌다. 선언에서 `*`를 빼면 그 사고가 열린다.
+    """
+    with pytest.raises(TypeError):
+        capture_ai_exception(ValueError("boom"), "chat_response", "deepseek")

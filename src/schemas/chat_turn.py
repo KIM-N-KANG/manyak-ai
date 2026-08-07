@@ -9,11 +9,14 @@ spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
         started·chatId·turnId는 백엔드가 발행·부착한다(manyak-server 규격과 통일).
 """
 
+import logging
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.schemas.response_meta import ChatResponseMeta
+
+logger = logging.getLogger(__name__)
 
 
 # ── 입력 (백엔드 → AI, 매 턴) ───────────────────────────────────────────────
@@ -130,6 +133,9 @@ class ChatTurnRequest(BaseModel):
     start_settings: ChatStartSettings
     history: list[ChatHistoryItem] = Field(default_factory=list)
     user_input: str
+    # 사용자 입력 출처 — 프롬프트 재료가 아니라 Langfuse 선호 분석 metadata다(KNK-770).
+    # 알려진 값만 기록하고 없거나 잘못됐으면 비워, 관측용 값이 채팅을 막지 않게 한다.
+    user_source: Literal["choice", "edited_choice", "typed"] | None = None
     # MEMORY(대화 요약) — 채팅별로 하나씩 존재하는 요약 문자열(특정 채팅 수마다 압축·최신화).
     # 메모리 참조는 채팅 기능의 일부이므로 매 턴 받아 조립기가 Depth(`[현재 상태]`)에 그대로
     # 넣는다(빈 문자열이면 빈 칸 그대로). 메모리를 요약·기록(생성)하는 로직은 별개 기능(Phase 4)
@@ -145,16 +151,55 @@ class ChatTurnRequest(BaseModel):
     occurred_main_event_names: list[str] = Field(default_factory=list)
     endings: list[EndingCandidate] = Field(default_factory=list)
 
+    @field_validator("user_source", mode="before")
+    @classmethod
+    def _normalize_user_source(cls, value: object) -> object:
+        """관측용 입력 출처가 잘못돼도 채팅은 막지 않고 해당 metadata만 생략한다."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned or cleaned == "unknown":
+                return None
+            if cleaned in ("choice", "edited_choice", "typed"):
+                return cleaned
+        logger.warning("Langfuse user_source 값 무시 — 허용된 입력 출처가 아님")
+        return None
+
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────
 # manyak-server의 SSE 규격(started→token→completed→error)과 통일한다.
-# AI(manyak-ai)가 발행하는 이벤트는 token·completed·error 3개뿐이다.
+# AI(manyak-ai)가 발행하는 이벤트는 token·completed·error·ping 4개다.
 # started는 백엔드가 SSE 스트림을 열며 자체 발행한다(chatId 신호 — AI 미발행).
 # chatId·turnId도 백엔드가 부착하므로 AI 페이로드에는 넣지 않는다.
 
 EVENT_TOKEN = "token"
 EVENT_COMPLETED = "completed"
 EVENT_ERROR = "error"
+
+# 본문이 끝난 뒤 판정을 기다리는 동안만 주기적으로 내보내는 신호다(KNK-750).
+#
+# 백엔드의 이벤트 간 상한(`RestChatTurnAiClient.timeout(60s)`)은 **프레임을 하나라도 받으면
+# 처음부터 다시 센다**. 판정 구간에 아무 프레임도 안 나가면 그 시계가 60초를 다 세고 정상
+# 턴을 끊는다 — ping이 그 시계를 되돌린다.
+#
+# 백엔드는 이 이름을 모른다. 모르는 이벤트는 조용히 넘기므로(`when`에 else 가지가 없다)
+# 처리는 안 되지만 **프레임을 받았다는 사실만으로 시계는 초기화된다.** 그래서 백엔드를
+# 고치지 않고 AI만 배포해도 동작한다(2026-08-01 백엔드 테스트로 확인).
+#
+# 페이로드는 빈 객체다. 다만 `data:` 줄 자체는 반드시 있어야 한다 — 주석만 있는 프레임은
+# 디코더가 항목으로 만들지 않고 버릴 수 있어 시계가 안 돌아간다.
+EVENT_PING = "ping"
+
+
+class PingData(BaseModel):
+    """event: ping — 담는 값이 없다. 이 프레임은 '도착했다'는 사실 자체가 전부다.
+
+    **비어 있어도 모델로 둔다.** 다른 세 이벤트가 전부 모델로 모양이 정해져 있는데 이것만
+    호출부가 손으로 dict를 적으면, 나중에 값을 담고 싶어질 때 계약을 거치지 않고 아무 데서나
+    아무 모양으로 늘어난다.
+    """
+
 
 
 class TokenData(BaseModel):

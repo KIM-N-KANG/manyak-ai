@@ -1,6 +1,10 @@
+from contextlib import contextmanager
+
 import pytest
 from httpx import AsyncClient
 
+from src.api.v1 import story as story_module
+from src.schemas.story import StorylinesRequest
 from src.services import story_llm
 
 # storylines 엔드포인트의 정상 요청 본문(백엔드가 보내는 태그 3종).
@@ -25,12 +29,33 @@ async def test_storylines_endpoint_attaches_meta(
 ) -> None:
     """200 경로: 응답에 로깅 메타(snake_case)가 붙고 prompt_versions 키가 STORYLINES인지 확인."""
 
-    async def fake_complete(system: str, user: str, **_kwargs: object):
-        return _FAKE, story_llm.LlmUsage("deepseek-test", 50, 80)
+    captured: dict = {}
 
+    @contextmanager
+    def fake_observe(name: str, **kwargs: object):
+        captured["name"] = name
+        captured.update(kwargs)
+
+        class _Trace:
+            def set_metadata(self, **_kwargs: object) -> None: ...
+
+        yield _Trace()
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _FAKE, story_llm.LlmUsage("deepseek-test", 50, 80, provider="not-deepseek")
+
+    monkeypatch.setattr(story_module, "observe_request", fake_observe)
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
-    response = await client.post("/api/v1/story/storylines", json=_REQUEST)
+    response = await client.post(
+        "/api/v1/story/storylines",
+        json=_REQUEST,
+        headers={
+            "X-Manyak-Creation-Id": "11111111-1111-1111-1111-111111111111",
+            "X-Manyak-Parent-Creation-Id": "00000000-0000-0000-0000-000000000000",
+            "X-Manyak-Chat-Id": "22222222-2222-2222-2222-222222222222",
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -39,13 +64,77 @@ async def test_storylines_endpoint_attaches_meta(
     # 로깅 메타(KNK-243): story는 snake_case 와이어, 재호출이 없었으면 retry_count=0
     meta = body["meta"]
     assert meta["model"] == "deepseek-test"
-    assert meta["provider"] == "deepseek"
+    # 주입한 값이 그대로 응답까지 온다 — 상수로 되돌리면 여기서 깨진다(KNK-674 리뷰 H1).
+    assert meta["provider"] == "not-deepseek"
     assert list(meta["prompt_versions"]) == ["STORYLINES"]
     assert meta["prompt_versions"]["STORYLINES"] >= 1
     assert meta["input_token_count"] == 50
     assert meta["output_token_count"] == 80
     assert meta["retry_count"] == 0
     assert "promptVersions" not in meta  # camelCase 아님(story는 snake)
+    assert captured["name"] == "스토리라인 생성"
+    assert captured["input_data"] == StorylinesRequest.model_validate(_REQUEST).model_dump(
+        mode="json"
+    )
+    assert captured["metadata"] == {
+        "creation_id": "11111111-1111-1111-1111-111111111111",
+        "parent_creation_id": "00000000-0000-0000-0000-000000000000",
+        "prompt_versions": {"STORYLINES": meta["prompt_versions"]["STORYLINES"]},
+        "retry_count": 0,
+    }
+
+
+async def test_storylines_trace_omits_missing_parent_creation_id(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict = {}
+
+    @contextmanager
+    def fake_observe(_name: str, **kwargs: object):
+        captured.update(kwargs)
+
+        class _Trace:
+            def set_metadata(self, **_kwargs: object) -> None: ...
+
+        yield _Trace()
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _FAKE, story_llm.LlmUsage("deepseek-test", 50, 80, provider="deepseek")
+
+    monkeypatch.setattr(story_module, "observe_request", fake_observe)
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    response = await client.post(
+        "/api/v1/story/storylines",
+        json=_REQUEST,
+        headers={"X-Manyak-Creation-Id": "11111111-1111-1111-1111-111111111111"},
+    )
+
+    assert response.status_code == 200
+    assert captured["metadata"]["creation_id"] == "11111111-1111-1111-1111-111111111111"
+    assert "parent_creation_id" not in captured["metadata"]
+
+
+async def test_storylines_endpoint_serializes_missing_tokens_as_null(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """공급자가 토큰을 안 줬을 때 응답 본문에 **null**로 나가는지 HTTP 계층까지 확인한다.
+
+    백엔드 계약이 "누락 시 null"(0이 아니다)이다. `_complete_json`이 None을 들고 오는 것만
+    확인하면 응답 조립·직렬화가 None을 거부하도록 망가져도 안 잡힌다(KNK-672 리뷰).
+    """
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        return _FAKE, story_llm.LlmUsage("deepseek-test", None, None, provider="deepseek")
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    response = await client.post("/api/v1/story/storylines", json=_REQUEST)
+
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert meta["input_token_count"] is None  # 0으로 뭉개지 않는다
+    assert meta["output_token_count"] is None
 
 
 async def test_storylines_endpoint_tolerates_meta_key_in_llm_result(
@@ -54,7 +143,7 @@ async def test_storylines_endpoint_tolerates_meta_key_in_llm_result(
     """LLM이 변덕으로 'meta' 키를 섞어 보내도 kwarg 충돌(500) 없이 정상 응답해야 한다."""
 
     async def fake_complete(system: str, user: str, **_kwargs: object):
-        return {**_FAKE, "meta": "LLM이 섞어 보낸 잡음"}, story_llm.LlmUsage("m", 1, 2)
+        return {**_FAKE, "meta": "LLM이 섞어 보낸 잡음"}, story_llm.LlmUsage("m", 1, 2, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 
@@ -71,7 +160,7 @@ async def test_storylines_endpoint_reports_actual_retry_count(
     """재호출이 있었으면 meta.retry_count가 하드코딩 0이 아니라 실제 횟수를 싣는다(KNK-312)."""
 
     async def fake_complete(system: str, user: str, **_kwargs: object):
-        return _FAKE, story_llm.LlmUsage("deepseek-test", 100, 160, retry_count=1)
+        return _FAKE, story_llm.LlmUsage("deepseek-test", 100, 160, retry_count=1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
 

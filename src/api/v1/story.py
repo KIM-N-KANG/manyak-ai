@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
-from src.core.config import settings
 from src.core.langfuse import dimension_tags, observe_request
+from src.core.request_context import select_connection_metadata
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
@@ -16,9 +16,11 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
     # 요청 1건 = 트레이스 1건(KNK-624). 장르·태그·프롬프트 버전을 분석 차원으로 싣는다(KNK-640).
     with observe_request(
         "스토리라인 생성",
+        input_data=request.model_dump(mode="json"),
         # 장르만 태그로 — 주인공·조연 태그는 사용자 자유입력이 섞여 제외(dimension_tags 참조).
         tags=dimension_tags(genre_tags=request.genre_tags),
         metadata={
+            **select_connection_metadata("creation_id", "parent_creation_id"),
             "prompt_versions": {"STORYLINES": STORYLINES_VERSION},
             # 기본값 0을 미리 싣는다 — 예외로 조기 이탈해도 실패 트레이스에 값이 비지 않게(KNK-312 리뷰 F2).
             "retry_count": 0,
@@ -40,7 +42,7 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
         meta = StoryResponseMeta(
             model=usage.model,
             prompt_versions={"STORYLINES": STORYLINES_VERSION},
-            provider=settings.llm_provider,
+            provider=usage.provider,
             input_token_count=usage.input_tokens,
             output_token_count=usage.output_tokens,
             retry_count=usage.retry_count,  # invalid 응답 재호출 횟수(0~2, KNK-312)
@@ -59,8 +61,12 @@ async def create_story_compile(request: StoryCompileRequest) -> StoryCompileResp
     # 장르·태그·프롬프트 버전은 미리, 재호출 횟수는 응답 meta에서 사후에 싣는다.
     with observe_request(
         "스토리 컴파일",
+        input_data=request.model_dump(mode="json"),
         tags=dimension_tags(genre_tags=request.genre_tags),  # 장르만(위와 동일 이유)
-        metadata={"prompt_versions": {"COMPILE": COMPILE_VERSION}},
+        metadata={
+            **select_connection_metadata("creation_id", "storyline_id", "storyline_order"),
+            "prompt_versions": {"COMPILE": COMPILE_VERSION},
+        },
     ) as trace:
         response = await story_llm.compile_story(request)
         # meta는 항상 채워지지만(compile_story 계약), 관측이 서비스를 깨지 않도록 None을 방어한다.

@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.api.v1 import chat as chat_module
-from src.schemas.chat_choices import ChatChoicesResponse
+from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
 from src.schemas.response_meta import StoryResponseMeta
 from src.services.chat_choices import ChoicesResult
 
@@ -62,6 +62,8 @@ async def test_chat_choices_returns_three_with_snake_meta(client, mock_choices) 
             output_tokens=12,
             retry_count=1,
             model="deepseek-v4-flash",
+            # 일부러 "deepseek"이 아닌 값 — 상수와 구분하기 위함(KNK-674 리뷰 H1).
+            provider="not-deepseek",
         )
     )
     resp = await client.post("/api/v1/chat/choices", json=_payload())
@@ -72,7 +74,7 @@ async def test_chat_choices_returns_three_with_snake_meta(client, mock_choices) 
 
     # meta는 story 계열과 같은 snake_case다(camelCase는 chat SSE만의 예외)
     meta = data["meta"]
-    assert meta["provider"] == "deepseek"
+    assert meta["provider"] == "not-deepseek"  # 결과에 실린 값이 그대로 meta로
     assert meta["retry_count"] == 1
     assert meta["input_token_count"] == 30
     assert meta["output_token_count"] == 12
@@ -96,6 +98,7 @@ async def test_chat_choices_fallback_result_is_still_200(client, mock_choices) -
             output_tokens=None,
             retry_count=2,
             model="deepseek-v4-flash",
+            provider="deepseek",
         )
     )
     resp = await client.post("/api/v1/chat/choices", json=_payload())
@@ -124,7 +127,7 @@ async def test_chat_choices_requires_ai_output(client, mock_choices) -> None:
     # ai_output 없는 요청은 422 — 턴 요청과 구분되는 이 계약의 필수 추가 필드.
     mock_choices(
         ChoicesResult(choices=["가", "나", "다"], input_tokens=None,
-                      output_tokens=None, retry_count=0, model="m")
+                      output_tokens=None, retry_count=0, model="m", provider="deepseek")
     )
     payload = _payload()
     del payload["ai_output"]
@@ -133,8 +136,10 @@ async def test_chat_choices_requires_ai_output(client, mock_choices) -> None:
     assert resp.status_code == 422
 
 
-async def test_chat_choices_trace_receives_no_tags(client, mock_choices, monkeypatch) -> None:
-    """선택지 트레이스에 태그(장르)가 실리지 않음을 호출부에서 고정한다(KNK-652 적대 리뷰).
+async def test_chat_choices_trace_receives_connection_metadata(
+    client, mock_choices, monkeypatch
+) -> None:
+    """선택지 트레이스는 호출별 연결값만 받고 장르 태그와 user_source는 받지 않는다.
 
     헬퍼(dimension_tags) 시그니처만 지키면 인라인 태그 재유입을 놓친다 — 엔드포인트가
     observe_request에 tags 인자 자체를 넘기지 않음을 본다(장르 태그는 스토리 제작
@@ -157,10 +162,36 @@ async def test_chat_choices_trace_receives_no_tags(client, mock_choices, monkeyp
     monkeypatch.setattr(chat_module, "observe_request", _fake_observe)
     mock_choices(
         ChoicesResult(choices=["가", "나", "다"], input_tokens=1,
-                      output_tokens=1, retry_count=0, model="m")
+                      output_tokens=1, retry_count=0, model="m", provider="deepseek")
     )
-    resp = await client.post("/api/v1/chat/choices", json=_payload())
+    payload = {**_payload(), "user_source": "typed"}
+    resp = await client.post(
+        "/api/v1/chat/choices",
+        json=payload,
+        headers={
+            "X-Manyak-Creation-Id": "11111111-1111-1111-1111-111111111111",
+            "X-Manyak-Story-Id": "22222222-2222-2222-2222-222222222222",
+            "X-Manyak-Chat-Id": "33333333-3333-3333-3333-333333333333",
+            "X-Manyak-Start-Setting-Id": "44444444-4444-4444-4444-444444444444",
+            "X-Manyak-Turn-Number": "7",
+            "X-Manyak-Is-Regenerated": "false",
+            "X-Manyak-Storyline-Id": "42",
+        },
+    )
 
     assert resp.status_code == 200
     assert captured["name"] == "채팅 선택지"
+    assert captured["input_data"] == ChatChoicesRequest.model_validate(payload).model_dump(
+        mode="json", exclude={"user_source"}
+    )
+    assert "user_source" not in captured["input_data"]
+    assert captured["metadata"] == {
+        "creation_id": "11111111-1111-1111-1111-111111111111",
+        "story_id": "22222222-2222-2222-2222-222222222222",
+        "chat_id": "33333333-3333-3333-3333-333333333333",
+        "start_setting_id": "44444444-4444-4444-4444-444444444444",
+        "turn_number": 7,
+        "is_regenerated": False,
+        "prompt_versions": {"NEXT_ACTIONS": chat_module.NEXT_ACTIONS_VERSION},
+    }
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패

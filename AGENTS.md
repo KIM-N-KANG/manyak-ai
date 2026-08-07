@@ -41,9 +41,11 @@
 - FastAPI 기반 AI 서비스로, 스토리 제작(story)과 채팅 플레이(chat)의 LLM 호출을 담당합니다.
   완전 stateless — 상태는 백엔드가 들고, 이 서버는 요청마다 받은 컨텍스트로 프롬프트를 조립해 LLM을 호출합니다.
 - Python 3.11+, Pydantic(+pydantic-settings) 기반입니다.
-- LLM은 DeepSeek API를 OpenAI SDK(호환 클라이언트)로 호출합니다. Anthropic SDK는 쓰지 않습니다.
-  - `deepseek-v4-pro`(env `STORY_COMPILE_MODEL`) — 스토리 컴파일 전용.
+- LLM 호출은 공통 통로(`src/services/llm/`)를 지납니다. 호출부는 "무엇을 원하는지"만 넘기고 회사별 SDK 차이는 어댑터가 흡수합니다(KNK-667). 어느 모델을 어느 회사로 보낼지는 등록부(`registry.py`)가 정하고, 등록되지 않은 모델은 호출 대상이 될 수 없습니다.
+  - `gpt-5.6-terra`(env `STORY_COMPILE_MODEL`) — 스토리 컴파일 기본 모델. OpenAI SDK로 호출하며 추론 강도 `medium`을 사용합니다.
   - `deepseek-v4-flash` — 스토리라인 생성(env `STORYLINES_MODEL`)과 채팅 턴·선택지·판정(env `CHAT_MODEL`)에 각각. 지금은 같은 flash 기본이지만 용도별 독립 설정이 가능하도록 env를 3개로 분리했습니다(KNK-595). manyak-infra의 Compose env 이름 동기화는 짝 작업입니다.
+  - `deepseek-v4-pro`·`gpt-5.6-luna`·`gpt-5.4-mini`도 대체 모델로 등록돼 있습니다. DeepSeek과 GPT는 OpenAI SDK 어댑터를 공유하고 공급자별 주소·키만 바꿉니다.
+  - `claude-sonnet-5`는 Anthropic SDK로 호출합니다(KNK-675). 채팅 자리(`CHAT_MODEL`)에는 이 공급자를 쓸 수 없습니다 — 이 회사는 지시문 칸이 하나뿐이라 채팅이 뒤에 두는 안전 지시(PHI)가 버려집니다(`registry.BLOCKED_PROVIDERS`).
 - API는 `/api/v1` 아래 health·story·chat 라우터(`src/api/v1/`)이고, 채팅 턴은 SSE 스트리밍을 지원합니다.
 - git 추적 구조: `prompt/`(LLM 프롬프트 템플릿), `spec/`(내부 설계 명세), `src/`(FastAPI 앱: api/v1·core·schemas·services), `tests/`(unit + API 테스트).
 - 로컬 전용(git 무시) 디렉터리 — 존재하지만 커밋 대상이 아닙니다. 커밋에 딸려 들어가면 사고입니다:
@@ -87,6 +89,10 @@
 - 배치 규칙 상세(프로젝트 스킬과 하네스 공용 스킬 구분, 추적 여부 확인법, 폴더 구성, Windows 주의)는
   스킬을 만들거나 고칠 때 `.agents/skills/README.md`를 엽니다.
 - 하네스 공용 스킬은 복사하지도 수정하지도 않습니다(하네스 수정 금지 규칙과 동일).
+- **매일 오전 10시(KST) claude.ai 클라우드 루틴이 `daily-sentry-report` 스킬을 굴려** 지난 24시간
+  Sentry 오류(ai·server·web 3개 프로젝트)를 슬랙에 요약해 올립니다(KNK-711). 조회·분류 규칙과
+  결정 이력은 `.agents/skills/daily-sentry-report/reference.md`가 정본입니다.
+  루틴은 **`dev`에 머지된 스킬**을 읽습니다 — 규칙을 고쳐도 머지 전에는 반영되지 않습니다.
 
 ### 프롬프트·명세 변경
 - `prompt/` 파일 수정은 반드시 `prompt-authoring` 스킬의 설계 원칙을 적용합니다.
