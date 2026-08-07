@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
-    app_version: str = "0.2.2"
+    app_version: str = "0.2.3"
     debug: bool = False
 
     # gemini_api_key: str
