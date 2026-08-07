@@ -17,8 +17,8 @@ class Settings(BaseSettings):
 
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
-    # 대체 공급자 접속 정보(KNK-703). 기동 검사는 *선택된* 모델의 공급자 키만 보므로,
-    # 기본 DeepSeek 모델을 쓰는 환경에서는 아래 키가 비어 있어도 서버가 뜬다.
+    # 대체 공급자 접속 정보(KNK-703). 기동 검사는 *선택된* 모델의 공급자 키만 본다.
+    # 현재 기본값은 컴파일에 OpenAI, 스토리라인·채팅에 DeepSeek을 쓰므로 두 키가 모두 필요하다.
     # 주소 기본값은 None — "빈 문자열"이 아니라 "SDK 기본 주소를 쓴다"는 뜻이다. 빈 문자열로
     # 두면 기동 검사의 주소 형식 검사에 걸린다.
     openai_api_key: str = ""
@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     anthropic_api_url: str | None = None
     # 모델은 용도별 3개 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
     # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
-    story_compile_model: str = "deepseek-v4-pro"  # 스토리 컴파일 전용(pro)
+    story_compile_model: str = "gpt-5.6-terra"  # 스토리 컴파일 전용
     storylines_model: str = "deepseek-v4-flash"  # 스토리라인 생성 전용(fast, KNK-215)
     chat_model: str = "deepseek-v4-flash"  # 채팅 턴·선택지·판정 공용(fast, KNK-215)
     # provider는 더 이상 설정값이 아니다(KNK-674). 위 세 모델 이름을 등록부가 해석해

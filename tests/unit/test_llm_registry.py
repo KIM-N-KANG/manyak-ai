@@ -49,7 +49,10 @@ def _clear_llm_env(monkeypatch) -> None:
 
 def _settings(**overrides: str) -> Settings:
     """레포의 .env를 무시하고 필요한 값만 채운 Settings."""
-    values: dict[str, str] = {"deepseek_api_key": "test-key"} | overrides
+    values: dict[str, str] = {
+        "deepseek_api_key": "deepseek-test-key",
+        "openai_api_key": "openai-test-key",
+    } | overrides
     return Settings(_env_file=None, **values)
 
 
@@ -72,6 +75,21 @@ def test_resolve_openai_models(model: str) -> None:
     assert resolved.model == model
     assert resolved.provider == PROVIDER_OPENAI
     assert resolved.adapter == ADAPTER_OPENAI_SDK
+
+
+def test_terra_uses_medium_reasoning_without_temperature() -> None:
+    """컴파일용 Terra는 실측으로 고른 medium 추론을 쓰고 temperature는 보내지 않는다."""
+    resolved = registry.resolve("gpt-5.6-terra")
+
+    assert (resolved.use_thinking, resolved.supports_temperature) == (True, False)
+    assert resolved.reasoning_effort == "medium"
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.4-mini"])
+def test_other_openai_models_keep_reasoning_disabled(model: str) -> None:
+    """Terra 설정을 바꿔도 다른 GPT 모델의 비추론 정책은 그대로다."""
+    resolved = registry.resolve(model)
+
     assert (resolved.use_thinking, resolved.supports_temperature) == (False, False)
 
 
@@ -117,7 +135,10 @@ def test_each_model_declares_its_own_settings() -> None:
     ],
 )
 def test_registered_model_pricing_per_million_tokens(
-    model: str, input_price: str, cache_read_price: str, output_price: str
+    model: str,
+    input_price: str,
+    cache_read_price: str,
+    output_price: str,
 ) -> None:
     """모든 실사용 모델이 2026-07-29 기준 입력·캐시 읽기·출력 USD 단가를 가진다."""
     price = registry.resolve(model).pricing_on(date(2026, 7, 29))
@@ -143,7 +164,7 @@ def test_every_registered_model_has_pricing() -> None:
             "gpt-5.6-terra",
             1_050_000,
             128_000,
-            "none",
+            "medium",
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
         ),
         (
@@ -234,10 +255,26 @@ def test_claude_sonnet_5_pricing_switches_after_introductory_period() -> None:
 
 
 def test_gpt_5_6_pricing_includes_cache_write_and_long_context_rules() -> None:
-    """GPT-5.6의 별도 캐시 쓰기 단가와 272K 초과 할증을 보존한다."""
-    terra = registry.resolve("gpt-5.6-terra").pricing_on(date(2026, 7, 29))
+    """현재 Terra 표준 단가와 별도 캐시 쓰기·272K 초과 할증을 보존한다."""
+    previous = registry.resolve("gpt-5.6-terra").pricing_on(date(2026, 7, 29))
+    terra = registry.resolve("gpt-5.6-terra").pricing_on(date(2026, 8, 7))
 
-    assert terra.cache_write_input_usd_per_1m_tokens == Decimal("3.125")
+    assert (
+        previous.input_usd_per_1m_tokens,
+        previous.cache_read_input_usd_per_1m_tokens,
+        previous.cache_write_input_usd_per_1m_tokens,
+        previous.output_usd_per_1m_tokens,
+    ) == (Decimal("2.50"), Decimal("0.25"), Decimal("3.125"), Decimal("15.00"))
+    assert previous.effective_until == date(2026, 7, 29)
+    assert (
+        terra.input_usd_per_1m_tokens,
+        terra.cache_read_input_usd_per_1m_tokens,
+        terra.cache_write_input_usd_per_1m_tokens,
+        terra.output_usd_per_1m_tokens,
+    ) == (Decimal("2.00"), Decimal("0.20"), Decimal("2.50"), Decimal("12.00"))
+    assert terra.verified_on == date(2026, 8, 7)
+    assert terra.effective_from == date(2026, 7, 30)
+    assert terra.source_url == "https://developers.openai.com/api/docs/pricing"
     assert terra.long_context_threshold_tokens == 272_000
     assert terra.long_context_input_multiplier == Decimal("2")
     assert terra.long_context_output_multiplier == Decimal("1.5")
@@ -308,8 +345,8 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
     """기동 검사는 **선택된** 모델의 공급자 키만 본다 — 안 쓰는 공급자의 키가 비어도 뜬다(KNK-675).
 
     이 성질이 Anthropic 키를 필수로 만들지 않은 근거다. 깨지면 이 공급자를 안 쓰는 환경이
-    통째로 안 뜬다 — CI는 `DEEPSEEK_API_KEY` 하나만 주입해 컨테이너를 실제로 띄워 스모크
-    검사를 한다(`docker-image.yml`).
+    통째로 안 뜬다 — CI는 현재 선택 가능한 DeepSeek·OpenAI의 더미 키를 주입해 컨테이너를
+    실제로 띄워 스모크 검사한다(`docker-image.yml`).
 
     **"빈 키로 통과한다"만 보면 아무것도 증명되지 않는다.** 선택된 모델이 그 공급자를 안 쓰니
     당연히 통과하고, 키를 필수로 되돌려도 이 테스트는 그대로 통과한다(실제로 그랬다). 그래서
@@ -343,13 +380,21 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
 
 def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypatch) -> None:
     """OpenAI 키도 GPT를 고른 순간에만 필수가 된다."""
-    monkeypatch.setattr(registry, "settings", _settings(openai_api_key=""))
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(openai_api_key="", story_compile_model="deepseek-v4-pro"),
+    )
     registry.validate_selected_models()
 
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(openai_api_key="", storylines_model="gpt-5.6-terra"),
+        _settings(
+            openai_api_key="",
+            story_compile_model="deepseek-v4-pro",
+            storylines_model="gpt-5.6-terra",
+        ),
     )
     with pytest.raises(LlmConfigError) as exc_info:
         registry.validate_selected_models()
@@ -360,7 +405,11 @@ def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypa
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(openai_api_key="openai-key", storylines_model="gpt-5.6-terra"),
+        _settings(
+            openai_api_key="openai-key",
+            story_compile_model="deepseek-v4-pro",
+            storylines_model="gpt-5.6-terra",
+        ),
     )
     registry.validate_selected_models()
 
@@ -371,16 +420,28 @@ def test_selected_models_covers_three_env_vars(monkeypatch) -> None:
 
     assert registry.selected_models() == (
         ("STORYLINES_MODEL", "deepseek-v4-flash"),
-        ("STORY_COMPILE_MODEL", "deepseek-v4-pro"),
+        ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
         ("CHAT_MODEL", "deepseek-v4-flash"),
     )
 
 
 def test_validate_passes_with_default_models(monkeypatch) -> None:
-    """코드 기본값(DeepSeek 2종) + 키가 있으면 통과한다 — CI·팀 로컬이 그대로 뜬다."""
+    """코드 기본 모델들이 요구하는 공급자 키가 있으면 기동 검사를 통과한다."""
     monkeypatch.setattr(registry, "settings", _settings())
 
     registry.validate_selected_models()  # 예외 없이 통과
+
+
+def test_validate_default_models_requires_openai_key(monkeypatch) -> None:
+    """기본 컴파일 모델 Terra를 쓸 때 OpenAI 키가 비면 어느 설정이 문제인지 알린다."""
+    monkeypatch.setattr(registry, "settings", _settings(openai_api_key=""))
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        registry.validate_selected_models()
+
+    message = str(exc_info.value)
+    assert "STORY_COMPILE_MODEL" in message
+    assert "OPENAI_API_KEY" in message
 
 
 def test_validate_rejects_unregistered_selected_model(monkeypatch) -> None:

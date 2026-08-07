@@ -74,12 +74,14 @@ def _add_tokens(a: int | None, b: int | None) -> int | None:
 # 보낼지는 모델 등록부와 어댑터가 정하므로, 여기서는 "무엇을 원하는지"만 넘긴다 —
 # 클라이언트 생성·추론 모드(thinking) 같은 회사 문법은 이 파일에서 사라졌다.
 
-# 출력이 무한정 길어지지 않도록 상한. 컴파일 명세 JSON(인물 최대 5명)도 충분히 담긴다.
-_MAX_TOKENS = 6144
+# 스토리라인은 기존 출력 상한을 유지하고, 컴파일은 Terra medium 실측 조건과 같은
+# 16,384를 쓴다. Terra의 한도는 추론 토큰과 본문이 함께 사용한다.
+_STORYLINES_MAX_TOKENS = 6_144
+_COMPILE_MAX_TOKENS = 16_384
 
 # 생성 온도. 스토리라인 블라인드 독자 평가에서 0.75가 0.5보다 읽기 품질(감정 밀도·창의성)
 # 우세이면서 파싱 성공률·속도는 동급이고, 기본값 1.0보다 분량 폭주·파싱 실패 꼬리위험이
-# 낮았다(KNK-269 검증). 스토리라인·컴파일에 공통 적용한다.
+# 낮았다(KNK-269 검증). 모델이 temperature를 받지 않으면 어댑터가 인자를 보내지 않는다.
 _TEMPERATURE = 0.75
 
 # 빈 필수 필드를 채우기 위한 부분 재호출 최대 횟수. 초과하면 502로 막는다.
@@ -140,10 +142,11 @@ async def _complete_json(
     prompt_versions: dict | None = None,
     max_invalid_retries: int = 0,
     validate: Callable[[dict], None] | None = None,
+    max_tokens: int = _COMPILE_MAX_TOKENS,
 ) -> tuple[dict, LlmUsage]:
     """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
 
-    model이 None이면 컴파일용 story_compile_model(pro)로 폴백한다. 기본 인자에 settings 값을
+    model이 None이면 컴파일용 story_compile_model로 폴백한다. 기본 인자에 settings 값을
     직접 두면 import 시점에 고정돼 런타임 오버라이드(테스트 등)가 반영되지 않으므로 호출
     시점에 해석한다. 응답 속도가 중요한 경로(스토리라인)는 호출 측에서 flash 모델을 넘겨
     덮어쓴다(KNK-215). label은 진단 로깅에서 호출 종류를 구분하는 용도다(KNK-222).
@@ -152,8 +155,8 @@ async def _complete_json(
     (없으면 None). 이 한 곳이 메타의 출처라 모델을 바꿔도 따로 손댈 게 없다.
 
     max_invalid_retries(KNK-312): 응답이 왔지만 내용물이 못 쓸 것일 때(invalid_ai_response —
-    깨진 JSON·빈 응답·비객체)만 같은 요청을 그 횟수까지 다시 부른다. temperature 0.75라
-    재호출은 대개 다른(유효한) 출력을 낸다. provider 오류(타임아웃·429·5xx)는 여기서 다시
+    깨진 JSON·빈 응답·비객체)만 같은 요청을 그 횟수까지 다시 부른다. 재호출은 대개 다른
+    (유효한) 출력을 낸다. provider 오류(타임아웃·429·5xx)는 여기서 다시
     부르지 않는다 — 전송 실패는 어댑터 아래의 SDK 재시도가 이미 맡고 있고, 타임아웃은 90초
     예산을 이미 소진한 뒤라 다시 불러도 백엔드가 기다려주지 않는다.
 
@@ -179,7 +182,7 @@ async def _complete_json(
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    max_tokens=_MAX_TOKENS,
+                    max_tokens=max_tokens,
                     # 시도별 타임아웃 = 전체 예산(90초)의 남은 시간 — 60초 직전에 시작한 재호출이
                     # 총 90초를 넘겨 끌지 못하게 한다(Codex P2). 첫 시도는 남은 시간이 90초라 종전과 같다.
                     # **반드시 채운다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
@@ -333,6 +336,7 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
         prompt_versions={"STORYLINES": STORYLINES_VERSION},
         max_invalid_retries=2,
         validate=_validate_storylines,
+        max_tokens=_STORYLINES_MAX_TOKENS,
     )
     _normalize_storyline_ids(result)
     return result, usage

@@ -1,6 +1,6 @@
 ---
-version: 6
-updated: 2026-07-10
+version: 7
+updated: 2026-08-07
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -19,15 +19,17 @@ updated: 2026-07-10
 
 ## 2. 시스템 구성 요소
 
-스토리라인 생성과 동일하게 클라이언트(백엔드) ↔ AI 서버(FastAPI) ↔ LLM API(DeepSeek)로 구성됩니다. 차이는 입력이 태그가 아니라 **선택한 스토리라인 1편 + 추가정보 + 원본 태그**이고, 출력이 이야기 3편이 아니라 **스토리 명세 1건**이라는 점입니다.
+스토리라인 생성과 동일하게 클라이언트(백엔드) ↔ AI 서버(FastAPI) ↔ LLM API로 구성됩니다. 차이는 입력이 태그가 아니라 **선택한 스토리라인 1편 + 추가정보 + 원본 태그**이고, 출력이 이야기 3편이 아니라 **스토리 명세 1건**이라는 점입니다.
 
 컴파일은 스토리라인보다 출력이 길고 구조가 복잡해(인물 카드 최대 5명 등) 더 큰 모델을 쓰고, 빈 칸을 채우기 위한 부분 재호출이 추가됩니다.
+
+컴파일 모델과 추론 강도는 동일한 입력으로 Terra와 Luna의 여러 추론 강도를 실측해 결정했습니다. 응답 품질뿐 아니라 응답 시간과 토큰 비용을 함께 비교했고, 세 기준의 균형이 가장 나은 `gpt-5.6-terra`의 `medium`을 선택했습니다.
 
 | 항목 | 스토리라인 생성 | 컴파일 |
 |---|---|---|
 | 입력 | 태그 3종 | 선택 스토리라인 + 추가정보 + 태그 3종 |
 | 출력 | 이야기 3편 + 추천정보 | 스토리 명세 1건(4테이블 + 주요 사건·엔딩) |
-| 모델 | `deepseek-v4-flash` | `deepseek-v4-pro` |
+| 모델 | `deepseek-v4-flash` | `gpt-5.6-terra` |
 | 호출 | 단일 호출 | 본호출 + 빈 블록 부분 재호출(최대 2회) |
 
 프롬프트 템플릿은 `prompt/story/COMPILE-TEMPLATE.md`이며, 스토리라인과 마찬가지로 `[SYSTEM]`·`[USER]` 두 블록으로 구성됩니다.
@@ -75,7 +77,7 @@ updated: 2026-07-10
 | `{{주변_인물_태그}}` | supporting_tags 배열 → 쉼표 구분 문자열 |
 | `{{로어북}}` | lorebooks 배열 → 항목별 `### name` + content 블록(`\n\n`으로 구분). 비어 있거나 미전달·null이면 `(없음)`. 세계관·용어 확장 재료로만 쓰고 원문을 출력에 노출하지 않음 |
 
-호출 파라미터는 모델만 다르고 나머지는 스토리라인과 같습니다: `response_format={"type": "json_object"}`, temperature 0.75, max_tokens 6144, 추론 비활성(`thinking: disabled`), 90초 타임아웃.
+컴파일은 `response_format={"type": "json_object"}`, `max_completion_tokens=16384`, `reasoning_effort="medium"`, 90초 타임아웃으로 호출합니다. `gpt-5.6-terra`는 temperature를 받지 않으므로 temperature 인자를 보내지 않습니다. 출력 한도 16,384토큰은 추론 토큰과 실제 JSON 본문이 함께 사용합니다.
 
 ### 4-2. 세분 JSON 응답과 파싱
 
@@ -116,7 +118,7 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 
 ### 4-7. 프롬프트 캐싱
 
-`[SYSTEM]` 블록은 모든 호출에서 동일하므로, DeepSeek이 동일한 접두 컨텍스트를 자동으로 컨텍스트 캐시 처리합니다. 별도 캐시 설정은 필요하지 않으며, 적중 여부는 응답의 `usage.prompt_cache_hit_tokens`로 확인합니다.
+Terra 호출에는 매번 동일한 `[SYSTEM]` 블록을 보내며 서버가 별도 캐시 옵션을 지정하지는 않습니다. OpenAI 응답의 `usage.prompt_tokens_details.cached_tokens`가 있으면 어댑터가 `cache_read_input_tokens`로 옮기고, 스토리 호출 진단 로그에 캐시 적중 토큰 수를 남깁니다.
 
 ---
 
@@ -182,9 +184,9 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
     { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." }
   ],
   "meta": {
-    "model": "deepseek-v4-pro",
+    "model": "gpt-5.6-terra",
     "prompt_versions": { "COMPILE": 7 },
-    "provider": "deepseek",
+    "provider": "openai",
     "input_token_count": 3500,
     "output_token_count": 2200,
     "retry_count": 0

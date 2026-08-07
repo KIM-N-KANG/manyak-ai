@@ -16,13 +16,13 @@ def test_model_fields_read_new_env_names(monkeypatch) -> None:
     assert s.chat_model == "chat-x"
 
 
-def test_model_defaults_unchanged(monkeypatch) -> None:
-    """env 미설정 시 기본 모델은 rename 전과 동일하다(순수 이름 분리, 동작 무변경)."""
+def test_model_defaults(monkeypatch) -> None:
+    """env 미설정 시 컴파일은 Terra, 스토리라인·채팅은 DeepSeek flash를 쓴다."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
 
     s = Settings(_env_file=None)
 
-    assert s.story_compile_model == "deepseek-v4-pro"
+    assert s.story_compile_model == "gpt-5.6-terra"
     assert s.storylines_model == "deepseek-v4-flash"
     assert s.chat_model == "deepseek-v4-flash"
 
@@ -46,7 +46,7 @@ def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> Non
     s = Settings(_env_file=str(env))  # 예외 없이 로드돼야 한다
 
     # 옛 키는 무시되고 기본값이 유지된다
-    assert s.story_compile_model == "deepseek-v4-pro"
+    assert s.story_compile_model == "gpt-5.6-terra"
     assert s.chat_model == "deepseek-v4-flash"
 
 
