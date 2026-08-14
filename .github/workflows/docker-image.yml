@@ -13,12 +13,14 @@ on:
 permissions:
   contents: read
   packages: write # GHCR(dev) 푸시
-  id-token: write # AWS OIDC(main) 인증
+  id-token: write # AWS OIDC(dev·main) 인증
 
 env:
   GHCR_IMAGE: ghcr.io/kim-n-kang/manyak-ai
   ECR_REPOSITORY: manyak-ai
   AWS_REGION: ap-northeast-2
+  ECS_CLUSTER: manyak-dev
+  ECS_SERVICE: manyak-dev
 
 jobs:
   test:
@@ -189,6 +191,80 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
           tags: ${{ steps.image-tags.outputs.tags }}
+
+  # dev 푸시(GHCR 갱신) 후 → 개발 ECS 서비스에 새 배포를 트리거 (KNK-829)
+  deploy-dev:
+    name: Deploy to ECS (dev)
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    # manyak-server 의 같은 잡과 그룹명을 공유한다. 두 레포가 같은 ECS 서비스를 갱신하므로
+    # 레포별로 큐를 나누면 동시 배포가 겹칠 수 있다(GitHub concurrency 는 레포 스코프라
+    # 완전한 상호배제는 아니지만, 같은 레포 안의 연속 푸시는 이걸로 직렬화된다).
+    concurrency:
+      group: manyak-dev-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      # GHCR 의 dev 는 가변 태그다. 더 새 푸시가 있으면 그쪽 잡이 배포하게 두고 여기서는 건너뛴다.
+      - name: Gate — 최신 dev SHA 확인(stale 배포 방지)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST_SHA=$(gh api "repos/${{ github.repository }}/commits/dev" --jq '.sha')
+          if [ "$LATEST_SHA" != "$GITHUB_SHA" ]; then
+            echo "::notice::최신 dev($LATEST_SHA)이 더 있어 stale($GITHUB_SHA) 배포를 건너뜁니다"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.gate.outputs.skip != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEV_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 태스크 정의는 이미 GHCR dev 좌표를 들고 있으므로 새 리비전을 등록하지 않는다.
+      # 개발은 server·ai 가 태스크 정의 하나에 함께 있어, 이 배포는 두 컨테이너를 모두
+      # 현재 GHCR dev 이미지로 갱신한다(ai 만 머지해도 server 가 함께 바뀐다).
+      - name: Force new ECS deployment
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --force-new-deployment --no-cli-pager --query 'service.serviceName' --output text
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "✅ ECS 서비스 안정화"
+
+      # 서비스가 안정화돼도 ai 는 죽어 있을 수 있다 — ai 컨테이너는 essential=false 라
+      # 태스크를 죽이지 않고, ALB 헬스는 server 만 본다. AI 레포의 배포는 특히 이걸 봐야 한다.
+      - name: Verify container health (ai 포함)
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          TASK=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" --service-name "$ECS_SERVICE" \
+            --query 'taskArns[0]' --output text)
+          aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
+            --query 'tasks[0].containers[].{name:name,status:lastStatus,health:healthStatus}' --output table
+          AI_HEALTH=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
+            --query "tasks[0].containers[?name=='ai'].healthStatus | [0]" --output text)
+          if [ "$AI_HEALTH" != "HEALTHY" ]; then
+            echo "::error::ai 컨테이너가 HEALTHY 가 아닙니다($AI_HEALTH) — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-dev 로그에서 확인"
+            exit 1
+          fi
+          echo "✅ ai HEALTHY"
+
+      - name: Smoke test (server /actuator/health)
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS https://dev-api.manyak.app/actuator/health | grep -q '"status":"UP"'; then
+              echo "✅ dev health UP"; exit 0
+            fi
+            echo "health 대기 $i/12 (15s)..."; sleep 15
+          done
+          echo "::error::dev health 200/UP 확인 실패 — CloudWatch /ecs/manyak-dev 로그 확인"; exit 1
 
   # main 푸시(ECR 갱신) 후 → 전용 SSM 문서(manyak-prod-ai-deploy)로 EC2에 AI 배포
   # (문서가 내부에서 deploy.sh + `up -d --wait ai` 로 health 게이트까지 수행)
