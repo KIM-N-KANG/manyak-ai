@@ -175,9 +175,11 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else
+            # dev 브랜치는 여기서 :dev 를 붙이지 않는다. 빌드 잡은 직렬화돼 있지 않아,
+            # 두 푸시가 겹치면 이전 빌드가 나중에 끝나며 :dev 를 옛 SHA 로 되돌릴 수 있다.
+            # :dev 승격은 deploy-dev 의 최신 SHA 게이트 뒤(직렬화 구간)에서 한다(KNK-829).
             {
               echo "tags<<EOF"
-              echo "${GHCR_IMAGE}:dev"
               echo "${GHCR_IMAGE}:${SHORT_SHA}"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
@@ -218,6 +220,16 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # 최신 SHA 게이트를 통과한 뒤에만 :dev 를 이 커밋으로 옮긴다. 빌드 잡에서 붙이면
+      # 늦게 끝난 옛 빌드가 태그를 되돌릴 수 있다(리뷰 지적). manifest 를 복사하므로
+      # 멀티아키(amd64·arm64) 인덱스가 그대로 유지된다.
+      - name: Promote ${{ github.sha }} to :dev
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create --tag "${GHCR_IMAGE}:dev" "${GHCR_IMAGE}:${GITHUB_SHA::7}"
+          echo "✅ :dev -> ${GITHUB_SHA::7}"
 
       - name: Configure AWS credentials (OIDC)
         if: steps.gate.outputs.skip != 'true'
