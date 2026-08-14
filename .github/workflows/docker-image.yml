@@ -232,11 +232,29 @@ jobs:
       - name: Force new ECS deployment
         if: steps.gate.outputs.skip != 'true'
         run: |
-          aws ecs update-service \
+          # 이 호출이 만든 배포 id 를 잡아 둔다. services-stable 만으로는 부족하다 —
+          # 서비스에 circuit breaker rollback 이 켜져 있어(compute-ecs), 새 태스크가 못 뜨면 ECS 가
+          # 직전 배포로 되돌리고, 그 상태도 "안정적인 배포 1개 + desired 충족"이라 waiter 가 성공한다.
+          # 그러면 이후 헬스 검사는 옛 태스크를 보게 되어 실패한 배포가 초록으로 끝난다.
+          DEPLOY_ID=$(aws ecs update-service \
             --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
-            --force-new-deployment --no-cli-pager --query 'service.serviceName' --output text
-          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
-          echo "✅ ECS 서비스 안정화"
+            --force-new-deployment --no-cli-pager \
+            --query "service.deployments[?status=='PRIMARY'].id | [0]" --output text)
+          echo "배포 id: $DEPLOY_ID"
+
+          # 그 배포가 COMPLETED 가 될 때까지 폴링한다. 롤백되면 rolloutState 가 FAILED 가 되거나
+          # 배포 자체가 목록에서 사라지므로 둘 다 실패로 처리한다.
+          for i in $(seq 1 60); do
+            STATE=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query "services[0].deployments[?id=='$DEPLOY_ID'].rolloutState | [0]" --output text)
+            case "$STATE" in
+              COMPLETED) echo "✅ 배포 $DEPLOY_ID COMPLETED"; break ;;
+              FAILED) echo "::error::배포 $DEPLOY_ID 가 FAILED — circuit breaker 롤백 발생. CloudWatch /ecs/manyak-dev 확인"; exit 1 ;;
+              None|"") echo "::error::배포 $DEPLOY_ID 가 사라졌습니다(롤백으로 교체) — CloudWatch /ecs/manyak-dev 확인"; exit 1 ;;
+              *) echo "배포 $STATE — 대기 $i/60 (10s)"; sleep 10 ;;
+            esac
+          done
+          [ "$STATE" = "COMPLETED" ]
 
       # 서비스가 안정화돼도 ai 는 죽어 있을 수 있다 — ai 컨테이너는 essential=false 라
       # 태스크를 죽이지 않고, ALB 헬스는 server 만 본다. AI 레포의 배포는 특히 이걸 봐야 한다.
@@ -247,13 +265,26 @@ jobs:
             --query 'taskArns[0]' --output text)
           aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
             --query 'tasks[0].containers[].{name:name,status:lastStatus,health:healthStatus}' --output table
-          AI_HEALTH=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
-            --query "tasks[0].containers[?name=='ai'].healthStatus | [0]" --output text)
-          if [ "$AI_HEALTH" != "HEALTHY" ]; then
-            echo "::error::ai 컨테이너가 HEALTHY 가 아닙니다($AI_HEALTH) — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-dev 로그에서 확인"
-            exit 1
-          fi
-          echo "✅ ai HEALTHY"
+          # 단발 검사는 안 된다. 배포 완료 시점에도 ai 는 아직 UNKNOWN 일 수 있다 —
+          # 태스크 헬스체크에 start period 와 재시도가 있고, ai 는 essential=false 라
+          # 배포 완료 판정이 ai 의 healthy 를 기다려 주지 않는다.
+          # 부분일치를 쓰지 않는다 — UNHEALTHY 도 "HEALTHY" 로 끝나서 비정상을 정상으로 오판한다.
+          for i in $(seq 1 20); do
+            AI_HEALTH=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
+              --query "tasks[0].containers[?name=='ai'].healthStatus | [0]" --output text)
+            AI_STATUS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
+              --query "tasks[0].containers[?name=='ai'].lastStatus | [0]" --output text)
+            echo "ai: status=$AI_STATUS health=$AI_HEALTH"
+            if [ "$AI_HEALTH" = "HEALTHY" ]; then
+              echo "✅ ai HEALTHY"; exit 0
+            fi
+            if [ "$AI_HEALTH" = "UNHEALTHY" ] || [ "$AI_STATUS" = "STOPPED" ]; then
+              echo "::error::ai 컨테이너가 기동에 실패했습니다(status=$AI_STATUS health=$AI_HEALTH) — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-dev 로그에서 확인"
+              exit 1
+            fi
+            echo "ai 기동 대기 $i/20 (15s)..."; sleep 15
+          done
+          echo "::error::제한 시간 안에 ai 가 HEALTHY 가 되지 않았습니다 — CloudWatch /ecs/manyak-dev 로그 확인"; exit 1
 
       - name: Smoke test (server /actuator/health)
         if: steps.gate.outputs.skip != 'true'
