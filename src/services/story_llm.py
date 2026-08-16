@@ -528,8 +528,8 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         request.selected_storyline,
         request.additional_info,
         request.genre_tags,
-        request.protagonist_tags,
-        request.supporting_tags,
+        request.protagonist,
+        request.supporting_characters,
         request.lorebooks,
     )
     data, usage = await _complete_json(

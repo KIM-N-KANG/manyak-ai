@@ -17,7 +17,7 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
     with observe_request(
         "스토리라인 생성",
         input_data=request.model_dump(mode="json"),
-        # 장르만 태그로 — 주인공·조연 태그는 사용자 자유입력이 섞여 제외(dimension_tags 참조).
+        # 장르만 태그로 — 인물 세트 특징(features)은 사용자 자유입력이 섞여 제외(dimension_tags 참조).
         tags=dimension_tags(genre_tags=request.genre_tags),
         metadata={
             **select_connection_metadata("creation_id", "parent_creation_id"),
@@ -28,8 +28,8 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
     ) as trace:
         system_prompt, user_prompt = build_storylines_prompt(
             request.genre_tags,
-            request.protagonist_tags,
-            request.supporting_tags,
+            request.protagonist,
+            request.supporting_characters,
         )
         try:
             result, usage = await story_llm.generate_storylines(system_prompt, user_prompt)
@@ -54,7 +54,7 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
 
 @router.post("/story/compile", response_model=StoryCompileResponse)
 async def create_story_compile(request: StoryCompileRequest) -> StoryCompileResponse:
-    """시점 A-1: 희소 입력(선택 스토리라인 + 추가정보 + 태그)을 스토리 명세로
+    """시점 A-1: 희소 입력(선택 스토리라인 + 추가정보 + 장르 태그 + 인물 세트)을 스토리 명세로
     컴파일해 ERD 4테이블 nested 계약으로 반환한다. 검증·재호출·502 변환은
     compile_story()가 모두 처리한다."""
     # 부분 재호출(최대 3회)까지 한 트레이스로 묶인다(KNK-624). 분석 차원 부착(KNK-640):

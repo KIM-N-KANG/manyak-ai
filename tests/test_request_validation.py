@@ -11,8 +11,8 @@ async def test_compile_missing_required_field_422(client) -> None:
     # genre_tags(필수) 누락 → 422.
     payload = {
         "selected_storyline": "x",
-        "protagonist_tags": ["신중한"],
-        "supporting_tags": ["거친"],
+        "protagonist": {"features": ["신중한"]},
+        "supporting_characters": [{"features": ["거친"]}],
     }
     resp = await client.post("/api/v1/story/compile", json=payload)
     assert resp.status_code == 422
@@ -20,7 +20,43 @@ async def test_compile_missing_required_field_422(client) -> None:
 
 async def test_storylines_missing_required_field_422(client) -> None:
     # genre_tags(필수) 누락 → 422.
-    payload = {"protagonist_tags": ["신중한"], "supporting_tags": ["거친"]}
+    payload = {"protagonist": {"features": ["신중한"]}, "supporting_characters": []}
+    resp = await client.post("/api/v1/story/storylines", json=payload)
+    assert resp.status_code == 422
+
+
+async def test_storylines_missing_protagonist_422(client) -> None:
+    # protagonist(필수 객체) 누락 → 422. 인물 세트 계약(KNK-833) 회귀 방지.
+    payload = {"genre_tags": ["무협"], "supporting_characters": []}
+    resp = await client.post("/api/v1/story/storylines", json=payload)
+    assert resp.status_code == 422
+
+
+async def test_compile_missing_protagonist_422(client) -> None:
+    # compile도 protagonist(필수 객체)가 빠지면 422 — 두 엔드포인트의 계약을 대칭으로 고정.
+    payload = {"selected_storyline": "x", "genre_tags": ["무협"], "supporting_characters": []}
+    resp = await client.post("/api/v1/story/compile", json=payload)
+    assert resp.status_code == 422
+
+
+async def test_compile_invalid_gender_422(client) -> None:
+    payload = {
+        "selected_storyline": "x",
+        "genre_tags": ["무협"],
+        "protagonist": {"gender": "여", "features": []},
+        "supporting_characters": [],
+    }
+    resp = await client.post("/api/v1/story/compile", json=payload)
+    assert resp.status_code == 422
+
+
+async def test_storylines_invalid_gender_422(client) -> None:
+    # gender는 Literal["MALE","FEMALE"]|null — "남"은 계약 위반 → 422(KNK-833).
+    payload = {
+        "genre_tags": ["무협"],
+        "protagonist": {"name": "무영", "gender": "남", "features": []},
+        "supporting_characters": [],
+    }
     resp = await client.post("/api/v1/story/storylines", json=payload)
     assert resp.status_code == 422
 

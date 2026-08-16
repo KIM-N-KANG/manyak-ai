@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from src.schemas.story import CharacterInput
 from src.schemas.story_compile import LorebookItem
 from src.services.prompt_meta import read_version
 
@@ -27,16 +28,22 @@ _STORYLINES_SYSTEM, _STORYLINES_USER = _load_template(_STORYLINES_TEMPLATE_PATH)
 _COMPILE_SYSTEM, _COMPILE_USER = _load_template(_COMPILE_TEMPLATE_PATH)
 
 
+def _all_features(characters: list[CharacterInput]) -> list[str]:
+    return [f for c in characters for f in c.features]
+
+
 def build_storylines_prompt(
     genre_tags: list[str],
-    protagonist_tags: list[str],
-    supporting_tags: list[str],
+    protagonist: CharacterInput,
+    supporting_characters: list[CharacterInput],
 ) -> tuple[str, str]:
+    # 인물 블록 치환(이름·성별 포함)은 KNK-836에서 템플릿과 함께 바꾼다.
+    # 그전까지는 종전 자리표시자에 특징만 넣어 동작을 유지한다.
     user_text = (
         _STORYLINES_USER
         .replace("{{장르_태그}}", ", ".join(genre_tags))
-        .replace("{{주인공_특징_태그}}", ", ".join(protagonist_tags))
-        .replace("{{주변_인물_태그}}", ", ".join(supporting_tags))
+        .replace("{{주인공_특징_태그}}", ", ".join(protagonist.features))
+        .replace("{{주변_인물_태그}}", ", ".join(_all_features(supporting_characters)))
     )
     return _STORYLINES_SYSTEM, user_text
 
@@ -53,18 +60,19 @@ def build_compile_prompt(
     selected_storyline: str,
     additional_info: str,
     genre_tags: list[str],
-    protagonist_tags: list[str],
-    supporting_tags: list[str],
+    protagonist: CharacterInput,
+    supporting_characters: list[CharacterInput],
     lorebooks: list[LorebookItem] | None = None,
 ) -> tuple[str, str]:
     """스토리 컴파일(시점 A-1)용 프롬프트를 완성한다."""
+    # 인물 블록 치환(이름·성별 포함)은 KNK-837에서 템플릿과 함께 바꾼다(위와 동일).
     user_text = (
         _COMPILE_USER
         .replace("{{선택_스토리라인}}", selected_storyline)
         .replace("{{추가정보}}", additional_info or "(없음)")
         .replace("{{장르_태그}}", ", ".join(genre_tags))
-        .replace("{{주인공_특징_태그}}", ", ".join(protagonist_tags))
-        .replace("{{주변_인물_태그}}", ", ".join(supporting_tags))
+        .replace("{{주인공_특징_태그}}", ", ".join(protagonist.features))
+        .replace("{{주변_인물_태그}}", ", ".join(_all_features(supporting_characters)))
         .replace("{{로어북}}", _format_lorebooks(lorebooks or []))
     )
     return _COMPILE_SYSTEM, user_text
