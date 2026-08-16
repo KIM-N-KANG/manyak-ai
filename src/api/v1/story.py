@@ -32,7 +32,12 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
             request.supporting_characters,
         )
         try:
-            result, usage = await story_llm.generate_storylines(system_prompt, user_prompt)
+            result, usage = await story_llm.generate_storylines(
+                system_prompt,
+                user_prompt,
+                # 사용자가 이름 지은 주변 인물은 세 편 모두 등장해야 한다(KNK-833).
+                required_names=[c.name for c in request.supporting_characters if c.name],
+            )
         except HTTPException as e:
             # 실패한 요청도 실제 재호출 횟수를 기록한다 — 502 예외에 실려 온다(story_llm).
             trace.set_metadata(retry_count=getattr(e, "retry_count", 0))

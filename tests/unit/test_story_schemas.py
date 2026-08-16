@@ -24,6 +24,23 @@ def test_character_input_rejects_unknown_gender() -> None:
         CharacterInput(gender="남")
 
 
+def test_name_normalized_and_blank_treated_as_missing() -> None:
+    # 뒤 공백은 다듬고(NFC·trim), 공백뿐인 이름은 미입력(None)과 같다.
+    assert CharacterInput(name="서린 ").name == "서린"
+    assert CharacterInput(name="   ").name is None
+    # 분해형 한글(NFD)도 조합형(NFC)으로 통일된다 — 등장 검증 문자열 대조의 전제.
+    import unicodedata
+
+    nfd = unicodedata.normalize("NFD", "서린")
+    assert CharacterInput(name=nfd).name == "서린"
+
+
+def test_blank_features_dropped() -> None:
+    # 빈 문자열·공백 항목은 버려져 "특징: , ," 렌더를 막고, 전부 비면 (미정) 경로를 탄다.
+    assert CharacterInput(features=["", "  ", "거친 "]).features == ["거친"]
+    assert CharacterInput(features=["", " "]).features == []
+
+
 def test_explicit_null_accepted_as_empty() -> None:
     # 백엔드가 "값 없음"을 명시적 null로 보내도 빈 배열과 동일하다(로어북 KNK-422와 같은 관례).
     req = StorylinesRequest(

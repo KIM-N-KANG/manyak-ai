@@ -175,3 +175,19 @@ async def test_storylines_endpoint_reports_actual_retry_count(
     # 합산 토큰이 그대로 실린다(실패 시도분 포함 값)
     assert meta["input_token_count"] == 100
     assert meta["output_token_count"] == 160
+
+
+async def test_storylines_endpoint_passes_named_supporting_characters(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """이름 지은 주변 인물만 등장 검증 대상(required_names)으로 넘긴다(KNK-836)."""
+    seen: dict = {}
+
+    async def fake_generate(system: str, user: str, required_names: list[str] | None = None):
+        seen["required_names"] = required_names
+        return _FAKE, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+
+    monkeypatch.setattr(story_module.story_llm, "generate_storylines", fake_generate)
+    resp = await client.post("/api/v1/story/storylines", json=_REQUEST)
+    assert resp.status_code == 200
+    assert seen["required_names"] == ["서린"]  # 이름을 비운 인물은 검증 대상이 아니다
