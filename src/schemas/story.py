@@ -12,28 +12,37 @@ def _none_as_empty(v: object) -> object:
 
 
 def _clean_name(v: object) -> object:
-    """이름을 NFC 정규화·trim한다. 다듬은 결과가 빈 문자열이면 미입력(None)과 동일하다.
+    """이름을 NFC 정규화하고 앞뒤·안쪽 공백을 정리한다. 결과가 비면 미입력(None)과 동일하다.
 
-    뒤 공백("서린 ")이나 분해형 한글(macOS 클립보드 경로)은 프롬프트에도 지저분하게 실리고,
-    등장 검증(문자열 대조)이 절대 통과하지 못하는 입력이 된다 — 스키마에서 한 번에 다듬는다.
+    뒤 공백("서린 ")·안쪽 개행·연속 공백·분해형 한글(macOS 클립보드 경로)은 프롬프트에도
+    지저분하게 실리고, 등장 검증(문자열 대조)이 절대 통과하지 못하는 입력이 된다 —
+    스키마에서 한 번에 다듬는다(안쪽 공백 연속은 한 칸으로).
     """
     if isinstance(v, str):
-        cleaned = unicodedata.normalize("NFC", v).strip()
+        cleaned = " ".join(unicodedata.normalize("NFC", v).split())
         return cleaned or None
     return v
 
 
 def _clean_features(v: object) -> object:
-    """특징 목록의 각 항목을 NFC 정규화·trim하고 빈 항목은 버린다(null은 빈 배열)."""
+    """특징 목록의 각 문자열 항목을 NFC 정규화·trim하고 빈 항목은 버린다(null은 빈 배열).
+
+    문자열이 아닌 항목은 걸러내지 않고 그대로 둔다 — Pydantic이 422로 거부하게 해서
+    백엔드 형식 버그를 조용히 삼키지 않는다(성별 오값 처리와 대칭).
+    """
     if v is None:
         return []
-    if isinstance(v, list):
-        return [
-            unicodedata.normalize("NFC", f).strip()
-            for f in v
-            if isinstance(f, str) and f.strip()
-        ]
-    return v
+    if not isinstance(v, list):
+        return v
+    cleaned: list[object] = []
+    for f in v:
+        if isinstance(f, str):
+            stripped = unicodedata.normalize("NFC", f).strip()
+            if stripped:
+                cleaned.append(stripped)
+        else:
+            cleaned.append(f)
+    return cleaned
 
 
 class CharacterInput(BaseModel):

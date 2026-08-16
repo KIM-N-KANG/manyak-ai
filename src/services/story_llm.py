@@ -537,11 +537,39 @@ def _endings_incomplete(data: dict) -> bool:
     return False
 
 
+_CHARACTER_CARDS_PATH = "prompt_settings.character_setting"
+
+
+def _missing_required_characters(data: dict, required_names: tuple[str, ...]) -> bool:
+    """사용자가 이름 지은 주변 인물이 인물 카드(character_setting)에 전원 있는지 본다(KNK-833).
+
+    빠져 있으면 본호출 전체를 다시 사는 대신 카드 블록만 부분 재호출(refill) 대상으로
+    삼는다 — 컴파일은 가장 비싼 호출이라 잘 나온 나머지 블록을 보존하는 쪽이 싸다.
+    카드 name에는 이름 뒤에 호칭이 붙을 수 있어 포함 여부로 보고, 이름을 비운 인물은
+    LLM이 지은 이름을 알 수 없어 검증 대상이 아니다.
+    """
+    if not required_names:
+        return False
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(cards, list):
+        cards = []
+    # 카드 사이를 구분자로 이어, 이름이 카드 경계에 걸쳐 우연히 맞는 오탐을 막는다.
+    # 문자열 이름만 대조한다 — null·배열을 str()로 바꾸면 "None"·"['서린']" 같은
+    # 글자가 생겨 검증이 잘못 통과하고, 회복 기회(refill) 없이 뒤 단계 502로 죽는다.
+    card_names = " / ".join(
+        unicodedata.normalize("NFC", c["name"])
+        for c in cards
+        if isinstance(c, dict) and isinstance(c.get("name"), str)
+    )
+    return any(n not in card_names for n in required_names)
+
+
 async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     """시점 A-1: 희소 입력을 스토리 명세로 컴파일해 백엔드 계약(nested 통글)으로 반환한다.
 
-    흐름: LLM 세분 JSON → genre 주입 → 빈 필수키 검증 → 빈 블록만 부분 재호출(최대 2회)
-    → 엔딩 미완성 시 빈 배열 폴백(KNK-465) → StorySpec 파싱 → nested 통글 변환.
+    흐름: LLM 세분 JSON → genre 주입 → 빈 필수키·사용자 인물 카드 검증(KNK-833) →
+    모자란 블록만 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
+    → StorySpec 파싱 → nested 통글 변환.
     PromptCompiler 추상 경계는 spec/chat/4-SERVICE-IMPLEMENTATION.md §6.
     """
     system_prompt, user_prompt = build_compile_prompt(
@@ -564,8 +592,17 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
     input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
 
+    # 사용자가 이름 지은 주변 인물이 카드에서 빠지면 카드 블록도 refill 대상에 넣는다(KNK-833).
+    required_names = tuple(c.name for c in request.supporting_characters if c.name)
+
+    def _current_missing() -> list[str]:
+        found = _find_missing_keys(data)
+        if _missing_required_characters(data, required_names) and _CHARACTER_CARDS_PATH not in found:
+            found.append(_CHARACTER_CARDS_PATH)
+        return found
+
     # 빈 필수 필드가 있으면 해당 블록만 다시 채운다(최대 _MAX_REFILL회).
-    missing = _find_missing_keys(data)
+    missing = _current_missing()
     if missing:
         logger.info("compile 1차 응답 누락 블록: %s", missing)
     attempts = 0
@@ -589,7 +626,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
         _merge_blocks(data, refill, blocks)
         _inject_genre(data, request.genre_tags)
-        missing = _find_missing_keys(data)
+        missing = _current_missing()
     logger.info(
         "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 누락=%s",
         1 + attempts,

@@ -23,8 +23,9 @@ _REQUEST = {
     "additional_info": "주인공은 복수보다 진실을 택한다.",
     "genre_tags": ["다크 판타지"],
     "protagonist": {"name": "카일", "gender": "MALE", "features": ["신중한"]},
+    # 이름은 fixture(spec_valid.json) 카드에 있는 "레이" — 인물 카드 검증(KNK-837)을 통과해야 한다.
     "supporting_characters": [
-        {"name": "로한", "gender": "MALE", "features": ["충직한", "거친"]},
+        {"name": "레이", "gender": "MALE", "features": ["충직한", "거친"]},
     ],
 }
 

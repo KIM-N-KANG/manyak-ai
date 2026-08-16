@@ -33,12 +33,21 @@ def test_name_normalized_and_blank_treated_as_missing() -> None:
 
     nfd = unicodedata.normalize("NFD", "서린")
     assert CharacterInput(name=nfd).name == "서린"
+    # 안쪽 개행·연속 공백도 한 칸으로 — 등장 검증이 절대 못 맞추는 입력을 만들지 않는다.
+    assert CharacterInput(name="서\n린").name == "서 린"
+    assert CharacterInput(name="김  도형").name == "김 도형"
 
 
 def test_blank_features_dropped() -> None:
     # 빈 문자열·공백 항목은 버려져 "특징: , ," 렌더를 막고, 전부 비면 (미정) 경로를 탄다.
     assert CharacterInput(features=["", "  ", "거친 "]).features == ["거친"]
     assert CharacterInput(features=["", " "]).features == []
+
+
+def test_non_string_feature_rejected() -> None:
+    # 문자열이 아닌 특징은 조용히 버리지 않고 422로 드러낸다(백엔드 형식 버그 노출).
+    with pytest.raises(ValidationError):
+        CharacterInput(features=[123, "용감한"])
 
 
 def test_explicit_null_accepted_as_empty() -> None:

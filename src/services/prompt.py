@@ -40,10 +40,6 @@ def _render(template: str, mapping: dict[str, str]) -> str:
     return re.sub(pattern, lambda m: mapping[m.group(1)], template)
 
 
-def _all_features(characters: list[CharacterInput]) -> list[str]:
-    return [f for c in characters for f in c.features]
-
-
 # 성별은 계약 값("MALE"·"FEMALE")이 아니라 한국어로 프롬프트에 싣는다.
 _GENDER_KO = {"MALE": "남성", "FEMALE": "여성"}
 
@@ -95,15 +91,14 @@ def build_compile_prompt(
     lorebooks: list[LorebookItem] | None = None,
 ) -> tuple[str, str]:
     """스토리 컴파일(시점 A-1)용 프롬프트를 완성한다."""
-    # 인물 블록 치환(이름·성별 포함)은 KNK-837에서 템플릿과 함께 바꾼다(위와 동일).
     user_text = _render(
         _COMPILE_USER,
         {
             "선택_스토리라인": selected_storyline,
             "추가정보": additional_info or "(없음)",
             "장르_태그": ", ".join(genre_tags),
-            "주인공_특징_태그": ", ".join(protagonist.features),
-            "주변_인물_태그": ", ".join(_all_features(supporting_characters)),
+            "주인공": _format_character(protagonist),
+            "주변_인물": _format_supporting_characters(supporting_characters),
             "로어북": _format_lorebooks(lorebooks or []),
         },
     )
