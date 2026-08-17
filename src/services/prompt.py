@@ -74,6 +74,32 @@ def build_storylines_prompt(
     return _STORYLINES_SYSTEM, user_text
 
 
+def build_storylines_refill_prompt(
+    original_user_prompt: str,
+    current_stories_json: str,
+    missing_ids: list[int],
+) -> tuple[str, str]:
+    """인물이 빠진 이야기를 고쳐 쓰게 하는 부분 재호출 프롬프트를 만든다(KNK-840).
+
+    이야기 자체는 잘 나왔으니 통째로 버리지 않고, 빠진 인물만 이야기에 들어가게
+    고치라고 한다. 직전 세 편을 맥락으로 주는 이유는 고칠 대상을 보여주면서 나머지
+    편과 겹치지 않게 하기 위해서다.
+    """
+    ids = ", ".join(f"{i}번 이야기" for i in missing_ids)
+    user_text = (
+        f"{original_user_prompt}\n\n"
+        f"--- 직전 생성 결과(JSON) ---\n{current_stories_json}\n\n"
+        f"위 결과의 {ids}에 입력 주변 인물이 빠졌다. 이야기의 흐름은 그대로 유지하면서 "
+        f"빠진 인물이 사건에 실제로 관여하도록 고쳐라. 이름만 한 줄 얹지 말고, "
+        f"그 인물이 이야기 속에서 역할을 하게 해라. "
+        f"나머지 이야기는 그대로 두므로 응답에 포함하지 마라.\n"
+        f"고친 이야기만 담아 `{{\"stories\": [{{\"id\": <번호>, \"storyline\": \"...\", "
+        f'"recommended_infos": ["...", "...", "..."]}}]}}` 형식으로, 설명·머리말·코드 펜스 없이 '
+        f"JSON만 출력한다. 분량·문장 수·금지 규칙은 위 지시와 같다."
+    )
+    return _STORYLINES_SYSTEM, user_text
+
+
 def _format_lorebooks(lorebooks: list[LorebookItem]) -> str:
     """로어북을 프롬프트 블록으로 만든다. 비어 있으면 `(없음)`(추가정보와 동일 관례)."""
     if not lorebooks:

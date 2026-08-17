@@ -4,7 +4,6 @@ import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from functools import partial
 
 from fastapi import HTTPException, status
 
@@ -32,6 +31,7 @@ from src.services.prompt import (
     STORYLINES_VERSION,
     build_compile_prompt,
     build_refill_prompt,
+    build_storylines_refill_prompt,
 )
 from src.services.story_compile_render import spec_to_response
 
@@ -282,7 +282,7 @@ async def _complete_json(
             raise http_exc from exc
 
 
-def _validate_storylines(data: dict, required_names: tuple[str, ...] = ()) -> None:
+def _validate_storylines(data: dict) -> None:
     """스토리라인 응답의 stories 계약(정확히 3편 × 항목 스키마 × 추천 3개)을 검증한다.
 
     JSON 파싱이 성공해도 항목이 응답 스키마와 어긋나면(예: recommended_infos 누락)
@@ -290,9 +290,8 @@ def _validate_storylines(data: dict, required_names: tuple[str, ...] = ()) -> No
     _complete_json의 validate 훅으로 재호출 루프 안에서 실행돼, 위반 시 다른 invalid
     응답과 같은 재호출 → 소진 시 502 경로를 탄다(KNK-312).
 
-    required_names(사용자가 이름 지어 만든 주변 인물, KNK-833)는 세 편 모두에 그 이름
-    그대로 등장해야 한다. 주인공 이름은 1인칭 본문이라 등장을 강제하지 않고, 이름을
-    비운 인물은 LLM이 지은 이름을 알 수 없어 검증 대상이 아니다.
+    응답 자체가 못 쓸 것(깨진 JSON·편수 부족·스키마 불일치)만 여기서 본다. 인물 누락은
+    편 단위로 고칠 수 있어 전체 재호출이 아니라 부분 재호출로 처리한다(_missing_name_indexes).
     """
     stories = data.get("stories")
     if not isinstance(stories, list) or len(stories) != 3:
@@ -306,13 +305,48 @@ def _validate_storylines(data: dict, required_names: tuple[str, ...] = ()) -> No
             raise _InvalidAiResponse(f"stories[{i}]가 응답 스키마와 맞지 않습니다.") from exc
         if len(parsed.recommended_infos) != 3:
             raise _InvalidAiResponse(f"stories[{i}]의 recommended_infos가 3개가 아닙니다.")
-        storyline_nfc = unicodedata.normalize("NFC", parsed.storyline)
-        missing_count = sum(1 for n in required_names if n not in storyline_nfc)
-        if missing_count:
-            # 이름은 사용자 원문이라 메시지에 싣지 않는다 — 이 메시지는 Sentry로 나간다(AN-4-10).
-            raise _InvalidAiResponse(
-                f"stories[{i}]에 입력 주변 인물 {missing_count}명이 등장하지 않습니다."
-            )
+
+
+def _missing_name_indexes(data: dict, required_names: tuple[str, ...]) -> list[int]:
+    """이름 지은 주변 인물이 빠진 편의 번호(0-based)를 모은다(KNK-833·KNK-840).
+
+    입력 인물은 세 편 모두에 그 이름 그대로 나와야 한다. 주인공 이름은 1인칭 본문이라
+    등장을 강제하지 않고, 이름을 비운 인물은 LLM이 지은 이름을 알 수 없어 대상이 아니다.
+
+    빠진 편만 골라 돌려주는 이유는, 세 편을 통째로 다시 사면 잘 나온 편까지 버리기
+    때문이다 — 실측에서 한 편만 인물이 빠지는 경우가 나왔다. _validate_storylines가
+    3편·dict·필드를 이미 보장한 뒤에만 부른다.
+    """
+    if not required_names:
+        return []
+    missing: list[int] = []
+    for i, item in enumerate(data["stories"]):
+        body = unicodedata.normalize("NFC", str(item.get("storyline", "")))
+        if any(n not in body for n in required_names):
+            missing.append(i)
+    return missing
+
+
+def _merge_storylines(data: dict, refill: dict, indexes: list[int]) -> None:
+    """부분 재호출 응답의 편을 원본 자리에 끼워 넣는다.
+
+    재호출은 `{"stories": [{"id": 2, ...}]}`처럼 다시 쓴 편만 담아 오고, id가 곧 자리
+    번호다(1-based). 요청하지 않은 자리나 범위 밖 id는 무시한다 — 모델이 엉뚱한 편을
+    덮어써 잘 나온 편을 망치지 못하게 한다.
+    """
+    items = refill.get("stories")
+    if not isinstance(items, list):
+        return
+    allowed = set(indexes)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_id = item.get("id")
+        if not isinstance(raw_id, int) or isinstance(raw_id, bool):
+            continue
+        pos = raw_id - 1
+        if pos in allowed:
+            data["stories"][pos] = item
 
 
 def _normalize_storyline_ids(data: dict) -> None:
@@ -345,8 +379,10 @@ async def generate_storylines(
     검증을 통과한 응답은 id를 순서대로 1·2·3으로 교정해 반환한다(_normalize_storyline_ids) —
     id 값 어긋남은 무해한 이탈이라 재호출·502로 벌하지 않고 코드가 정본 값을 박는다(D7).
 
-    required_names(사용자가 이름 지은 주변 인물, KNK-833)가 빠진 응답도 invalid로 보고
-    같은 재호출 경로를 태운다(_validate_storylines).
+    required_names(사용자가 이름 지은 주변 인물, KNK-833)가 빠지면 **빠진 편만** 다시
+    받는다(KNK-840, 최대 2회). 전체 재호출로 되돌리지 않는 이유는 잘 나온 편까지 버리게
+    되고, 출력이 3배라 값과 대기 시간도 그만큼 늘기 때문이다(실측: 한 편만 빠지는 경우가
+    나옴). meta의 retry_count는 전체 재호출과 부분 재호출을 합한 수이고, 토큰도 합산한다.
     """
     result, usage = await _complete_json(
         system_prompt,
@@ -356,11 +392,80 @@ async def generate_storylines(
         feature=FEATURE_STORYLINE_GENERATION,
         prompt_versions={"STORYLINES": STORYLINES_VERSION},
         max_invalid_retries=2,
-        validate=partial(_validate_storylines, required_names=tuple(required_names or ())),
+        validate=_validate_storylines,
         max_tokens=_STORYLINES_MAX_TOKENS,
     )
     _normalize_storyline_ids(result)
-    return result, usage
+
+    names = tuple(required_names or ())
+    input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
+    refills = 0
+    missing = _missing_name_indexes(result, names)
+    while missing and refills < _MAX_REFILL:
+        refills += 1
+        logger.info("storylines 부분 재호출 #%d 대상 편=%s", refills, [i + 1 for i in missing])
+        refill_system, refill_user = build_storylines_refill_prompt(
+            user_prompt,
+            json.dumps(result, ensure_ascii=False),
+            [i + 1 for i in missing],
+        )
+        refill, refill_usage = await _complete_json(
+            refill_system,
+            refill_user,
+            model=settings.storylines_model,
+            label=f"storylines-refill#{refills}",
+            feature=FEATURE_STORYLINE_GENERATION,
+            prompt_versions={"STORYLINES": STORYLINES_VERSION},
+            max_tokens=_STORYLINES_MAX_TOKENS,
+        )
+        input_tokens = _add_tokens(input_tokens, refill_usage.input_tokens)
+        output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
+        # 병합 전 원본을 복사해 둔다 — 재호출이 깨진 편을 데려와 검증이 실패하면
+        # 이름만 빠졌을 뿐 계약은 유효했던 원본으로 되돌린다(502로 보내지 않는다).
+        backup = [dict(s) for s in result["stories"]]
+        _merge_storylines(result, refill, missing)
+        try:
+            _validate_storylines(result)
+        except _InvalidAiResponse:
+            logger.info("storylines 부분 재호출 #%d 결과가 계약을 깨 원본으로 되돌림", refills)
+            result["stories"] = backup
+        _normalize_storyline_ids(result)
+        missing = _missing_name_indexes(result, names)
+
+    if missing:
+        exc = _InvalidAiResponse(
+            f"부분 재호출 후에도 입력 주변 인물이 빠진 편이 {len(missing)}편 남았습니다."
+        )
+        _raise_storylines_invalid(exc, usage, refills)
+
+    total = LlmUsage(
+        usage.model,
+        input_tokens,
+        output_tokens,
+        provider=usage.provider,
+        retry_count=usage.retry_count + refills,
+    )
+    return result, total
+
+
+def _raise_storylines_invalid(exc: _InvalidAiResponse, usage: LlmUsage, refills: int) -> None:
+    """부분 재호출로도 못 고친 응답을 502로 막는다(Sentry 보고 포함)."""
+    capture_ai_exception(
+        exc,
+        feature=FEATURE_STORYLINE_GENERATION,
+        provider=usage.provider,
+        error_code=ERROR_INVALID_AI_RESPONSE,
+        model=usage.model,
+        prompt_versions={"STORYLINES": STORYLINES_VERSION},
+        retry_count=usage.retry_count + refills,
+    )
+    http_exc = HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=_DETAIL_BY_CODE[ERROR_INVALID_AI_RESPONSE],
+    )
+    # 실패 트레이스에도 실제 재호출 횟수가 실리게 한다(_complete_json과 같은 관례).
+    http_exc.retry_count = usage.retry_count + refills
+    raise http_exc from exc
 
 
 # ── 컴파일 결과 검증 (StorySpec 파싱 전 dict 단계) ──────────────────────────

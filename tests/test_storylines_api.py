@@ -18,11 +18,12 @@ _REQUEST = {
 }
 
 # storylines 출력 스키마({"stories":[{id, storyline, recommended_infos}]})를 흉내 낸 가짜 결과.
+# 이름 지은 주변 인물(서린)은 세 편 모두에 나와야 한다 — 빠지면 부분 재호출을 탄다(KNK-840).
 _FAKE = {
     "stories": [
-        {"id": 1, "storyline": "스토리 1", "recommended_infos": ["가", "나", "다"]},
-        {"id": 2, "storyline": "스토리 2", "recommended_infos": ["가", "나", "다"]},
-        {"id": 3, "storyline": "스토리 3", "recommended_infos": ["가", "나", "다"]},
+        {"id": 1, "storyline": "서린과 함께한 스토리 1", "recommended_infos": ["가", "나", "다"]},
+        {"id": 2, "storyline": "서린이 등장하는 스토리 2", "recommended_infos": ["가", "나", "다"]},
+        {"id": 3, "storyline": "서린을 떠나는 스토리 3", "recommended_infos": ["가", "나", "다"]},
     ]
 }
 
