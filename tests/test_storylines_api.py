@@ -7,19 +7,23 @@ from src.api.v1 import story as story_module
 from src.schemas.story import StorylinesRequest
 from src.services import story_llm
 
-# storylines 엔드포인트의 정상 요청 본문(백엔드가 보내는 태그 3종).
+# storylines 엔드포인트의 정상 요청 본문(장르 태그 + 인물 세트, KNK-833).
 _REQUEST = {
     "genre_tags": ["무협", "생존"],
-    "protagonist_tags": ["천마신교", "계획적인"],
-    "supporting_tags": ["다정한", "정파"],
+    "protagonist": {"name": "무영", "gender": "MALE", "features": ["천마신교", "계획적인"]},
+    "supporting_characters": [
+        {"name": "서린", "gender": "FEMALE", "features": ["다정한"]},
+        {"name": None, "gender": None, "features": ["정파"]},
+    ],
 }
 
 # storylines 출력 스키마({"stories":[{id, storyline, recommended_infos}]})를 흉내 낸 가짜 결과.
+# 이름 지은 주변 인물(서린)은 세 편 모두에 나와야 한다 — 빠지면 부분 재호출을 탄다(KNK-840).
 _FAKE = {
     "stories": [
-        {"id": 1, "storyline": "스토리 1", "recommended_infos": ["가", "나", "다"]},
-        {"id": 2, "storyline": "스토리 2", "recommended_infos": ["가", "나", "다"]},
-        {"id": 3, "storyline": "스토리 3", "recommended_infos": ["가", "나", "다"]},
+        {"id": 1, "storyline": "서린과 함께한 스토리 1", "recommended_infos": ["가", "나", "다"]},
+        {"id": 2, "storyline": "서린이 등장하는 스토리 2", "recommended_infos": ["가", "나", "다"]},
+        {"id": 3, "storyline": "서린을 떠나는 스토리 3", "recommended_infos": ["가", "나", "다"]},
     ]
 }
 
@@ -172,3 +176,19 @@ async def test_storylines_endpoint_reports_actual_retry_count(
     # 합산 토큰이 그대로 실린다(실패 시도분 포함 값)
     assert meta["input_token_count"] == 100
     assert meta["output_token_count"] == 160
+
+
+async def test_storylines_endpoint_passes_named_supporting_characters(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """이름 지은 주변 인물만 등장 검증 대상(required_names)으로 넘긴다(KNK-836)."""
+    seen: dict = {}
+
+    async def fake_generate(system: str, user: str, required_names: list[str] | None = None):
+        seen["required_names"] = required_names
+        return _FAKE, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+
+    monkeypatch.setattr(story_module.story_llm, "generate_storylines", fake_generate)
+    resp = await client.post("/api/v1/story/storylines", json=_REQUEST)
+    assert resp.status_code == 200
+    assert seen["required_names"] == ["서린"]  # 이름을 비운 인물은 검증 대상이 아니다

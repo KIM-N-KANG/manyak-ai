@@ -33,6 +33,7 @@ def _render_character_setting(characters: list[CharacterSetting]) -> str:
     blocks = [
         (
             f"## {c.name}\n"
+            f"### 성별\n{c.gender}\n"
             f"### 성격\n{c.personality}\n"
             f"### 말투\n{c.tone}\n"
             f"### 동기\n{c.motivation}\n"
@@ -48,6 +49,7 @@ def _render_user_role_setting(ur: UserRoleSetting) -> str:
     return (
         f"# 주인공\n"
         f"## 호칭\n{ur.name}\n"
+        f"## 성별\n{ur.gender}\n"
         f"## 역할\n{ur.role}\n"
         f"## 배경\n{ur.background}\n"
         f"## 성격\n{ur.personality}\n"

@@ -21,8 +21,11 @@ def require_live_env() -> None:
 async def test_storylines_live(client) -> None:
     payload = {
         "genre_tags": ["다크 판타지"],
-        "protagonist_tags": ["신중한", "관찰력 있는"],
-        "supporting_tags": ["충직한", "계산적인", "거친"],
+        "protagonist": {"name": "카일", "gender": "MALE", "features": ["신중한", "관찰력 있는"]},
+        "supporting_characters": [
+            {"name": "로한", "gender": "MALE", "features": ["충직한"]},
+            {"name": None, "gender": None, "features": ["계산적인", "거친"]},
+        ],
     }
     resp = await client.post("/api/v1/story/storylines", json=payload)
 

@@ -1,13 +1,13 @@
 ---
-version: 1
-updated: 2026-06-24
+version: 2
+updated: 2026-08-17
 layer: USER
 name: 사용자 설정 (주인공 = 1인칭 플레이어)
 priority: 6           # 최하
 placement: 시스템 프롬프트 앞 — 앵커 슬롯 (세션 1회 고정)
 slots: [user_role_setting]
 slot_source: >-
-  story_settings.user_role_setting 통글(`# 주인공` + 호칭·역할·배경·성격·입력 선호)을 그대로 삽입한다. 입력 선호는 비어 있을 수 있음.
+  story_settings.user_role_setting 통글(`# 주인공` + 호칭·성별·역할·배경·성격·입력 선호)을 그대로 삽입한다. 입력 선호는 비어 있을 수 있음.
 reinjection:
   phi: false          # 의도적 제외 — 생성 직전 재강조 시 갓모딩/가스라이팅 경로가 열림
   depth: false
