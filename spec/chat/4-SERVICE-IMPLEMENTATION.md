@@ -1,6 +1,6 @@
 ---
-version: 8
-updated: 2026-08-01
+version: 9
+updated: 2026-08-17
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -187,7 +187,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 ### 3.1 입력 스키마 (백엔드 → AI 서버)
 - `selected_storyline`: 사용자가 선택한 스토리라인 1편 (4문장 본문)
 - `additional_info`: 사용자가 입력한 추가정보 (자유 텍스트)
-- `genre_tags`·`protagonist_tags`·`supporting_tags` (carry-over): 원래 장르·주인공·주변인물 태그
+- `genre_tags`·`protagonist`·`supporting_characters` (carry-over): 원래 장르 태그와 인물 설정(주인공 1명 + 주변 인물 0~5명, 각각 이름·성별·특징. KNK-833)
 - `lorebooks` (선택): 장르 공용 용어 사전 `{name, content}` 배열 — 세계관·용어 확장 재료로만 쓰고 원문을 출력 계약에 노출하지 않는다(KNK-422). 비거나 미전달이면 프롬프트에 주입하지 않는다
 
 > **컴파일 산출물 = "스토리 명세 JSON" (영속 대상).** 위 희소 입력을 컴파일한 결과는 **스토리당 1번** 만들어져 백엔드 DB에 저장되고, 이후 채팅 세션은 이 저장본을 읽어 슬롯을 채운다(템플릿 6개는 모든 스토리가 공유, 스토리별로 다른 것은 이 JSON뿐). 마냑 ERD에서의 영속 위치는 다음과 같다.
@@ -210,7 +210,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 | 레이어 | 채우는 방식 | 소스 |
 |---|---|---|
 | **STORY** | 컴파일 LLM이 선택 스토리라인 + 장르 태그 → 세계관·전개 규칙·서사 문체로 확장 | 스토리라인, 장르 태그 |
-| **CHARACTER** | 스토리라인에 등장하는 주변인물명 + 주변인물 태그 → 인물별 카드(성격·말투·동기) 생성 | 스토리라인, 주변인물 태그 |
+| **CHARACTER** | 스토리라인에 등장하는 주변인물 + 입력 인물 설정 → 인물별 카드(성별·성격·말투·동기) 생성 | 스토리라인, 주변 인물 설정 |
 | **USER** | 주인공 태그 + 추가정보 → 1인칭 플레이어 프로필로 치환·정리 | 주인공 태그, 추가정보 |
 | **SAFETY / CORE** | 채우지 않음 — **완전 정적**(콘텐츠 비의존) | 고정 템플릿 |
 | **MEMORY** | 빈 상태로 초기화 — 대화가 쌓이면서 요약·압축됨 | — |
@@ -230,7 +230,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 > | `world_setting` | STORY | `{{world_setting}}` | 세계관 + 전제 + 갈등을 한 통글로(`# 세계관` / `# 전제` / `# 갈등`). |
 > | (`story_start_settings`) | STORY | `{{start_setting}}` | **예외 소스 — `story_settings` 아님.** `name`+`prologue`+`start_situation`을 통글로 엮어(`# 시작 설정: {name}` + 프롤로그·시작 상황) 매 턴 고정 삽입한다. 같은 세계관이어도 이 출발점이 전개 방향을 정하므로 STORY 소속. 첫 턴 History 시드(3.4)와 병행하며, 시드가 윈도우 밖으로 밀려나도 이 슬롯이 출발 전제를 유지한다. |
 > | `rule_setting` | STORY | `{{rule_setting}}` | 전개 규칙 + 문체 톤 + 분량 배분을 한 통글로(`# 전개 규칙` / `# 문체 톤` / `# 분량 배분`). 작가가 쓴 스토리별 콘텐츠라 **CORE 아님**(CORE는 콘텐츠 비의존 고정, 2.5·3.2). 출력 형식의 고정 봉투만 CORE가 소유. |
-> | `character_setting` | CHARACTER | `{{character_setting}}` | 주변인물 카드를 한 통글로(`# 등장인물` + 인물 1명당 `## 블록`, **최대 5명**). **주변인물만** — 텍스트에 주인공이 섞이면 컴파일 시 분리해 주인공 정보는 USER로 보낸다(2.1). 통글의 태도 서술은 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
+> | `character_setting` | CHARACTER | `{{character_setting}}` | 주변인물 카드를 한 통글로(`# 등장인물` + 인물 1명당 `## 블록`; 성별·성격·말투·동기·주인공을 대하는 태도, **최대 5명**). **주변인물만** — 텍스트에 주인공이 섞이면 컴파일 시 분리해 주인공 정보는 USER로 보낸다(2.1). 통글의 태도 서술은 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
 > | `user_role_setting` | USER | `{{user_role_setting}}` | 주인공(1인칭 플레이어) 프로필 통글(`# 주인공` …). |
 >
 > **통글 슬롯 = 통째 삽입 (확정).** 매 턴 런타임 조립(B)은 각 통글 필드를 대응 슬롯에 **통째로 삽입**한다 — 하위 키 분해·재분석·LLM이 필요 없다. 컴파일(A-1)에서 세분 JSON의 필수 키를 검증한 뒤 `story_compile_render`가 이미 레이어별 통글로 조립해 두므로(세계관+전제+갈등→`world_setting`, 전개규칙+문체톤+분량배분→`rule_setting`, 인물 카드 반복→`character_setting`, 주인공→`user_role_setting`), 조립 시 슬롯 채움은 순수 치환이다. 이로써 "슬롯 치환 = LLM 없는 결정적 치환" 원칙이 **통글 단위**로 성립한다.
@@ -257,12 +257,12 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 #### CHARACTER-TEMPLATE.md (주변인물 통글 — **주요 인물 최대 5명**)
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
-| `{{character_setting}}` | 통글 삽입 | `character_setting` 통글(`# 등장인물` + 인물 1명당 `## 블록`; 성격·말투·동기·주인공에 대한 태도 포함, 최대 5명). NPC가 주인공을 대하는 태도는 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
+| `{{character_setting}}` | 통글 삽입 | `character_setting` 통글(`# 등장인물` + 인물 1명당 `## 블록`; 성별·성격·말투·동기·주인공에 대한 태도 포함, 최대 5명). NPC가 주인공을 대하는 태도는 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
 
 #### USER-TEMPLATE.md (주인공, 1인칭)
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
-| `{{user_role_setting}}` | 통글 삽입 | `user_role_setting` 통글(`# 주인공` + 호칭·역할·배경·성격·입력 선호; 입력 선호는 비어 있을 수 있음) |
+| `{{user_role_setting}}` | 통글 삽입 | `user_role_setting` 통글(`# 주인공` + 호칭·성별·역할·배경·성격·입력 선호; 입력 선호는 비어 있을 수 있음) |
 
 #### SAFETY / CORE
 - **슬롯 없음.** 콘텐츠 비의존 정적 템플릿이므로 채우지 않는다.
@@ -315,6 +315,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
     "character_setting": [                   // CHARACTER → {{character_setting}} 통글(인물당 ## 블록, 최대 5)
       {
         "name": "...",                       //   ## 이름
+        "gender": "...",                     //   ### 성별
         "personality": "...",                //   ### 성격
         "tone": "...",                       //   ### 말투
         "motivation": "...",                 //   ### 동기
@@ -323,6 +324,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
     ],
     "user_role_setting": {                   // USER → {{user_role_setting}} 통글
       "name": "...",                         //   ## 호칭
+      "gender": "...",                       //   ## 성별
       "role": "...",                         //   ## 역할
       "background": "...",                    //   ## 배경
       "personality": "...",                  //   ## 성격
@@ -416,8 +418,8 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
   "stories": { "title": "...", "one_line_intro": "...", "description": "..." },
   "story_settings": {
     "world_setting": "# 세계관\n...\n\n# 전제\n...\n\n# 갈등\n...",
-    "character_setting": "# 등장인물\n\n## 레이\n### 성격\n...\n### 말투\n...\n### 동기\n...\n### 주인공을 대하는 태도\n...",
-    "user_role_setting": "# 주인공\n## 호칭\n...\n## 역할\n...\n## 배경\n...\n## 성격\n...\n## 입력 선호\n...",
+    "character_setting": "# 등장인물\n\n## 레이\n### 성별\n...\n### 성격\n...\n### 말투\n...\n### 동기\n...\n### 주인공을 대하는 태도\n...",
+    "user_role_setting": "# 주인공\n## 호칭\n...\n## 성별\n...\n## 역할\n...\n## 배경\n...\n## 성격\n...\n## 입력 선호\n...",
     "rule_setting": "# 전개 규칙\n...\n\n# 문체 톤\n...\n\n# 분량 배분\n묘사 6 : 대사 4"
   },
   "story_start_settings": { "name": "...", "start_situation": "...", "prologue": "..." },

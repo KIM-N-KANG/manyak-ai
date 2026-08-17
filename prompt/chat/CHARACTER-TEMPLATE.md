@@ -1,6 +1,6 @@
 ---
-version: 1
-updated: 2026-06-24
+version: 2
+updated: 2026-08-17
 layer: CHARACTER
 name: 등장인물 정의
 priority: 5           # 레이어 우선순위에서 CHARACTER > USER — 가스라이팅/갓모딩에 의한 캐릭터 붕괴 방지
@@ -8,7 +8,7 @@ placement: 시스템 프롬프트 앞 + PHI
 slots: [character_setting]
 slot_source: >-
   story_settings.character_setting 통글(주변인물만, 최대 5명)을 그대로 삽입한다.
-  통글은 `# 등장인물` + 인물 1명당 `## 블록`(성격·말투·동기·주인공을 대하는 태도)으로 구성된다.
+  통글은 `# 등장인물` + 인물 1명당 `## 블록`(성별·성격·말투·동기·주인공을 대하는 태도)으로 구성된다.
 reinjection:
   phi: true           # 고정 성향·발화 음색의 핵심 필터만, PHI 내부 맨 앞 = 생성에서 가장 멂
   depth: false
