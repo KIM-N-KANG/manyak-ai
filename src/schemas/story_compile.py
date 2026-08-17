@@ -47,9 +47,13 @@ class PlotSetting(BaseModel):
 
 
 class CharacterSetting(BaseModel):
-    """CHARACTER — 주변 인물 카드. 주인공은 포함하지 않는다(USER 소유)."""
+    """CHARACTER — 주변 인물 카드. 주인공은 포함하지 않는다(USER 소유).
+
+    gender는 한국어 서술 값("남성"·"여성") — 통글에 명시 칸으로 실린다(KNK-838).
+    """
 
     name: str
+    gender: str
     personality: str
     tone: str
     motivation: str
@@ -57,9 +61,10 @@ class CharacterSetting(BaseModel):
 
 
 class UserRoleSetting(BaseModel):
-    """USER — 주인공(1인칭 플레이어) 프로필."""
+    """USER — 주인공(1인칭 플레이어) 프로필. gender는 한국어 서술 값("남성"·"여성")."""
 
     name: str
+    gender: str
     role: str
     background: str
     personality: str

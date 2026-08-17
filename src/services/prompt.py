@@ -41,12 +41,12 @@ def _render(template: str, mapping: dict[str, str]) -> str:
 
 
 # 성별은 계약 값("MALE"·"FEMALE")이 아니라 한국어로 프롬프트에 싣는다.
-_GENDER_KO = {"MALE": "남성", "FEMALE": "여성"}
+GENDER_KO = {"MALE": "남성", "FEMALE": "여성"}
 
 
 def _format_character(c: CharacterInput) -> str:
     """인물 세트 한 명을 한 줄로 렌더한다. 비운 항목은 (미정)으로 표시해 LLM이 정하게 한다."""
-    gender = _GENDER_KO[c.gender] if c.gender else "(미정)"
+    gender = GENDER_KO[c.gender] if c.gender else "(미정)"
     features = ", ".join(c.features) if c.features else "(미정)"
     return f"이름: {c.name or '(미정)'} / 성별: {gender} / 특징: {features}"
 

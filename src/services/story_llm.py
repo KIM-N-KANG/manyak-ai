@@ -22,12 +22,13 @@ from src.core.sentry import (
     classify_error_code,
 )
 from src.schemas.response_meta import StoryResponseMeta
-from src.schemas.story import StoryItem
+from src.schemas.story import CharacterInput, StoryItem
 from src.schemas.story_compile import Ending, StoryCompileRequest, StoryCompileResponse, StorySpec
 from src.services import llm
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt import (
     COMPILE_VERSION,
+    GENDER_KO,
     STORYLINES_VERSION,
     build_compile_prompt,
     build_refill_prompt,
@@ -432,12 +433,12 @@ def _find_missing_keys(data: dict) -> list[str]:
     else:
         for i, raw in enumerate(chars):
             c = _as_dict(raw)
-            for k in ("name", "personality", "tone", "motivation", "attitude_to_user"):
+            for k in ("name", "gender", "personality", "tone", "motivation", "attitude_to_user"):
                 if _is_empty(c.get(k)):
                     missing.append(f"prompt_settings.character_setting[{i}].{k}")
 
     ur = _as_dict(ps.get("user_role_setting"))
-    for k in ("name", "role", "background", "personality"):  # preference는 선택
+    for k in ("name", "gender", "role", "background", "personality"):  # preference는 선택
         if _is_empty(ur.get(k)):
             missing.append(f"prompt_settings.user_role_setting.{k}")
 
@@ -520,6 +521,22 @@ def _inject_genre(data: dict, genre_tags: list[str]) -> None:
         data["meta"]["genre"] = ", ".join(genre_tags)
 
 
+def _inject_protagonist(data: dict, protagonist: CharacterInput) -> None:
+    """사용자가 입력한 주인공 이름·성별을 주인공 프로필에 정본으로 덮어쓴다(KNK-838).
+
+    사용자가 정한 값은 LLM 출력에 맡기지 않고 코드가 담보한다(장르 덮어쓰기와 같은
+    원칙, 5-ai-server.md §5-3-3 D7). 비운 항목은 LLM이 지은 값을 그대로 둔다.
+    성별은 계약 값("MALE"·"FEMALE")이 아니라 통글에 실리는 한국어로 바꿔 쓴다.
+    """
+    ur = _as_dict(data.get("prompt_settings")).get("user_role_setting")
+    if not isinstance(ur, dict):
+        return  # 블록 자체가 없으면 refill이 채운 뒤 다음 주입 때 덮어쓴다
+    if protagonist.name:
+        ur["name"] = protagonist.name
+    if protagonist.gender:
+        ur["gender"] = GENDER_KO[protagonist.gender]
+
+
 def _endings_incomplete(data: dict) -> bool:
     """엔딩이 '파싱 가능한 정확히 3개'가 아니면 True(폴백 대상).
 
@@ -567,7 +584,7 @@ def _missing_required_characters(data: dict, required_names: tuple[str, ...]) ->
 async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     """시점 A-1: 희소 입력을 스토리 명세로 컴파일해 백엔드 계약(nested 통글)으로 반환한다.
 
-    흐름: LLM 세분 JSON → genre 주입 → 빈 필수키·사용자 인물 카드 검증(KNK-833) →
+    흐름: LLM 세분 JSON → genre·주인공 이름/성별 주입 → 빈 필수키·사용자 인물 카드 검증(KNK-833) →
     모자란 블록만 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
     → StorySpec 파싱 → nested 통글 변환.
     PromptCompiler 추상 경계는 spec/chat/4-SERVICE-IMPLEMENTATION.md §6.
@@ -588,6 +605,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         prompt_versions={"COMPILE": COMPILE_VERSION},
     )
     _inject_genre(data, request.genre_tags)
+    _inject_protagonist(data, request.protagonist)
 
     # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
     input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
@@ -626,6 +644,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
         _merge_blocks(data, refill, blocks)
         _inject_genre(data, request.genre_tags)
+        _inject_protagonist(data, request.protagonist)
         missing = _current_missing()
     logger.info(
         "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 누락=%s",
