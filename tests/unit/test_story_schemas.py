@@ -88,3 +88,64 @@ def test_storylines_request_counts_not_enforced() -> None:
     )
     assert len(req.supporting_characters) == 6
     assert len(req.protagonist.features) == 4
+
+
+# ── 이름 중복 차단(KNK-841) ──────────────────────────────────────────────────
+
+from src.schemas.story_compile import StoryCompileRequest
+
+
+def test_duplicate_supporting_names_rejected() -> None:
+    # 주변 인물끼리 이름이 겹으면 422.
+    with pytest.raises(ValidationError, match="중복"):
+        StorylinesRequest(
+            genre_tags=["무협"],
+            protagonist={},
+            supporting_characters=[
+                {"name": "서린", "gender": "FEMALE"},
+                {"name": "서린", "gender": "MALE"},
+            ],
+        )
+
+
+def test_protagonist_name_collides_with_supporting() -> None:
+    # 주인공 이름이 주변 인물과 같아도 422.
+    with pytest.raises(ValidationError, match="중복"):
+        StorylinesRequest(
+            genre_tags=["무협"],
+            protagonist={"name": "서린"},
+            supporting_characters=[{"name": "서린"}],
+        )
+
+
+def test_compile_duplicate_names_rejected() -> None:
+    # 컴파일 요청에서도 같은 검증이 동작한다.
+    with pytest.raises(ValidationError, match="중복"):
+        StoryCompileRequest(
+            selected_storyline="x",
+            genre_tags=["무협"],
+            protagonist={"name": "카일"},
+            supporting_characters=[
+                {"name": "카일", "gender": "MALE"},
+            ],
+        )
+
+
+def test_none_names_do_not_collide() -> None:
+    # 이름을 비운 인물끼리는 중복이 아니다 — LLM이 각각 다른 이름을 짓는다.
+    req = StorylinesRequest(
+        genre_tags=["무협"],
+        protagonist={},
+        supporting_characters=[{}, {}],
+    )
+    assert len(req.supporting_characters) == 2
+
+
+def test_normalized_duplicate_caught() -> None:
+    # 공백·NFC 정규화 후 같아지는 이름도 중복으로 잡힌다.
+    with pytest.raises(ValidationError, match="중복"):
+        StorylinesRequest(
+            genre_tags=["무협"],
+            protagonist={"name": "서린 "},
+            supporting_characters=[{"name": "서린"}],
+        )

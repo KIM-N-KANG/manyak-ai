@@ -1,7 +1,7 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.schemas.response_meta import StoryResponseMeta
-from src.schemas.story import CharacterInput, SupportingCharacters
+from src.schemas.story import CharacterInput, SupportingCharacters, _check_duplicate_names
 
 
 class LorebookItem(BaseModel):
@@ -28,6 +28,11 @@ class StoryCompileRequest(BaseModel):
     # 장르 공용 로어북(선택) — 미전달·빈 배열·null이면 프롬프트 미주입, 기존 요청과 하위호환(KNK-422).
     # 명시적 null도 "없음"으로 받도록 | None 허용(빌더는 `lorebooks or []`로 안전 처리).
     lorebooks: list[LorebookItem] | None = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _no_duplicate_names(self) -> "StoryCompileRequest":
+        _check_duplicate_names(self.protagonist, self.supporting_characters)
+        return self
 
 
 class Meta(BaseModel):
