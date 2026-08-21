@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator
 from src.services.llm import registry
 from src.services.llm.base import (
     ADAPTER_ANTHROPIC_SDK,
+    ADAPTER_GOOGLE_SDK,
     ADAPTER_OPENAI_SDK,
     LlmAdapter,
     LlmConfigError,
@@ -97,6 +98,10 @@ def _adapter_of(model: str) -> tuple[LlmAdapter, ResolvedModel]:
         from src.services.llm import anthropic_sdk
 
         return anthropic_sdk, resolved
+    if resolved.adapter == ADAPTER_GOOGLE_SDK:
+        from src.services.llm import google_sdk
+
+        return google_sdk, resolved
     raise LlmConfigError(
         f"모델 '{resolved.model}'의 어댑터 '{resolved.adapter}'를 처리할 코드가 없습니다."
     )
