@@ -18,7 +18,6 @@ from src.services.llm.base import (
     STRUCTURED_OUTPUT_JSON_OBJECT,
     LlmBadRequest,
     LlmConfigError,
-    LlmError,
     LlmRateLimited,
     LlmRequest,
     LlmResult,
@@ -74,6 +73,10 @@ def _build_config(req: LlmRequest, resolved: ResolvedModel) -> types.GenerateCon
     config_kwargs: dict[str, object] = {}
 
     # system instruction — messages에서 system role을 분리한다.
+    # Gemini의 system_instruction은 칸이 하나뿐이라 복수 system 메시지를 합친다.
+    # **채팅처럼 system을 앞뒤에 나눠 놓는 경우(앞 1 + 뒤 2) 뒤쪽 지시의 배치 효과가
+    # 사라진다** — Anthropic과 같은 문제다. 컴파일은 system이 앞 1개뿐이라 지금은 문제없지만,
+    # 채팅에서 이 어댑터를 쓰려면 BLOCKED_PROVIDERS에 넣거나 배치 문제를 먼저 풀어야 한다.
     system_parts = []
     for msg in req.messages:
         if msg.get("role") == "system":
@@ -128,6 +131,10 @@ def _build_config(req: LlmRequest, resolved: ResolvedModel) -> types.GenerateCon
         budget = budget_map.get(resolved.reasoning_effort)
         if budget is not None:
             config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
+
+    # 타임아웃 — Google SDK는 GenerateContentConfig가 아니라 http_options로 넘긴다.
+    if req.timeout is not None:
+        config_kwargs["http_options"] = types.HttpOptions(timeout=req.timeout * 1000)
 
     return types.GenerateContentConfig(**config_kwargs)
 
@@ -215,8 +222,6 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
         )
     except errors.APIError as exc:
         raise _translate(exc, resolved) from exc
-    except Exception as exc:
-        raise _translate(exc, resolved) from exc
     return LlmResult(
         text=_text_of(response),
         model=getattr(response, "model_version", None) or req.model,
@@ -262,10 +267,6 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
             if isinstance(text, str) and text:
                 yield TextDelta(text)
     except errors.APIError as exc:
-        raise _translate(exc, resolved) from exc
-    except Exception as exc:
-        if isinstance(exc, (GeneratorExit, KeyboardInterrupt, SystemExit)):
-            raise
         raise _translate(exc, resolved) from exc
     yield StreamCompleted(
         model=model,
