@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -20,15 +21,17 @@ from src.core.sentry import (
     classify_error_code,
 )
 from src.schemas.response_meta import StoryResponseMeta
-from src.schemas.story import StoryItem
+from src.schemas.story import CharacterInput, StoryItem
 from src.schemas.story_compile import Ending, StoryCompileRequest, StoryCompileResponse, StorySpec
 from src.services import llm
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt import (
     COMPILE_VERSION,
+    GENDER_KO,
     STORYLINES_VERSION,
     build_compile_prompt,
     build_refill_prompt,
+    build_storylines_refill_prompt,
 )
 from src.services.story_compile_render import spec_to_response
 
@@ -286,6 +289,9 @@ def _validate_storylines(data: dict) -> None:
     엔드포인트의 응답 조립에서 ValidationError(500)로 터졌다(Sentry PYTHON-FASTAPI-A).
     _complete_json의 validate 훅으로 재호출 루프 안에서 실행돼, 위반 시 다른 invalid
     응답과 같은 재호출 → 소진 시 502 경로를 탄다(KNK-312).
+
+    응답 자체가 못 쓸 것(깨진 JSON·편수 부족·스키마 불일치)만 여기서 본다. 인물 누락은
+    편 단위로 고칠 수 있어 전체 재호출이 아니라 부분 재호출로 처리한다(_missing_name_indexes).
     """
     stories = data.get("stories")
     if not isinstance(stories, list) or len(stories) != 3:
@@ -301,6 +307,48 @@ def _validate_storylines(data: dict) -> None:
             raise _InvalidAiResponse(f"stories[{i}]의 recommended_infos가 3개가 아닙니다.")
 
 
+def _missing_name_indexes(data: dict, required_names: tuple[str, ...]) -> list[int]:
+    """이름 지은 주변 인물이 빠진 편의 번호(0-based)를 모은다(KNK-833·KNK-840).
+
+    입력 인물은 세 편 모두에 그 이름 그대로 나와야 한다. 주인공 이름은 1인칭 본문이라
+    등장을 강제하지 않고, 이름을 비운 인물은 LLM이 지은 이름을 알 수 없어 대상이 아니다.
+
+    빠진 편만 골라 돌려주는 이유는, 세 편을 통째로 다시 사면 잘 나온 편까지 버리기
+    때문이다 — 실측에서 한 편만 인물이 빠지는 경우가 나왔다. _validate_storylines가
+    3편·dict·필드를 이미 보장한 뒤에만 부른다.
+    """
+    if not required_names:
+        return []
+    missing: list[int] = []
+    for i, item in enumerate(data["stories"]):
+        body = unicodedata.normalize("NFC", str(item.get("storyline", "")))
+        if any(n not in body for n in required_names):
+            missing.append(i)
+    return missing
+
+
+def _merge_storylines(data: dict, refill: dict, indexes: list[int]) -> None:
+    """부분 재호출 응답의 편을 원본 자리에 끼워 넣는다.
+
+    재호출은 `{"stories": [{"id": 2, ...}]}`처럼 다시 쓴 편만 담아 오고, id가 곧 자리
+    번호다(1-based). 요청하지 않은 자리나 범위 밖 id는 무시한다 — 모델이 엉뚱한 편을
+    덮어써 잘 나온 편을 망치지 못하게 한다.
+    """
+    items = refill.get("stories")
+    if not isinstance(items, list):
+        return
+    allowed = set(indexes)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_id = item.get("id")
+        if not isinstance(raw_id, int) or isinstance(raw_id, bool):
+            continue
+        pos = raw_id - 1
+        if pos in allowed:
+            data["stories"][pos] = item
+
+
 def _normalize_storyline_ids(data: dict) -> None:
     """stories의 id를 등장 순서대로 1·2·3으로 덮어쓴다(스펙 §5-2 계약 값 보장).
 
@@ -311,7 +359,11 @@ def _normalize_storyline_ids(data: dict) -> None:
         item["id"] = i + 1
 
 
-async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dict, LlmUsage]:
+async def generate_storylines(
+    system_prompt: str,
+    user_prompt: str,
+    required_names: list[str] | None = None,
+) -> tuple[dict, LlmUsage]:
     """스토리라인 생성 — (결과 dict, 사용 메타)를 반환한다. 메타 조립은 엔드포인트가 한다.
 
     응답 속도가 사용자 체감에 직결돼 flash 모델을 쓴다(KNK-215, pro 대비 ~2배 빠름).
@@ -326,6 +378,11 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
 
     검증을 통과한 응답은 id를 순서대로 1·2·3으로 교정해 반환한다(_normalize_storyline_ids) —
     id 값 어긋남은 무해한 이탈이라 재호출·502로 벌하지 않고 코드가 정본 값을 박는다(D7).
+
+    required_names(사용자가 이름 지은 주변 인물, KNK-833)가 빠지면 **빠진 편만** 다시
+    받는다(KNK-840, 최대 2회). 전체 재호출로 되돌리지 않는 이유는 잘 나온 편까지 버리게
+    되고, 출력이 3배라 값과 대기 시간도 그만큼 늘기 때문이다(실측: 한 편만 빠지는 경우가
+    나옴). meta의 retry_count는 전체 재호출과 부분 재호출을 합한 수이고, 토큰도 합산한다.
     """
     result, usage = await _complete_json(
         system_prompt,
@@ -339,7 +396,76 @@ async def generate_storylines(system_prompt: str, user_prompt: str) -> tuple[dic
         max_tokens=_STORYLINES_MAX_TOKENS,
     )
     _normalize_storyline_ids(result)
-    return result, usage
+
+    names = tuple(required_names or ())
+    input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
+    refills = 0
+    missing = _missing_name_indexes(result, names)
+    while missing and refills < _MAX_REFILL:
+        refills += 1
+        logger.info("storylines 부분 재호출 #%d 대상 편=%s", refills, [i + 1 for i in missing])
+        refill_system, refill_user = build_storylines_refill_prompt(
+            user_prompt,
+            json.dumps(result, ensure_ascii=False),
+            [i + 1 for i in missing],
+        )
+        refill, refill_usage = await _complete_json(
+            refill_system,
+            refill_user,
+            model=settings.storylines_model,
+            label=f"storylines-refill#{refills}",
+            feature=FEATURE_STORYLINE_GENERATION,
+            prompt_versions={"STORYLINES": STORYLINES_VERSION},
+            max_tokens=_STORYLINES_MAX_TOKENS,
+        )
+        input_tokens = _add_tokens(input_tokens, refill_usage.input_tokens)
+        output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
+        # 병합 전 원본을 복사해 둔다 — 재호출이 깨진 편을 데려와 검증이 실패하면
+        # 이름만 빠졌을 뿐 계약은 유효했던 원본으로 되돌린다(502로 보내지 않는다).
+        backup = [dict(s) for s in result["stories"]]
+        _merge_storylines(result, refill, missing)
+        try:
+            _validate_storylines(result)
+        except _InvalidAiResponse:
+            logger.info("storylines 부분 재호출 #%d 결과가 계약을 깨 원본으로 되돌림", refills)
+            result["stories"] = backup
+        _normalize_storyline_ids(result)
+        missing = _missing_name_indexes(result, names)
+
+    if missing:
+        exc = _InvalidAiResponse(
+            f"부분 재호출 후에도 입력 주변 인물이 빠진 편이 {len(missing)}편 남았습니다."
+        )
+        _raise_storylines_invalid(exc, usage, refills)
+
+    total = LlmUsage(
+        usage.model,
+        input_tokens,
+        output_tokens,
+        provider=usage.provider,
+        retry_count=usage.retry_count + refills,
+    )
+    return result, total
+
+
+def _raise_storylines_invalid(exc: _InvalidAiResponse, usage: LlmUsage, refills: int) -> None:
+    """부분 재호출로도 못 고친 응답을 502로 막는다(Sentry 보고 포함)."""
+    capture_ai_exception(
+        exc,
+        feature=FEATURE_STORYLINE_GENERATION,
+        provider=usage.provider,
+        error_code=ERROR_INVALID_AI_RESPONSE,
+        model=usage.model,
+        prompt_versions={"STORYLINES": STORYLINES_VERSION},
+        retry_count=usage.retry_count + refills,
+    )
+    http_exc = HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=_DETAIL_BY_CODE[ERROR_INVALID_AI_RESPONSE],
+    )
+    # 실패 트레이스에도 실제 재호출 횟수가 실리게 한다(_complete_json과 같은 관례).
+    http_exc.retry_count = usage.retry_count + refills
+    raise http_exc from exc
 
 
 # ── 컴파일 결과 검증 (StorySpec 파싱 전 dict 단계) ──────────────────────────
@@ -412,12 +538,12 @@ def _find_missing_keys(data: dict) -> list[str]:
     else:
         for i, raw in enumerate(chars):
             c = _as_dict(raw)
-            for k in ("name", "personality", "tone", "motivation", "attitude_to_user"):
+            for k in ("name", "gender", "personality", "tone", "motivation", "attitude_to_user"):
                 if _is_empty(c.get(k)):
                     missing.append(f"prompt_settings.character_setting[{i}].{k}")
 
     ur = _as_dict(ps.get("user_role_setting"))
-    for k in ("name", "role", "background", "personality"):  # preference는 선택
+    for k in ("name", "gender", "role", "background", "personality"):  # preference는 선택
         if _is_empty(ur.get(k)):
             missing.append(f"prompt_settings.user_role_setting.{k}")
 
@@ -500,6 +626,22 @@ def _inject_genre(data: dict, genre_tags: list[str]) -> None:
         data["meta"]["genre"] = ", ".join(genre_tags)
 
 
+def _inject_protagonist(data: dict, protagonist: CharacterInput) -> None:
+    """사용자가 입력한 주인공 이름·성별을 주인공 프로필에 정본으로 덮어쓴다(KNK-838).
+
+    사용자가 정한 값은 LLM 출력에 맡기지 않고 코드가 담보한다(장르 덮어쓰기와 같은
+    원칙, 5-ai-server.md §5-3-3 D7). 비운 항목은 LLM이 지은 값을 그대로 둔다.
+    성별은 계약 값("MALE"·"FEMALE")이 아니라 통글에 실리는 한국어로 바꿔 쓴다.
+    """
+    ur = _as_dict(data.get("prompt_settings")).get("user_role_setting")
+    if not isinstance(ur, dict):
+        return  # 블록 자체가 없으면 refill이 채운 뒤 다음 주입 때 덮어쓴다
+    if protagonist.name:
+        ur["name"] = protagonist.name
+    if protagonist.gender:
+        ur["gender"] = GENDER_KO[protagonist.gender]
+
+
 def _endings_incomplete(data: dict) -> bool:
     """엔딩이 '파싱 가능한 정확히 3개'가 아니면 True(폴백 대상).
 
@@ -517,19 +659,47 @@ def _endings_incomplete(data: dict) -> bool:
     return False
 
 
+_CHARACTER_CARDS_PATH = "prompt_settings.character_setting"
+
+
+def _missing_required_characters(data: dict, required_names: tuple[str, ...]) -> bool:
+    """사용자가 이름 지은 주변 인물이 인물 카드(character_setting)에 전원 있는지 본다(KNK-833).
+
+    빠져 있으면 본호출 전체를 다시 사는 대신 카드 블록만 부분 재호출(refill) 대상으로
+    삼는다 — 컴파일은 가장 비싼 호출이라 잘 나온 나머지 블록을 보존하는 쪽이 싸다.
+    카드 name에는 이름 뒤에 호칭이 붙을 수 있어 포함 여부로 보고, 이름을 비운 인물은
+    LLM이 지은 이름을 알 수 없어 검증 대상이 아니다.
+    """
+    if not required_names:
+        return False
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(cards, list):
+        cards = []
+    # 카드 사이를 구분자로 이어, 이름이 카드 경계에 걸쳐 우연히 맞는 오탐을 막는다.
+    # 문자열 이름만 대조한다 — null·배열을 str()로 바꾸면 "None"·"['서린']" 같은
+    # 글자가 생겨 검증이 잘못 통과하고, 회복 기회(refill) 없이 뒤 단계 502로 죽는다.
+    card_names = " / ".join(
+        unicodedata.normalize("NFC", c["name"])
+        for c in cards
+        if isinstance(c, dict) and isinstance(c.get("name"), str)
+    )
+    return any(n not in card_names for n in required_names)
+
+
 async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     """시점 A-1: 희소 입력을 스토리 명세로 컴파일해 백엔드 계약(nested 통글)으로 반환한다.
 
-    흐름: LLM 세분 JSON → genre 주입 → 빈 필수키 검증 → 빈 블록만 부분 재호출(최대 2회)
-    → 엔딩 미완성 시 빈 배열 폴백(KNK-465) → StorySpec 파싱 → nested 통글 변환.
+    흐름: LLM 세분 JSON → genre·주인공 이름/성별 주입 → 빈 필수키·사용자 인물 카드 검증(KNK-833) →
+    모자란 블록만 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
+    → StorySpec 파싱 → nested 통글 변환.
     PromptCompiler 추상 경계는 spec/chat/4-SERVICE-IMPLEMENTATION.md §6.
     """
     system_prompt, user_prompt = build_compile_prompt(
         request.selected_storyline,
         request.additional_info,
         request.genre_tags,
-        request.protagonist_tags,
-        request.supporting_tags,
+        request.protagonist,
+        request.supporting_characters,
         request.lorebooks,
     )
     data, usage = await _complete_json(
@@ -540,12 +710,22 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         prompt_versions={"COMPILE": COMPILE_VERSION},
     )
     _inject_genre(data, request.genre_tags)
+    _inject_protagonist(data, request.protagonist)
 
     # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
     input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
 
+    # 사용자가 이름 지은 주변 인물이 카드에서 빠지면 카드 블록도 refill 대상에 넣는다(KNK-833).
+    required_names = tuple(c.name for c in request.supporting_characters if c.name)
+
+    def _current_missing() -> list[str]:
+        found = _find_missing_keys(data)
+        if _missing_required_characters(data, required_names) and _CHARACTER_CARDS_PATH not in found:
+            found.append(_CHARACTER_CARDS_PATH)
+        return found
+
     # 빈 필수 필드가 있으면 해당 블록만 다시 채운다(최대 _MAX_REFILL회).
-    missing = _find_missing_keys(data)
+    missing = _current_missing()
     if missing:
         logger.info("compile 1차 응답 누락 블록: %s", missing)
     attempts = 0
@@ -569,7 +749,8 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
         _merge_blocks(data, refill, blocks)
         _inject_genre(data, request.genre_tags)
-        missing = _find_missing_keys(data)
+        _inject_protagonist(data, request.protagonist)
+        missing = _current_missing()
     logger.info(
         "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 누락=%s",
         1 + attempts,

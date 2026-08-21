@@ -203,8 +203,8 @@ async def test_middleware_sets_scope_even_on_unhandled_500(monkeypatch) -> None:
             "/api/v1/story/storylines",
             json={
                 "genre_tags": ["무협"],
-                "protagonist_tags": ["천마신교"],
-                "supporting_tags": ["다정한"],
+                "protagonist": {"features": ["천마신교"]},
+                "supporting_characters": [{"features": ["다정한"]}],
             },
             headers={"X-Manyak-Request-Id": "req_500"},
         )
@@ -256,7 +256,11 @@ async def test_middleware_populates_correlation_contextvar(client, monkeypatch) 
     ) as c:
         await c.post(
             "/api/v1/story/storylines",
-            json={"genre_tags": ["무협"], "protagonist_tags": ["천마"], "supporting_tags": ["x"]},
+            json={
+                "genre_tags": ["무협"],
+                "protagonist": {"features": ["천마"]},
+                "supporting_characters": [{"features": ["x"]}],
+            },
             headers={
                 "X-Manyak-Request-Id": "req_ctx",
                 "X-Manyak-Session-Id": "sess_ctx",
@@ -280,7 +284,11 @@ async def test_middleware_populates_connection_metadata_contextvar(client, monke
     ) as c:
         await c.post(
             "/api/v1/story/storylines",
-            json={"genre_tags": ["무협"], "protagonist_tags": ["천마"], "supporting_tags": ["x"]},
+            json={
+                "genre_tags": ["무협"],
+                "protagonist": {"features": ["천마"]},
+                "supporting_characters": [{"features": ["x"]}],
+            },
             headers={
                 "X-Manyak-Creation-Id": "creation-1",
                 "X-Manyak-Storyline-Order": "2",

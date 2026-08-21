@@ -17,6 +17,7 @@
     "character_setting": [
       {
         "name": "레이",
+        "gender": "남성",
         "personality": "충직한 원칙주의자.",
         "tone": "직설적인 말투.",
         "motivation": "진실 규명.",
@@ -24,6 +25,7 @@
       },
       {
         "name": "세린",
+        "gender": "여성",
         "personality": "냉철하고 계산적.",
         "tone": "에두르는 화법.",
         "motivation": "마법 금기령 철폐.",
@@ -31,6 +33,7 @@
       },
       {
         "name": "칸",
+        "gender": "남성",
         "personality": "거칠고 카리스마 있다.",
         "tone": "도발적인 말투.",
         "motivation": "왕조 전복.",
@@ -38,6 +41,7 @@
       },
       {
         "name": "에단",
+        "gender": "여성",
         "personality": "소심한 시종.",
         "tone": "조심스러운 말투.",
         "motivation": "생존.",
@@ -45,6 +49,7 @@
       },
       {
         "name": "미라",
+        "gender": "남성",
         "personality": "냉소적인 정보상.",
         "tone": "빈정대는 말투.",
         "motivation": "이문.",
@@ -52,6 +57,7 @@
       },
       {
         "name": "보른",
+        "gender": "여성",
         "personality": "과묵한 노병.",
         "tone": "무뚝뚝한 말투.",
         "motivation": "옛 맹세 이행.",
@@ -60,6 +66,7 @@
     ],
     "user_role_setting": {
       "name": "기사님",
+      "gender": "남성",
       "role": "견습 기사",
       "background": "몰락한 하급 귀족 가문 출신.",
       "personality": "신중하고 관찰력이 뛰어나다.",

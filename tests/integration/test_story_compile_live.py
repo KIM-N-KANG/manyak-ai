@@ -22,8 +22,11 @@ async def test_compile_story_live() -> None:
         ),
         additional_info="주인공은 복수보다 진실을 택하는 신중한 성격이다.",
         genre_tags=["다크 판타지"],
-        protagonist_tags=["신중한", "관찰력 있는"],
-        supporting_tags=["충직한", "계산적인", "거친"],
+        protagonist={"name": "카일", "gender": "MALE", "features": ["신중한", "관찰력 있는"]},
+        supporting_characters=[
+            {"name": "로한", "gender": "MALE", "features": ["충직한"]},
+            {"features": ["계산적인", "거친"]},
+        ],
     )
 
     res = await compile_story(request)

@@ -1,5 +1,7 @@
+import re
 from pathlib import Path
 
+from src.schemas.story import CharacterInput
 from src.schemas.story_compile import LorebookItem
 from src.services.prompt_meta import read_version
 
@@ -27,16 +29,73 @@ _STORYLINES_SYSTEM, _STORYLINES_USER = _load_template(_STORYLINES_TEMPLATE_PATH)
 _COMPILE_SYSTEM, _COMPILE_USER = _load_template(_COMPILE_TEMPLATE_PATH)
 
 
+def _render(template: str, mapping: dict[str, str]) -> str:
+    """자리표시자를 단일 패스로 치환한다.
+
+    순차 .replace()는 앞서 채워 넣은 값(사용자 입력)을 다음 치환이 다시 검사해,
+    입력에 자리표시자 모양 문자열이 들어 있으면 프롬프트가 엉킨다. 한 번에 훑으면
+    치환된 값은 재검사되지 않는다.
+    """
+    pattern = r"\{\{(" + "|".join(map(re.escape, mapping)) + r")\}\}"
+    return re.sub(pattern, lambda m: mapping[m.group(1)], template)
+
+
+# 성별은 계약 값("MALE"·"FEMALE")이 아니라 한국어로 프롬프트에 싣는다.
+GENDER_KO = {"MALE": "남성", "FEMALE": "여성"}
+
+
+def _format_character(c: CharacterInput) -> str:
+    """인물 세트 한 명을 한 줄로 렌더한다. 비운 항목은 (미정)으로 표시해 LLM이 정하게 한다."""
+    gender = GENDER_KO[c.gender] if c.gender else "(미정)"
+    features = ", ".join(c.features) if c.features else "(미정)"
+    return f"이름: {c.name or '(미정)'} / 성별: {gender} / 특징: {features}"
+
+
+def _format_supporting_characters(characters: list[CharacterInput]) -> str:
+    """주변 인물 블록. 0명이면 구성 전체를 LLM에 맡긴다(0명 허용 계약, KNK-833)."""
+    if not characters:
+        return "(미정 — 이야기에 어울리는 주변 인물을 직접 구성하라)"
+    return "\n".join(f"{i}) {_format_character(c)}" for i, c in enumerate(characters, 1))
+
+
 def build_storylines_prompt(
     genre_tags: list[str],
-    protagonist_tags: list[str],
-    supporting_tags: list[str],
+    protagonist: CharacterInput,
+    supporting_characters: list[CharacterInput],
 ) -> tuple[str, str]:
+    user_text = _render(
+        _STORYLINES_USER,
+        {
+            "장르_태그": ", ".join(genre_tags),
+            "주인공": _format_character(protagonist),
+            "주변_인물": _format_supporting_characters(supporting_characters),
+        },
+    )
+    return _STORYLINES_SYSTEM, user_text
+
+
+def build_storylines_refill_prompt(
+    original_user_prompt: str,
+    current_stories_json: str,
+    missing_ids: list[int],
+) -> tuple[str, str]:
+    """인물이 빠진 이야기를 고쳐 쓰게 하는 부분 재호출 프롬프트를 만든다(KNK-840).
+
+    이야기 자체는 잘 나왔으니 통째로 버리지 않고, 빠진 인물만 이야기에 들어가게
+    고치라고 한다. 직전 세 편을 맥락으로 주는 이유는 고칠 대상을 보여주면서 나머지
+    편과 겹치지 않게 하기 위해서다.
+    """
+    ids = ", ".join(f"{i}번 이야기" for i in missing_ids)
     user_text = (
-        _STORYLINES_USER
-        .replace("{{장르_태그}}", ", ".join(genre_tags))
-        .replace("{{주인공_특징_태그}}", ", ".join(protagonist_tags))
-        .replace("{{주변_인물_태그}}", ", ".join(supporting_tags))
+        f"{original_user_prompt}\n\n"
+        f"--- 직전 생성 결과(JSON) ---\n{current_stories_json}\n\n"
+        f"위 결과의 {ids}에 입력 주변 인물이 빠졌다. 이야기의 흐름은 그대로 유지하면서 "
+        f"빠진 인물이 사건에 실제로 관여하도록 고쳐라. 이름만 한 줄 얹지 말고, "
+        f"그 인물이 이야기 속에서 역할을 하게 해라. "
+        f"나머지 이야기는 그대로 두므로 응답에 포함하지 마라.\n"
+        f"고친 이야기만 담아 `{{\"stories\": [{{\"id\": <번호>, \"storyline\": \"...\", "
+        f'"recommended_infos": ["...", "...", "..."]}}]}}` 형식으로, 설명·머리말·코드 펜스 없이 '
+        f"JSON만 출력한다. 분량·문장 수·금지 규칙은 위 지시와 같다."
     )
     return _STORYLINES_SYSTEM, user_text
 
@@ -53,19 +112,21 @@ def build_compile_prompt(
     selected_storyline: str,
     additional_info: str,
     genre_tags: list[str],
-    protagonist_tags: list[str],
-    supporting_tags: list[str],
+    protagonist: CharacterInput,
+    supporting_characters: list[CharacterInput],
     lorebooks: list[LorebookItem] | None = None,
 ) -> tuple[str, str]:
     """스토리 컴파일(시점 A-1)용 프롬프트를 완성한다."""
-    user_text = (
-        _COMPILE_USER
-        .replace("{{선택_스토리라인}}", selected_storyline)
-        .replace("{{추가정보}}", additional_info or "(없음)")
-        .replace("{{장르_태그}}", ", ".join(genre_tags))
-        .replace("{{주인공_특징_태그}}", ", ".join(protagonist_tags))
-        .replace("{{주변_인물_태그}}", ", ".join(supporting_tags))
-        .replace("{{로어북}}", _format_lorebooks(lorebooks or []))
+    user_text = _render(
+        _COMPILE_USER,
+        {
+            "선택_스토리라인": selected_storyline,
+            "추가정보": additional_info or "(없음)",
+            "장르_태그": ", ".join(genre_tags),
+            "주인공": _format_character(protagonist),
+            "주변_인물": _format_supporting_characters(supporting_characters),
+            "로어북": _format_lorebooks(lorebooks or []),
+        },
     )
     return _COMPILE_SYSTEM, user_text
 

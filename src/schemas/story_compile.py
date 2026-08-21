@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.schemas.response_meta import StoryResponseMeta
+from src.schemas.story import CharacterInput, SupportingCharacters, _check_duplicate_names
 
 
 class LorebookItem(BaseModel):
@@ -16,17 +17,22 @@ class LorebookItem(BaseModel):
 class StoryCompileRequest(BaseModel):
     """스토리 컴파일(시점 A-1) 입력 — 희소 입력.
 
-    백엔드가 보내는 선택 스토리라인 1편 + 추가정보 + 원본 태그.
+    백엔드가 보내는 선택 스토리라인 1편 + 추가정보 + 장르 태그 + 인물 세트(KNK-833).
     """
 
     selected_storyline: str
     additional_info: str = ""
     genre_tags: list[str]
-    protagonist_tags: list[str]
-    supporting_tags: list[str]
+    protagonist: CharacterInput
+    supporting_characters: SupportingCharacters = Field(default_factory=list)
     # 장르 공용 로어북(선택) — 미전달·빈 배열·null이면 프롬프트 미주입, 기존 요청과 하위호환(KNK-422).
     # 명시적 null도 "없음"으로 받도록 | None 허용(빌더는 `lorebooks or []`로 안전 처리).
     lorebooks: list[LorebookItem] | None = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _no_duplicate_names(self) -> "StoryCompileRequest":
+        _check_duplicate_names(self.protagonist, self.supporting_characters)
+        return self
 
 
 class Meta(BaseModel):
@@ -46,9 +52,13 @@ class PlotSetting(BaseModel):
 
 
 class CharacterSetting(BaseModel):
-    """CHARACTER — 주변 인물 카드. 주인공은 포함하지 않는다(USER 소유)."""
+    """CHARACTER — 주변 인물 카드. 주인공은 포함하지 않는다(USER 소유).
+
+    gender는 한국어 서술 값("남성"·"여성") — 통글에 명시 칸으로 실린다(KNK-838).
+    """
 
     name: str
+    gender: str
     personality: str
     tone: str
     motivation: str
@@ -56,9 +66,10 @@ class CharacterSetting(BaseModel):
 
 
 class UserRoleSetting(BaseModel):
-    """USER — 주인공(1인칭 플레이어) 프로필."""
+    """USER — 주인공(1인칭 플레이어) 프로필. gender는 한국어 서술 값("남성"·"여성")."""
 
     name: str
+    gender: str
     role: str
     background: str
     personality: str
