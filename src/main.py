@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from src.api.router import api_router
 from src.core.config import settings
+from src.core.json_logging import configure_json_logging
 from src.core.langfuse import init_langfuse, shutdown_langfuse
 from src.core.middleware import RequestContextMiddleware
 from src.core.sentry import init_sentry
@@ -12,9 +13,13 @@ from src.services.llm import validate_startup
 
 # 컨테이너(uvicorn)는 루트 로거에 핸들러를 달지 않아 앱 INFO 로그가 통째로 버려진다
 # (ERROR만 lastResort로 보임). "Langfuse 활성/비활성" 상태 로그는 CI 스모크와 배포 후
-# 점검(7-deployment §7-9)의 근거라 보여야 한다(Codex P1). basicConfig는 루트에 핸들러가
-# 이미 있으면 no-op이라 pytest·로컬 실행과 충돌하지 않는다.
-logging.basicConfig(level=logging.INFO)
+# 점검(7-deployment §7-9)의 근거라 보여야 한다(Codex P1).
+#
+# 로그는 JSON 한 줄로 낸다(KNK-852). 로그 파이프라인(Fluent Bit → OpenSearch)이 manyak-server와
+# 이 서비스의 로그를 같은 인덱스에 넣으므로 필드 이름을 백엔드 LogstashEncoder에 맞춘다.
+# basicConfig와 달리 이 함수는 루트 핸들러를 **교체**한다 — uvicorn이 먼저 달아 둔 평문 핸들러가
+# 남아 있으면 같은 줄이 두 형식으로 두 번 찍힌다.
+configure_json_logging(level=logging.INFO)
 
 init_sentry()  # 앱 생성 전에 Sentry를 켠다(DSN 미설정 시 no-op).
 init_langfuse()  # Langfuse도 앱 생성 전에 켠다(키 미설정·JP·prod 미충족 시 no-op) — KNK-624·652.
