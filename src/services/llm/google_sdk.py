@@ -134,7 +134,7 @@ def _build_config(req: LlmRequest, resolved: ResolvedModel) -> types.GenerateCon
 
     # 타임아웃 — Google SDK는 GenerateContentConfig가 아니라 http_options로 넘긴다.
     if req.timeout is not None:
-        config_kwargs["http_options"] = types.HttpOptions(timeout=req.timeout * 1000)
+        config_kwargs["http_options"] = types.HttpOptions(timeout=int(req.timeout * 1000))
 
     return types.GenerateContentConfig(**config_kwargs)
 
