@@ -126,11 +126,10 @@ def _build_config(req: LlmRequest, resolved: ResolvedModel) -> types.GenerateCon
                 f"모델 '{resolved.model}'의 추론 강도 '{resolved.reasoning_effort}'가 지원 목록에 "
                 f"없습니다: {sorted(resolved.supported_reasoning_efforts)}"
             )
-        # Gemini의 thinking_budget 매핑: low → 1024, medium → 8192, high → 24576
-        budget_map = {"low": 1024, "medium": 8192, "high": 24576}
-        budget = budget_map.get(resolved.reasoning_effort)
-        if budget is not None:
-            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
+        # Gemini 3.x는 thinking_level로 문자열(low/medium/high)을 그대로 받는다.
+        config_kwargs["thinking_config"] = types.ThinkingConfig(
+            thinking_level=resolved.reasoning_effort
+        )
 
     # 타임아웃 — Google SDK는 GenerateContentConfig가 아니라 http_options로 넘긴다.
     if req.timeout is not None:
