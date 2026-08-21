@@ -15,6 +15,7 @@
 import datetime as dt
 import json
 import logging
+import sys
 
 from src.core.request_context import get_correlation_ids
 
@@ -82,8 +83,13 @@ def configure_json_logging(level: int = logging.INFO) -> None:
 
     uvicorn은 자기 로거(`uvicorn`, `uvicorn.access`)에 핸들러를 직접 달고 propagate=False 로 두므로,
     루트만 바꾸면 접근 로그가 평문으로 남는다. 그래서 그 로거들의 핸들러를 떼어 루트로 흘려보낸다.
+
+    stdout을 명시하는 이유: `logging.StreamHandler()`의 기본은 **stderr**다. 그냥 두면 앱과 uvicorn
+    로그가 전부 stderr로 나가, `uvicorn ... > logs.json` 처럼 stdout만 받는 수집에서는 한 줄도 안 남는다.
+    백엔드 logback ConsoleAppender는 기본이 System.out 이라, 맞추지 않으면 같은 인덱스에서 두 서비스의
+    source 필드가 stdout/stderr 로 갈린다.
     """
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonLogFormatter())
 
     root = logging.getLogger()

@@ -7,8 +7,9 @@
 
 import json
 import logging
+import sys
 
-from src.core.json_logging import JsonLogFormatter
+from src.core.json_logging import JsonLogFormatter, configure_json_logging
 from src.core.request_context import set_correlation_ids
 
 
@@ -105,3 +106,23 @@ def test_한글이_이스케이프되지_않는다():
     line = JsonLogFormatter().format(_record("한글 로그"))
 
     assert "한글 로그" in line
+
+
+def test_핸들러는_stdout으로_낸다():
+    """logging.StreamHandler()의 기본은 stderr다. 명시하지 않으면 전부 stderr로 나간다.
+
+    백엔드 logback ConsoleAppender는 기본이 System.out이라, 맞추지 않으면 같은 인덱스에서
+    두 서비스의 source 필드가 stdout/stderr로 갈린다. `uvicorn ... > logs.json` 처럼
+    stdout만 받는 수집 방식에서는 로그가 통째로 사라진다(Codex P2).
+    """
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    try:
+        configure_json_logging()
+
+        assert len(root.handlers) == 1
+        assert root.handlers[0].stream is sys.stdout
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
