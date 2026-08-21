@@ -17,9 +17,11 @@ from urllib.parse import urlparse
 from src.core.config import settings
 from src.services.llm.base import (
     ADAPTER_ANTHROPIC_SDK,
+    ADAPTER_GOOGLE_SDK,
     ADAPTER_OPENAI_SDK,
     PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
+    PROVIDER_GOOGLE,
     PROVIDER_OPENAI,
     STRUCTURED_OUTPUT_JSON_OBJECT,
     STRUCTURED_OUTPUT_JSON_SCHEMA,
@@ -252,6 +254,46 @@ _REGISTRY: dict[str, ResolvedModel] = {
             ),
         ),
     ),
+    # 스토리 컴파일 대체 모델(KNK-951). terra급 체급(Intelligence 53~56)이면서 출력 속도가
+    # 3배 이상 빠르고(~340 t/s vs ~104 t/s) 가격도 저렴하다. 추론 모드를 medium으로 쓴다.
+    "gemini-3.7-flash": ResolvedModel(
+        model="gemini-3.7-flash",
+        provider=PROVIDER_GOOGLE,
+        adapter=ADAPTER_GOOGLE_SDK,
+        use_thinking=True,
+        supports_temperature=True,
+        context_window_tokens=1_048_576,
+        max_output_tokens=65_536,
+        reasoning_effort="medium",
+        supported_reasoning_efforts=frozenset({"low", "medium", "high"}),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 8, 21),
+        capabilities_source_urls=(
+            "https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash",
+        ),
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.75"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.075"),
+                output_usd_per_1m_tokens=Decimal("3.75"),
+                source_url="https://ai.google.dev/gemini-api/docs/pricing",
+                verified_on=date(2026, 8, 21),
+                effective_from=date(2026, 8, 21),
+                effective_until=date(2026, 12, 31),
+            ),
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("1.50"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.15"),
+                output_usd_per_1m_tokens=Decimal("7.50"),
+                source_url="https://ai.google.dev/gemini-api/docs/pricing",
+                verified_on=date(2026, 8, 21),
+                effective_from=date(2027, 1, 1),
+            ),
+        ),
+    ),
 }
 
 
@@ -328,6 +370,13 @@ def credentials(provider: str) -> ProviderCredentials:
             base_url=settings.anthropic_api_url,
             api_key_env="ANTHROPIC_API_KEY",
             base_url_env="ANTHROPIC_API_URL",
+        )
+    if provider == PROVIDER_GOOGLE:
+        return ProviderCredentials(
+            api_key=settings.gemini_api_key,
+            base_url=settings.gemini_api_url,
+            api_key_env="GEMINI_API_KEY",
+            base_url_env="GEMINI_API_URL",
         )
     raise LlmConfigError(f"공급자 '{provider}'의 접속 정보 규칙이 없습니다.")
 
