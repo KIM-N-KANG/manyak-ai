@@ -12,9 +12,6 @@ class Settings(BaseSettings):
     app_version: str = "0.2.5"
     debug: bool = False
 
-    # gemini_api_key: str
-    # gemini_model: str = "gemini-2.5-flash-lite"
-
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
     # 대체 공급자 접속 정보(KNK-703). 기동 검사는 *선택된* 모델의 공급자 키만 본다.
@@ -28,6 +25,10 @@ class Settings(BaseSettings):
     # 두면 기동 검사의 주소 형식 검사에 걸린다.
     anthropic_api_key: str = ""
     anthropic_api_url: str | None = None
+    # Google 접속 정보(KNK-951).
+    # 주소 기본값은 None — SDK 기본 주소를 쓴다는 뜻이다.
+    gemini_api_key: str = ""
+    gemini_api_url: str | None = None
     # 모델은 용도별 3개 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
     # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
     story_compile_model: str = "gpt-5.6-terra"  # 스토리 컴파일 전용
