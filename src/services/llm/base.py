@@ -12,13 +12,16 @@ from typing import Protocol, TypeAlias
 
 # 어댑터 종류 = SDK 계열이다(회사 단위가 아니다). DeepSeek과 GPT는 같은 OpenAI SDK를 쓰고
 # base_url·키만 다르므로 어댑터 하나를 공유한다. Anthropic은 SDK가 달라 별 어댑터를 쓴다(KNK-675).
+# Google은 자체 SDK(google-genai)를 쓴다(KNK-951).
 ADAPTER_OPENAI_SDK = "openai_sdk"
 ADAPTER_ANTHROPIC_SDK = "anthropic_sdk"
+ADAPTER_GOOGLE_SDK = "google_sdk"
 
 # 공급자 식별자 — 로깅 메타(meta.provider)와 Sentry provider 태그(AN-4-8)에 그대로 실린다.
 PROVIDER_DEEPSEEK = "deepseek"
 PROVIDER_OPENAI = "openai"
 PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_GOOGLE = "google"
 
 # 구조화 출력 능력. 요청 문법은 어댑터가 만들고, 등록부에는 모델이 받아들이는 방식만 적는다.
 STRUCTURED_OUTPUT_JSON_OBJECT = "json_object"
