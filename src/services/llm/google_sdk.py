@@ -18,6 +18,7 @@ from src.services.llm.base import (
     STRUCTURED_OUTPUT_JSON_OBJECT,
     LlmBadRequest,
     LlmConfigError,
+    LlmError,
     LlmRateLimited,
     LlmRequest,
     LlmResult,
@@ -180,12 +181,17 @@ def _usage_of(response: object) -> TokenUsage:
 
 
 def _finish_reason_of(response: object) -> str | None:
-    """종료 이유를 꺼낸다. 못 꺼내면 None."""
+    """종료 이유를 꺼낸다. 못 꺼내면 None.
+
+    Gemini는 enum(FinishReason.STOP)으로 주므로 .name을 소문자로 바꿔 OpenAI 계열("stop")과
+    형식을 맞춘다.
+    """
     try:
         candidates = response.candidates  # type: ignore[attr-defined]
         if candidates:
             reason = candidates[0].finish_reason
-            return str(reason) if reason is not None else None
+            if reason is not None:
+                return reason.name.lower() if hasattr(reason, "name") else str(reason)
     except Exception:
         logger.warning("응답에서 종료 이유를 꺼내지 못했다 — None으로 넘긴다", exc_info=True)
     return None
@@ -257,7 +263,7 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
             if candidates:
                 reason = getattr(candidates[0], "finish_reason", None)
                 if reason is not None:
-                    finish_reason = str(reason)
+                    finish_reason = reason.name.lower() if hasattr(reason, "name") else str(reason)
             # 텍스트 조각 흘리기
             try:
                 text = chunk.text
