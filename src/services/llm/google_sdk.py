@@ -11,6 +11,7 @@ import hashlib
 import logging
 from collections.abc import AsyncIterator
 
+import httpx
 from google import genai
 from google.genai import errors, types
 
@@ -235,7 +236,7 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
         )
     except errors.APIError as exc:
         raise _translate(exc, resolved) from exc
-    except (ConnectionError, TimeoutError, OSError) as exc:
+    except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
         raise _translate(exc, resolved) from exc
     return LlmResult(
         text=_text_of(response),
@@ -283,7 +284,7 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
                 yield TextDelta(text)
     except errors.APIError as exc:
         raise _translate(exc, resolved) from exc
-    except (ConnectionError, TimeoutError, OSError) as exc:
+    except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
         raise _translate(exc, resolved) from exc
     yield StreamCompleted(
         model=model,
