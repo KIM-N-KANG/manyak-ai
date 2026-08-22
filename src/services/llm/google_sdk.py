@@ -219,7 +219,9 @@ def _translate(exc: Exception, resolved: ResolvedModel) -> LlmError:
         if code == 400:
             return LlmBadRequest(msg, **context)
         return LlmUnavailable(msg, **context)
-    # SDK 밖으로 새는 전송 오류
+    # SDK 밖으로 새는 전송 오류 — httpx 타임아웃은 타임아웃으로 분류한다.
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        return LlmTimeout(f"{type(exc).__name__}: {msg}", **context)
     return LlmUnavailable(f"{type(exc).__name__}: {msg}", **context)
 
 
