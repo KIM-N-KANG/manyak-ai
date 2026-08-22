@@ -5,13 +5,17 @@ from src.schemas.story import CharacterInput
 from src.schemas.story_compile import LorebookItem
 from src.services.prompt_meta import read_version
 
+from src.services.llm.base import PROVIDER_GOOGLE
+
 _PROMPT_DIR = Path(__file__).parent.parent.parent / "prompt" / "story"
 _STORYLINES_TEMPLATE_PATH = _PROMPT_DIR / "STORYLINES-TEMPLATE.md"
 _COMPILE_TEMPLATE_PATH = _PROMPT_DIR / "COMPILE-TEMPLATE.md"
+_COMPILE_GEMINI_TEMPLATE_PATH = _PROMPT_DIR / "COMPILE-TEMPLATE-gemini.md"
 
 # 버전은 파일명이 아니라 frontmatter가 SSOT다(KNK-228). 로깅용으로 노출한다(KNK-243).
 STORYLINES_VERSION = read_version(_STORYLINES_TEMPLATE_PATH)
 COMPILE_VERSION = read_version(_COMPILE_TEMPLATE_PATH)
+COMPILE_GEMINI_VERSION = read_version(_COMPILE_GEMINI_TEMPLATE_PATH)
 
 
 def _load_template(path: Path) -> tuple[str, str]:
@@ -27,6 +31,7 @@ def _load_template(path: Path) -> tuple[str, str]:
 
 _STORYLINES_SYSTEM, _STORYLINES_USER = _load_template(_STORYLINES_TEMPLATE_PATH)
 _COMPILE_SYSTEM, _COMPILE_USER = _load_template(_COMPILE_TEMPLATE_PATH)
+_COMPILE_GEMINI_SYSTEM, _COMPILE_GEMINI_USER = _load_template(_COMPILE_GEMINI_TEMPLATE_PATH)
 
 
 def _render(template: str, mapping: dict[str, str]) -> str:
@@ -115,10 +120,21 @@ def build_compile_prompt(
     protagonist: CharacterInput,
     supporting_characters: list[CharacterInput],
     lorebooks: list[LorebookItem] | None = None,
-) -> tuple[str, str]:
-    """스토리 컴파일(시점 A-1)용 프롬프트를 완성한다."""
+    *,
+    provider: str | None = None,
+) -> tuple[str, str, str]:
+    """스토리 컴파일(시점 A-1)용 프롬프트를 완성한다.
+
+    provider가 Google이면 Gemini용 프롬프트를 쓴다(KNK-958). 반환값 세 번째는 프롬프트 버전 키다.
+    """
+    if provider == PROVIDER_GOOGLE:
+        system, user_tmpl = _COMPILE_GEMINI_SYSTEM, _COMPILE_GEMINI_USER
+        version_key = "COMPILE_GEMINI"
+    else:
+        system, user_tmpl = _COMPILE_SYSTEM, _COMPILE_USER
+        version_key = "COMPILE"
     user_text = _render(
-        _COMPILE_USER,
+        user_tmpl,
         {
             "선택_스토리라인": selected_storyline,
             "추가정보": additional_info or "(없음)",
@@ -128,19 +144,23 @@ def build_compile_prompt(
             "로어북": _format_lorebooks(lorebooks or []),
         },
     )
-    return _COMPILE_SYSTEM, user_text
+    return system, user_text, version_key
 
 
 def build_refill_prompt(
     original_user_prompt: str,
     current_data_json: str,
     missing_blocks: list[str],
+    *,
+    provider: str | None = None,
 ) -> tuple[str, str]:
     """누락·빈 블록만 다시 채우기 위한 부분 재호출 프롬프트를 만든다.
 
     직전 결과를 맥락으로 주고, 비어 있는 블록만 채워 그 블록만 키로 갖는 JSON을
     반환하도록 요청한다. 잘 나온 다른 블록은 보존하기 위해 응답에 포함하지 않게 한다.
+    provider가 Google이면 Gemini용 system prompt를 쓴다(KNK-958).
     """
+    system = _COMPILE_GEMINI_SYSTEM if provider == PROVIDER_GOOGLE else _COMPILE_SYSTEM
     blocks_str = ", ".join(missing_blocks)
     user_text = (
         f"{original_user_prompt}\n\n"
@@ -150,4 +170,4 @@ def build_refill_prompt(
         f"갖는 JSON 객체를 반환하라. 다른 블록은 절대 포함하지 말 것. "
         f"설명·머리말·코드 펜스 없이 JSON만 출력한다."
     )
-    return _COMPILE_SYSTEM, user_text
+    return system, user_text

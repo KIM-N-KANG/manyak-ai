@@ -6,8 +6,8 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "pydantic-settings>=2.0.0",
-    # "google-genai>=1.0.0",
-    # "aiohttp>=3.9.0,<3.10.0",
+    # Google SDK 어댑터용(KNK-951).
+    "google-genai>=2.0.0",
     "openai>=1.0.0",
     # Anthropic 어댑터용(KNK-675). 하한은 **실제로 열어보고 확인한 버전**이다 — 예외 계층
     # (APITimeoutError가 APIConnectionError의 하위)과 클라이언트 인자를 이 버전에서 직접 확인했다.

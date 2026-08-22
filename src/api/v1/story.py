@@ -5,8 +5,16 @@ from src.core.request_context import select_connection_metadata
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
+from src.core.config import settings
 from src.services import story_llm
-from src.services.prompt import COMPILE_VERSION, STORYLINES_VERSION, build_storylines_prompt
+from src.services.llm import provider_of
+from src.services.llm.base import PROVIDER_GOOGLE
+from src.services.prompt import (
+    COMPILE_GEMINI_VERSION,
+    COMPILE_VERSION,
+    STORYLINES_VERSION,
+    build_storylines_prompt,
+)
 
 router = APIRouter()
 
@@ -63,18 +71,27 @@ async def create_story_compile(request: StoryCompileRequest) -> StoryCompileResp
     컴파일해 ERD 4테이블 nested 계약으로 반환한다. 검증·재호출·502 변환은
     compile_story()가 모두 처리한다."""
     # 부분 재호출(최대 3회)까지 한 트레이스로 묶인다(KNK-624). 분석 차원 부착(KNK-640):
-    # 장르·태그·프롬프트 버전은 미리, 재호출 횟수는 응답 meta에서 사후에 싣는다.
+    # 장르·태그·프롬프트 버전은 미리 싣고, 재호출 횟수는 응답 meta에서 사후에 싣는다.
+    # prompt_versions는 호출 전에 넣어야 실패해도 기록된다(Codex 리뷰 P2).
+    compile_provider = provider_of(settings.story_compile_model)
+    if compile_provider == PROVIDER_GOOGLE:
+        _pv = {"COMPILE_GEMINI": COMPILE_GEMINI_VERSION}
+    else:
+        _pv = {"COMPILE": COMPILE_VERSION}
     with observe_request(
         "스토리 컴파일",
         input_data=request.model_dump(mode="json"),
         tags=dimension_tags(genre_tags=request.genre_tags),  # 장르만(위와 동일 이유)
         metadata={
             **select_connection_metadata("creation_id", "storyline_id", "storyline_order"),
-            "prompt_versions": {"COMPILE": COMPILE_VERSION},
+            "prompt_versions": _pv,
         },
     ) as trace:
         response = await story_llm.compile_story(request)
         # meta는 항상 채워지지만(compile_story 계약), 관측이 서비스를 깨지 않도록 None을 방어한다.
         if response.meta is not None:
-            trace.set_metadata(retry_count=response.meta.retry_count)
+            trace.set_metadata(
+                retry_count=response.meta.retry_count,
+                prompt_versions=response.meta.prompt_versions,
+            )
         return response
