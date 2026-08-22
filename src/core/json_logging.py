@@ -30,6 +30,39 @@ _RESERVED = frozenset(
 )
 
 
+# 컨테이너·ALB 헬스체크가 두드리는 경로. 라우터 prefix(`/api/v1`) + health 라우트다.
+_HEALTH_PATH = "/api/v1/health"
+
+# uvicorn.access는 `'%s - "%s %s HTTP/%s" %d'` 한 형식에 (클라이언트, 메서드, 경로, HTTP 버전,
+# 상태코드)를 args로 넘긴다. 포맷된 문자열을 다시 파싱하지 않고 이 args를 본다.
+_ACCESS_LOG_ARG_COUNT = 5
+_PATH_INDEX = 2
+_STATUS_INDEX = 4
+
+
+class HealthCheckAccessFilter(logging.Filter):
+    """성공한 헬스체크 접근 로그를 버린다(KNK-961).
+
+    헬스체크는 15초마다 돌아 하루 5,760건이 쌓이는데 아무도 읽지 않는다. 색인 용량을 먹고
+    Discover에서 실제 로그를 밀어낸다(백엔드도 같은 이유로 KNK-851에서 걷어냈다).
+
+    `uvicorn.access` 로거를 통째로 끄지는 않는다 — KNK-855 실측에서 이 로거가 AI 응답 완료
+    시각의 근거였다. 실패한 헬스체크(4xx·5xx)도 남긴다. 그건 노이즈가 아니라 정확히 보고 싶은
+    신호다.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        # WebSocket 등 형식이 다른 줄까지 삼키지 않도록 접근 로그 모양일 때만 판단한다.
+        if not isinstance(args, tuple) or len(args) != _ACCESS_LOG_ARG_COUNT:
+            return True
+        status = args[_STATUS_INDEX]
+        if not isinstance(status, int) or status >= 400:
+            return True
+        # uvicorn이 넘기는 경로에는 쿼리 문자열이 붙어 있을 수 있다.
+        return str(args[_PATH_INDEX]).split("?", 1)[0] != _HEALTH_PATH
+
+
 class JsonLogFormatter(logging.Formatter):
     """LogRecord를 백엔드와 같은 스키마의 JSON 한 줄로 만든다."""
 
@@ -102,3 +135,11 @@ def configure_json_logging(level: int = logging.INFO) -> None:
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers.clear()
         uvicorn_logger.propagate = True
+
+    # 필터는 핸들러가 아니라 로거에 단다. Logger.handle이 상위로 전파하기 **전에** 걸러 주므로,
+    # 핸들러를 루트로 옮긴 위 설정과 무관하게 동작한다. 두 번 호출돼도 겹쳐 붙지 않게 정리한다.
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.filters[:] = [
+        f for f in access_logger.filters if not isinstance(f, HealthCheckAccessFilter)
+    ]
+    access_logger.addFilter(HealthCheckAccessFilter())
