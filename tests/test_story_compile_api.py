@@ -43,7 +43,8 @@ async def test_compile_endpoint_returns_nested_contract(
         captured.update(kwargs)
 
         class _Trace:
-            def set_metadata(self, **_kwargs: object) -> None: ...
+            def set_metadata(self, **_kwargs: object) -> None:
+                captured.setdefault("set_metadata", {}).update(_kwargs)
 
         yield _Trace()
 
@@ -92,12 +93,15 @@ async def test_compile_endpoint_returns_nested_contract(
     assert captured["input_data"] == StoryCompileRequest.model_validate(_REQUEST).model_dump(
         mode="json"
     )
+    # 초기 metadata(호출 전): connection 메타만
     assert captured["metadata"] == {
         "creation_id": "11111111-1111-1111-1111-111111111111",
         "storyline_id": 42,
         "storyline_order": 2,
-        "prompt_versions": {"COMPILE": meta["prompt_versions"]["COMPILE"]},
     }
+    # set_metadata(호출 후): retry_count + prompt_versions가 응답에서 자동으로 실림
+    assert captured["set_metadata"]["retry_count"] == 0
+    assert captured["set_metadata"]["prompt_versions"]["COMPILE"] >= 1
 
 
 async def test_compile_endpoint_502_on_llm_error(
