@@ -170,11 +170,19 @@ def _text_of(response: object) -> str:
 
 
 def _usage_of(response: object) -> TokenUsage:
-    """usage를 옮긴다."""
+    """usage를 옮긴다. thinking 토큰은 output에 합산한다(비용·지표 정합성)."""
     usage = getattr(response, "usage_metadata", None)
+    candidates = getattr(usage, "candidates_token_count", None)
+    thoughts = getattr(usage, "thoughts_token_count", None)
+    if candidates is not None and thoughts is not None:
+        output_tokens = candidates + thoughts
+    elif candidates is not None:
+        output_tokens = candidates
+    else:
+        output_tokens = thoughts  # 둘 다 None이면 None
     return TokenUsage(
         input_tokens=getattr(usage, "prompt_token_count", None),
-        output_tokens=getattr(usage, "candidates_token_count", None),
+        output_tokens=output_tokens,
         cache_creation_input_tokens=None,
         cache_read_input_tokens=getattr(usage, "cached_content_token_count", None),
     )
@@ -227,6 +235,8 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
         )
     except errors.APIError as exc:
         raise _translate(exc, resolved) from exc
+    except (ConnectionError, TimeoutError, OSError) as exc:
+        raise _translate(exc, resolved) from exc
     return LlmResult(
         text=_text_of(response),
         model=getattr(response, "model_version", None) or req.model,
@@ -272,6 +282,8 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
             if isinstance(text, str) and text:
                 yield TextDelta(text)
     except errors.APIError as exc:
+        raise _translate(exc, resolved) from exc
+    except (ConnectionError, TimeoutError, OSError) as exc:
         raise _translate(exc, resolved) from exc
     yield StreamCompleted(
         model=model,

@@ -93,13 +93,12 @@ async def test_compile_endpoint_returns_nested_contract(
     assert captured["input_data"] == StoryCompileRequest.model_validate(_REQUEST).model_dump(
         mode="json"
     )
-    # 초기 metadata(호출 전): connection 메타만
-    assert captured["metadata"] == {
-        "creation_id": "11111111-1111-1111-1111-111111111111",
-        "storyline_id": 42,
-        "storyline_order": 2,
-    }
-    # set_metadata(호출 후): retry_count + prompt_versions가 응답에서 자동으로 실림
+    # 초기 metadata(호출 전): connection 메타 + prompt_versions(실패해도 기록되도록)
+    assert captured["metadata"]["creation_id"] == "11111111-1111-1111-1111-111111111111"
+    assert captured["metadata"]["storyline_id"] == 42
+    assert captured["metadata"]["storyline_order"] == 2
+    assert captured["metadata"]["prompt_versions"]["COMPILE"] >= 1
+    # set_metadata(호출 후): retry_count + prompt_versions가 응답에서도 실림
     assert captured["set_metadata"]["retry_count"] == 0
     assert captured["set_metadata"]["prompt_versions"]["COMPILE"] >= 1
 
