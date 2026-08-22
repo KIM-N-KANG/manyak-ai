@@ -9,7 +9,11 @@ import json
 import logging
 import sys
 
-from src.core.json_logging import JsonLogFormatter, configure_json_logging
+from src.core.json_logging import (
+    HealthCheckAccessFilter,
+    JsonLogFormatter,
+    configure_json_logging,
+)
 from src.core.request_context import set_correlation_ids
 
 
@@ -126,3 +130,62 @@ def test_핸들러는_stdout으로_낸다():
     finally:
         root.handlers[:] = saved_handlers
         root.setLevel(saved_level)
+
+
+def _access_record(path: str, status: int = 200) -> logging.LogRecord:
+    """uvicorn.access가 실제로 만드는 것과 같은 모양의 레코드.
+
+    uvicorn은 `'%s - "%s %s HTTP/%s" %d'` 한 형식에 (클라이언트, 메서드, 경로, HTTP 버전, 상태코드)를
+    args로 넘긴다. 포맷된 문자열이 아니라 이 args를 보는 것이 필터 구현의 전제다.
+    """
+    return logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="uvicorn/protocols/http/httptools_impl.py",
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:33796", "GET", path, "1.1", status),
+        exc_info=None,
+    )
+
+
+def test_성공한_헬스체크_접근_로그는_버린다():
+    """ECS 헬스체크가 15초마다 돌아 하루 5,760건이 쌓이는데 아무도 읽지 않는다(KNK-961)."""
+    assert HealthCheckAccessFilter().filter(_access_record("/api/v1/health")) is False
+    # uvicorn이 넘기는 경로에는 쿼리 문자열이 붙어 있을 수 있다.
+    assert HealthCheckAccessFilter().filter(_access_record("/api/v1/health?probe=1")) is False
+
+
+def test_다른_경로의_접근_로그는_남긴다():
+    """KNK-855 실측에서 uvicorn.access가 AI 응답 완료 시각의 근거였다. 통째로 끄면 안 된다."""
+    assert HealthCheckAccessFilter().filter(_access_record("/api/v1/story/storylines")) is True
+
+
+def test_실패한_헬스체크는_남긴다():
+    """헬스체크가 깨진 순간은 정확히 보고 싶은 신호다. 노이즈는 성공한 줄뿐이다."""
+    assert HealthCheckAccessFilter().filter(_access_record("/api/v1/health", status=503)) is True
+
+
+def test_접근_로그_형식이_아닌_레코드는_통과시킨다():
+    """uvicorn이 WebSocket 등 다른 형식으로 남기는 줄까지 삼키지 않도록 args 모양을 확인한다."""
+    assert HealthCheckAccessFilter().filter(_record("평범한 로그")) is True
+
+
+def test_설정이_접근_로거에_필터를_단다():
+    access_logger = logging.getLogger("uvicorn.access")
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    saved_filters = access_logger.filters[:]
+    try:
+        configure_json_logging()
+        configure_json_logging()  # 두 번 불러도 필터가 겹쳐 붙지 않아야 한다.
+
+        health_filters = [f for f in access_logger.filters if isinstance(f, HealthCheckAccessFilter)]
+        assert len(health_filters) == 1
+        # 로거 필터는 propagate=True 여도 Logger.handle에서 먼저 걸리므로 루트 핸들러까지 가지 않는다.
+        assert access_logger.filter(_access_record("/api/v1/health")) is False
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+        access_logger.filters[:] = saved_filters
