@@ -6,7 +6,7 @@ from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
 from src.services import story_llm
-from src.services.prompt import COMPILE_VERSION, STORYLINES_VERSION, build_storylines_prompt
+from src.services.prompt import STORYLINES_VERSION, build_storylines_prompt
 
 router = APIRouter()
 
@@ -68,13 +68,13 @@ async def create_story_compile(request: StoryCompileRequest) -> StoryCompileResp
         "스토리 컴파일",
         input_data=request.model_dump(mode="json"),
         tags=dimension_tags(genre_tags=request.genre_tags),  # 장르만(위와 동일 이유)
-        metadata={
-            **select_connection_metadata("creation_id", "storyline_id", "storyline_order"),
-            "prompt_versions": {"COMPILE": COMPILE_VERSION},
-        },
+        metadata=select_connection_metadata("creation_id", "storyline_id", "storyline_order"),
     ) as trace:
         response = await story_llm.compile_story(request)
         # meta는 항상 채워지지만(compile_story 계약), 관측이 서비스를 깨지 않도록 None을 방어한다.
         if response.meta is not None:
-            trace.set_metadata(retry_count=response.meta.retry_count)
+            trace.set_metadata(
+                retry_count=response.meta.retry_count,
+                prompt_versions=response.meta.prompt_versions,
+            )
         return response

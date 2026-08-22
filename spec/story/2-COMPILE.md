@@ -1,6 +1,6 @@
 ---
-version: 8
-updated: 2026-08-17
+version: 9
+updated: 2026-08-22
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -29,10 +29,17 @@ updated: 2026-08-17
 |---|---|---|
 | 입력 | 장르 태그 + 인물 설정 | 선택 스토리라인 + 추가정보 + 장르 태그 + 인물 설정 |
 | 출력 | 이야기 3편 + 추천정보 | 스토리 명세 1건(4테이블 + 주요 사건·엔딩) |
-| 모델 | `deepseek-v4-flash` | `gpt-5.6-terra` |
+| 모델 | `deepseek-v4-flash` | `gpt-5.6-terra` 또는 Gemini Flash(`STORY_COMPILE_MODEL` env) |
 | 호출 | 단일 호출 | 본호출 + 빈 블록 부분 재호출(최대 2회) |
 
-프롬프트 템플릿은 `prompt/story/COMPILE-TEMPLATE.md`이며, 스토리라인과 마찬가지로 `[SYSTEM]`·`[USER]` 두 블록으로 구성됩니다.
+프롬프트 템플릿은 모델 공급자에 따라 나뉩니다(KNK-958).
+
+| 공급자 | 템플릿 | `prompt_versions` 키 |
+|--------|--------|---------------------|
+| OpenAI(기본) | `prompt/story/COMPILE-TEMPLATE.md` | `COMPILE` |
+| Google(Gemini) | `prompt/story/COMPILE-TEMPLATE-gemini.md` | `COMPILE_GEMINI` |
+
+두 템플릿 모두 `[SYSTEM]`·`[USER]` 두 블록으로 구성되며, 같은 6개 슬롯을 씁니다. 서버는 `STORY_COMPILE_MODEL` 환경변수로 정해진 모델의 공급자를 보고 템플릿을 선택합니다. refill·에러 캡처·응답 meta도 같은 공급자 기준을 따릅니다.
 
 ---
 
@@ -194,7 +201,7 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
   ],
   "meta": {
     "model": "gpt-5.6-terra",
-    "prompt_versions": { "COMPILE": 7 },
+    "prompt_versions": { "COMPILE": 8 },
     "provider": "openai",
     "input_token_count": 3500,
     "output_token_count": 2200,
@@ -291,7 +298,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 
 ## 6. 프롬프트 요구사항
 
-전문은 `prompt/story/COMPILE-TEMPLATE.md`이며, 핵심 요구사항은 다음과 같습니다.
+전문은 `prompt/story/COMPILE-TEMPLATE.md`(OpenAI)와 `prompt/story/COMPILE-TEMPLATE-gemini.md`(Gemini)이며, 핵심 요구사항은 다음과 같습니다.
 
 **역할 매핑**: 스토리라인의 구성 요소를 올바른 대상에 귀속시킵니다.
 
@@ -345,6 +352,6 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 
 ## 부록. 프롬프트 템플릿 전문
 
-전체 내용은 `prompt/story/COMPILE-TEMPLATE.md`를 참조합니다.
+전체 내용은 `prompt/story/COMPILE-TEMPLATE.md`(OpenAI용)와 `prompt/story/COMPILE-TEMPLATE-gemini.md`(Gemini용)를 참조합니다.
 
-서버는 `[SYSTEM]` 블록을 `system` 역할 메시지로, `[USER]` 블록의 `{{...}}` 자리표시자를 실제 입력값으로 치환한 뒤 `user` 역할 메시지로 전달합니다.
+서버는 `[SYSTEM]` 블록을 `system` 역할 메시지로, `[USER]` 블록의 `{{...}}` 자리표시자를 실제 입력값으로 치환한 뒤 `user` 역할 메시지로 전달합니다. Gemini 템플릿은 같은 슬롯·스키마를 따르되, Gemini 프롬프팅 특성에 맞게 지시 방식을 조정했습니다(KNK-958).
