@@ -180,3 +180,70 @@ async def test_compile_story_gemini_refill_uses_gemini_system(
     assert all(s == _COMPILE_GEMINI_SYSTEM for s in captured_systems)
     # refill의 prompt_versions도 COMPILE_GEMINI인지
     assert all("COMPILE_GEMINI" in v for v in captured_versions)
+
+
+# ── 외형 필드(KNK-937) ───────────────────────────────────────────────────────
+
+_APPEARANCE_FIELDS = ("age", "body", "face", "hair", "outfit", "visual_identity")
+
+
+def test_appearance_fields_in_valid_spec() -> None:
+    """픽스처의 인물 카드가 외형 6필드를 모두 갖고 있다."""
+    spec = _spec()
+    for card in spec["prompt_settings"]["character_setting"]:
+        for field in _APPEARANCE_FIELDS:
+            assert field in card and card[field], f"{card['name']}의 {field}가 비어 있다"
+
+
+def test_appearance_fields_parsed_in_schema() -> None:
+    """StorySpec 파싱 시 외형 필드가 CharacterSetting에 제대로 들어간다."""
+    from src.schemas.story_compile import StorySpec
+
+    spec = StorySpec(**_spec())
+    for c in spec.prompt_settings.character_setting:
+        assert c.age
+        assert c.body
+        assert c.face
+        assert c.hair
+        assert c.outfit
+        assert c.visual_identity
+
+
+def test_appearance_not_in_togul() -> None:
+    """통글 변환 결과에 외형 필드가 포함되지 않는다(이미지 생성 전용)."""
+    from src.schemas.story_compile import StorySpec
+    from src.services.story_compile_render import spec_to_response
+
+    spec = StorySpec(**_spec())
+    response = spec_to_response(spec)
+    togul = response.story_settings.character_setting
+    for field in _APPEARANCE_FIELDS:
+        # 통글 마크다운에 외형 필드명이 헤더(### age 등)로 등장하면 안 된다
+        assert f"### {field}" not in togul
+
+
+def test_missing_appearance_field_not_blocking() -> None:
+    """외형 필드가 비어도 _find_missing_keys가 잡지 않는다(선택 필드)."""
+    spec = _spec()
+    for card in spec["prompt_settings"]["character_setting"]:
+        for field in _APPEARANCE_FIELDS:
+            card.pop(field, None)
+    missing = story_llm._find_missing_keys(spec)
+    # 외형 필드 경로가 누락 목록에 없어야 한다
+    appearance_missing = [p for p in missing if any(f in p for f in _APPEARANCE_FIELDS)]
+    assert appearance_missing == []
+
+
+def test_appearance_fields_default_empty() -> None:
+    """외형 필드 없이도 StorySpec 파싱이 성공한다(기본값 빈 문자열)."""
+    from src.schemas.story_compile import StorySpec
+
+    spec = _spec()
+    for card in spec["prompt_settings"]["character_setting"]:
+        for field in _APPEARANCE_FIELDS:
+            card.pop(field, None)
+    parsed = StorySpec(**spec)
+    # 파싱 성공하고 외형은 빈 문자열
+    for c in parsed.prompt_settings.character_setting:
+        assert c.age == ""
+        assert c.body == ""

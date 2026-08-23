@@ -55,6 +55,7 @@ class CharacterSetting(BaseModel):
     """CHARACTER — 주변 인물 카드. 주인공은 포함하지 않는다(USER 소유).
 
     gender는 한국어 서술 값("남성"·"여성") — 통글에 명시 칸으로 실린다(KNK-838).
+    외형 6필드(age~visual_identity)는 이미지 생성용이며 통글에는 싣지 않는다(KNK-937).
     """
 
     name: str
@@ -63,6 +64,15 @@ class CharacterSetting(BaseModel):
     tone: str
     motivation: str
     attitude_to_user: str
+    # 외형 필드 — 이미지 생성 프롬프트 조립에 쓰인다(KNK-937).
+    # 통글 변환 전 JSON 상태에서 꺼내 이미지 모델에 전달한다.
+    # 선택 필드: LLM이 못 채워도 컴파일은 성공하고, 이미지만 안 만들어진다.
+    age: str = ""
+    body: str = ""
+    face: str = ""
+    hair: str = ""
+    outfit: str = ""
+    visual_identity: str = ""
 
 
 class UserRoleSetting(BaseModel):
