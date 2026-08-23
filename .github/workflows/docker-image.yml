@@ -149,8 +149,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # main 푸시 → 배포용 ECR (OIDC, 장기 키 미보관)
+      # main 에서의 수동 실행(workflow_dispatch)도 포함한다. 롤백 경로인 EC2 배포 잡이 그 이벤트로만
+      # 도는데, 여기서 인증을 건너뛰면 태그가 ECR 이 아닌 GHCR 로 잡히고 push 도 되지 않아
+      # 롤백 실행이 "ECR 에 그 SHA 가 이미 있어야만" 성립하는 반쪽 경로가 된다(KNK-963).
       - name: Configure AWS credentials
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -158,7 +161,7 @@ jobs:
 
       - name: Log in to Amazon ECR
         id: ecr-login
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: aws-actions/amazon-ecr-login@v2
 
       # 대상 레지스트리/태그 결정: main → ECR(short-sha), 그 외 → GHCR(short-sha)
@@ -193,7 +196,7 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
           tags: ${{ steps.image-tags.outputs.tags }}
 
   # dev 푸시(GHCR 갱신) 후 → 개발 ECS 서비스에 새 배포를 트리거 (KNK-829)
@@ -454,9 +457,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     # 배포를 직렬화(큐잉)한다. cancel-in-progress=false: 진행 중 배포를 취소하지 않는다.
     # (true 면 SSM send-command 로 EC2에 이미 dispatch된 원격 배포는 못 막고 GitHub 잡만 취소돼 레이스가 남음)
-    # 큐잉이라 푸시 순서대로 배포되어 최신 SHA 가 마지막에 반영된다. server 배포와는 레포가 달라 별도 그룹이다.
+    # 그룹명은 ECS 배포 잡·manyak-server 와 통일한다. 롤백(EC2)과 정상 배포(ECS)가 같은 운영 자원을
+    # 건드리므로, 레포 안에서만이라도 두 경로가 겹치지 않게 한 큐에 세운다(KNK-963).
     concurrency:
-      group: manyak-ai-prod-deploy
+      group: manyak-prod-deploy
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
