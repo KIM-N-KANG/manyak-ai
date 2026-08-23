@@ -48,7 +48,7 @@ async def generate_image(prompt: str) -> ImageResult:
     req = ImageRequest(
         model=model,
         prompt=prompt,
-        size="1024x1024",
+        size=settings.image_size,
         quality=settings.image_quality,
         timeout=settings.image_timeout,
     )

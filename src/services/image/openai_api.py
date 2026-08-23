@@ -62,8 +62,9 @@ def _client(api_key: str, base_url: str | None) -> AsyncOpenAI:
 async def generate(req: ImageRequest) -> ImageResult:
     """OpenAI Images API로 이미지를 생성한다.
 
-    b64_json 형식으로 받아 PNG 바이너리로 변환한다. URL 형식은 1시간 뒤
-    만료돼서 S3에 올리기 전에 깨질 위험이 있다.
+    output_format="png"로 요청하면 응답의 data[0].b64_json에 base64 인코딩된
+    PNG가 담긴다. gpt-image-2는 output_format으로 "b64_json"을 받지 않고
+    "png"/"webp"/"jpeg"만 받되, 결과는 b64_json 필드에 base64로 준다.
     """
     from src.core.config import settings
 
@@ -75,7 +76,7 @@ async def generate(req: ImageRequest) -> ImageResult:
             n=1,
             size=req.size,
             quality=req.quality,
-            output_format="b64_json",
+            output_format="png",
             timeout=httpx.Timeout(req.timeout, connect=10.0),
         )
     except APITimeoutError as exc:

@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # API 키는 공급자별 기존 키를 재사용한다(gpt-image-2 → openai_api_key).
     image_model: str = "gpt-image-2-2026-04-21"  # 컴파일 인물 이미지 전용 (스냅샷 고정)
     image_quality: str = "low"  # 이미지 화질 (low / medium / high)
+    image_size: str = "1024x768"  # 이미지 크기 (가로 4:3)
     image_timeout: float = 60.0  # 이미지 1장 생성 제한 시간(초)
 
     # Sentry 오류 수집 (KNK-262). DSN이 비면 비활성(no-op) — 로컬·CI는 끈다.
