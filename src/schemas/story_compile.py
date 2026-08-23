@@ -197,6 +197,23 @@ class StoryEndingOut(BaseModel):
     epilogue: str
 
 
+class CharacterAppearanceOut(BaseModel):
+    """인물별 외형 정보 — 컴파일 LLM이 생성한 시각 묘사를 백엔드에 전달한다.
+
+    백엔드는 이 정보를 DB에 저장해, 썸네일 생성·인물 이미지 재생성 등에 활용한다.
+    통글 마크다운(character_setting)에는 포함되지 않는 별도 데이터다.
+    """
+
+    name: str
+    gender: str
+    age: str = ""
+    body: str = ""
+    face: str = ""
+    hair: str = ""
+    outfit: str = ""
+    visual_identity: str = ""
+
+
 class CharacterImageOut(BaseModel):
     """인물별 생성 이미지 — 성공 시 base64 문자열, 실패 시 None(KNK-940).
 
@@ -219,8 +236,14 @@ class StoryCompileResponse(BaseModel):
     story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
     story_main_events: list[StoryMainEventOut] = Field(min_length=3, max_length=5)  # 주요 사건 3~5개(KNK-417)
     story_endings: list[StoryEndingOut] = Field(default_factory=list)  # 0개(폴백) 또는 3개(KNK-465)
+    # 인물별 외형 정보. 컴파일 LLM이 생성한 시각 묘사를 백엔드가 DB에 저장한다.
+    # 썸네일 생성·인물 이미지 재생성 등에 활용한다. 통글(character_setting)과 별도다.
+    # 주의: 인물 전원이 포함되며, 외형 필드가 비어있어도(LLM이 못 채운 경우) 항목은 존재한다.
+    character_appearances: list[CharacterAppearanceOut] = Field(default_factory=list)
     # 인물별 이미지(KNK-940). 컴파일 성공 후 병렬 생성하며, 실패해도 컴파일 자체는 성공한다.
     # 인물별로 성공(image_base64 있음) 또는 실패(error 있음)가 항목별로 반환된다.
     # 빈 배열은 인물이 0명이거나 이미지 생성 로직 자체가 예상치 못한 오류로 실패한 경우다.
+    # 참고: character_appearances는 인물 전원, character_images는 외형이 있는 인물만 포함하므로
+    # 두 배열의 길이가 다를 수 있다. 백엔드는 name으로 매칭한다.
     character_images: list[CharacterImageOut] = Field(default_factory=list)
     meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). compile_story가 항상 채운다.

@@ -272,6 +272,16 @@ def test_spec_to_response_renders_nested_markdown() -> None:
     # 시작 설정·추천 입력은 값 그대로
     assert res.story_start_settings.name == "선왕의 장례식 날"
     assert len(res.story_suggested_inputs) == 3
+    # character_appearances: 인물 전원의 외형 정보가 별도 배열로 내려온다
+    assert len(res.character_appearances) == len(spec.prompt_settings.character_setting)
+    for app, src in zip(res.character_appearances, spec.prompt_settings.character_setting, strict=True):
+        assert app.name == src.name
+        assert app.gender == src.gender
+        assert app.age == src.age
+        assert app.face == src.face
+        assert app.hair == src.hair
+        assert app.outfit == src.outfit
+        assert app.visual_identity == src.visual_identity
 
 
 def test_spec_to_response_render_equality() -> None:

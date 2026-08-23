@@ -96,6 +96,11 @@ async def test_compile_endpoint_returns_nested_contract(
     assert "promptVersions" not in meta  # camelCase 아님(story는 snake)
     # KNK-940: 이미지 생성을 빈 배열로 대체했으므로 빈 배열이 내려온다
     assert body["character_images"] == []
+    # 인물별 외형 정보가 응답에 실려 내려온다
+    assert isinstance(body["character_appearances"], list)
+    assert len(body["character_appearances"]) >= 1
+    app = body["character_appearances"][0]
+    assert "name" in app and "gender" in app and "face" in app
     assert captured["name"] == "스토리 컴파일"
     assert captured["input_data"] == StoryCompileRequest.model_validate(_REQUEST).model_dump(
         mode="json"
