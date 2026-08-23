@@ -367,21 +367,42 @@ jobs:
         id: image
         run: |
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.gate.outputs.deploy_short_sha }}"
-          if docker buildx imagetools inspect "$IMAGE" > /dev/null 2>&1; then
+          if OUT=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "배포 이미지 확인: $IMAGE"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::main HEAD(${{ steps.gate.outputs.deploy_short_sha }}) 이미지가 아직 ECR 에 없습니다 — 그 커밋의 실행이 배포합니다"
+            exit 0
           fi
+          echo "$OUT"
+          # 조회 실패를 뭉뚱그려 "아직 빌드 안 됨"으로 넘기지 않는다(fail-closed).
+          # 이 실행이 HEAD 자신이면 build 잡이 방금 push 한 이미지라 없을 수가 없다 — 무조건 실패.
+          if [ "${{ steps.gate.outputs.deploy_sha }}" = "$GITHUB_SHA" ]; then
+            echo "::error::이 실행이 방금 push 한 HEAD 이미지($IMAGE)를 조회하지 못했습니다 — 빌드 또는 권한 문제"
+            exit 1
+          fi
+          # HEAD 가 다른 커밋일 때만, 매니페스트 부재로 판별되는 경우에 한해 건너뛴다.
+          if printf '%s' "$OUT" | grep -qiE 'not found|manifest unknown|manifest_unknown|does not exist|no such manifest'; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main HEAD(${{ steps.gate.outputs.deploy_short_sha }}) 이미지가 아직 ECR 에 없습니다(매니페스트 부재로 판별) — 그 커밋의 실행이 배포합니다"
+            exit 0
+          fi
+          echo "::error::이미지 조회가 매니페스트 부재가 아닌 이유로 실패했습니다(인증·네트워크 등) — 위 출력 확인"
+          exit 1
 
       # :latest 를 main HEAD 로 옮긴다. 빌드 잡에서 붙이면 늦게 끝난 옛 빌드가 태그를 되돌릴 수
       # 있다(dev 의 :dev 와 같은 버그, KNK-829). manifest 를 복사하므로 멀티아키 인덱스가 유지된다.
       - name: Promote main HEAD to :latest
+        id: promote
         if: steps.image.outputs.exists == 'true'
         run: |
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}"
+          # 승격 전 현재 :latest 의 digest 를 보관한다(아래 복구 스텝이 되돌릴 대상).
+          # 인덱스 digest 라 되돌려도 멀티아키 인덱스가 유지된다. :latest 가 아직 없으면 빈 값.
+          PREV_DIGEST=$(docker buildx imagetools inspect "${IMAGE}:latest" 2>/dev/null \
+            | awk '/^Digest:/{print $2; exit}')
+          echo "PREV_DIGEST=$PREV_DIGEST" >> "$GITHUB_ENV"
+          echo "승격 전 :latest digest: ${PREV_DIGEST:-(없음)}"
           docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${{ steps.gate.outputs.deploy_short_sha }}"
+          echo "promoted=true" >> "$GITHUB_OUTPUT"
           echo "✅ :latest -> ${{ steps.gate.outputs.deploy_short_sha }}"
 
       # 운영 태스크 정의는 이미 :latest 좌표를 들고 있으므로 새 리비전을 등록하지 않는다
@@ -480,6 +501,19 @@ jobs:
           done
           echo "::error::health 200/UP 확인 실패 — CloudWatch /ecs/manyak-prod 로그 확인"; exit 1
 
+      # 배포·헬스·스모크가 실패하면 :latest 를 승격 전 이미지로 되돌린다.
+      # circuit breaker 가 태스크를 롤백해도 :latest 는 실패 이미지를 가리킨 채라,
+      # 다음 force-new-deployment(상대 레포 릴리스 포함)가 실패 이미지를 다시 띄운다.
+      - name: Restore :latest on failure
+        if: failure() && steps.promote.outputs.promoted == 'true'
+        run: |
+          IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}"
+          if [ -z "$PREV_DIGEST" ]; then
+            echo "::warning:::latest 가 승격 전에 없었어 되돌릴 대상이 없습니다 — :latest 는 실패한 ${{ steps.gate.outputs.deploy_short_sha }} 를 가리킵니다. 수동 조치 필요"
+            exit 0
+          fi
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${PREV_DIGEST}"
+          echo "↩️ :latest 복구 -> $PREV_DIGEST"
   # [롤백 경로] 전용 SSM 문서(manyak-prod-ai-deploy)로 EC2에 AI 배포
   # (문서가 내부에서 deploy.sh + `up -d --wait ai` 로 health 게이트까지 수행)
   # 이 잡은 manyak-terraform 에서 ALB 트래픽을 EC2 로 전환(ecs_traffic_weight = 0)한 뒤 실행하는
@@ -504,23 +538,14 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
-      # 빌드 시간차로 순서가 뒤집혀도 older SHA 가 배포되지 않도록, 이 run 의 SHA 가 main HEAD 인지 확인.
-      # 아니면(더 새 푸시가 있으면) 이후 배포·스모크 스텝을 건너뛴다(concurrency 큐잉의 순서 미보장 보완).
-      - name: Gate — 최신 main SHA 확인(stale 배포 방지)
-        id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # 최신 main SHA 게이트를 두지 않는다. 이 잡은 사람이 의도해서 돌리는 유일한 롤백 실행이라,
+      # 롤백 도중 main 이 전진했다는 이유로 skip 하면 롤백 자체가 사라진다.
+      # 배포 대상은 이 실행이 체크아웃한 커밋의 이미지다.
+      - name: 배포 대상 알림
         run: |
-          LATEST_SHA=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')
-          if [ "$LATEST_SHA" != "$GITHUB_SHA" ]; then
-            echo "::notice::최신 main($LATEST_SHA)이 더 있어 stale($GITHUB_SHA) 배포를 건너뜁니다"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "::notice::수동 롤백 실행 — 이 실행의 커밋 ${GITHUB_SHA::7} 이미지를 EC2 에 배포합니다"
 
       - name: Configure AWS credentials (OIDC)
-        if: steps.gate.outputs.skip != 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -528,12 +553,10 @@ jobs:
 
       - name: Log in to Amazon ECR
         id: ecr-login
-        if: steps.gate.outputs.skip != 'true'
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Resolve target EC2 instance
         id: ec2
-        if: steps.gate.outputs.skip != 'true'
         run: |
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Project,Values=manyak" "Name=tag:Name,Values=manyak-prod-app" "Name=instance-state-name,Values=running" \
@@ -545,7 +568,6 @@ jobs:
           echo "대상 인스턴스: $INSTANCE_ID"
 
       - name: Deploy via SSM (전용 문서 manyak-prod-ai-deploy)
-        if: steps.gate.outputs.skip != 'true'
         run: |
           # 이 워크플로가 빌드·푸시한 정확한 이미지(short-sha)를 배포 — :latest 의 동시 push 모호성·추적성 문제 회피
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA::7}"
