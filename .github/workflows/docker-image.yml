@@ -397,8 +397,14 @@ jobs:
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}"
           # 승격 전 현재 :latest 의 digest 를 보관한다(아래 복구 스텝이 되돌릴 대상).
           # 인덱스 digest 라 되돌려도 멀티아키 인덱스가 유지된다. :latest 가 아직 없으면 빈 값.
-          PREV_DIGEST=$(docker buildx imagetools inspect "${IMAGE}:latest" 2>/dev/null \
-            | awk '/^Digest:/{print $2; exit}')
+          # 캡처와 파싱을 분리한다 — 러너 기본 셸이 `bash -eo pipefail` 이라, 조회를 파이프라인
+          # 안에서 하면 :latest 부재 시 스텝 자체가 죽어 "빈 값이면 경고" 분기에 닿지 못한다.
+          if LATEST_INSPECT=$(docker buildx imagetools inspect "${IMAGE}:latest" 2>&1); then
+            PREV_DIGEST=$(printf '%s\n' "$LATEST_INSPECT" | awk '/^Digest:/{print $2; exit}')
+          else
+            PREV_DIGEST=""
+            echo "현재 :latest 를 조회하지 못했습니다(부재로 간주) — 실패 시 되돌릴 대상 없음"
+          fi
           echo "PREV_DIGEST=$PREV_DIGEST" >> "$GITHUB_ENV"
           echo "승격 전 :latest digest: ${PREV_DIGEST:-(없음)}"
           docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${{ steps.gate.outputs.deploy_short_sha }}"
