@@ -62,9 +62,10 @@ def _client(api_key: str, base_url: str | None) -> AsyncOpenAI:
 async def generate(req: ImageRequest) -> ImageResult:
     """OpenAI Images API로 이미지를 생성한다.
 
-    output_format="png"로 요청하면 응답의 data[0].b64_json에 base64 인코딩된
-    PNG가 담긴다. gpt-image-2는 output_format으로 "b64_json"을 받지 않고
+    output_format="webp"로 요청하면 응답의 data[0].b64_json에 base64 인코딩된
+    WebP가 담긴다. gpt-image-2는 output_format으로 "b64_json"을 받지 않고
     "png"/"webp"/"jpeg"만 받되, 결과는 b64_json 필드에 base64로 준다.
+    WebP는 PNG 대비 파일 크기가 작아 base64 응답 전송에 유리하다(KNK-940).
     """
     from src.core.config import settings
 
@@ -76,7 +77,7 @@ async def generate(req: ImageRequest) -> ImageResult:
             n=1,
             size=req.size,
             quality=req.quality,
-            output_format="png",
+            output_format="webp",
             timeout=httpx.Timeout(req.timeout, connect=10.0),
         )
     except APITimeoutError as exc:

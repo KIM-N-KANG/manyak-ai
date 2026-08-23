@@ -28,7 +28,7 @@ class ImageRequest:
 class ImageResult:
     """이미지 생성 결과. 어댑터가 채운다."""
 
-    image_bytes: bytes  # PNG 바이너리
+    image_bytes: bytes  # 이미지 바이너리 (현재 WebP, output_format에 따라 변경 가능)
     model: str
     provider: str
 

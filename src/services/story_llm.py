@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import time
@@ -22,7 +23,13 @@ from src.core.sentry import (
 )
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import CharacterInput, StoryItem
-from src.schemas.story_compile import Ending, StoryCompileRequest, StoryCompileResponse, StorySpec
+from src.schemas.story_compile import (
+    CharacterImageOut,
+    Ending,
+    StoryCompileRequest,
+    StoryCompileResponse,
+    StorySpec,
+)
 from src.services import llm
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt import (
@@ -687,6 +694,59 @@ def _missing_required_characters(data: dict, required_names: tuple[str, ...]) ->
     return any(n not in card_names for n in required_names)
 
 
+async def _generate_character_images_safe(
+    characters: list,
+    genre_tags: list[str],
+) -> list[CharacterImageOut]:
+    """인물별 이미지를 생성해 base64로 변환한다. 전체 실패해도 예외를 던지지 않는다.
+
+    이미지 생성은 컴파일의 부가물이라, 여기서 터진 예외가 컴파일 200을 502로
+    만들면 안 된다. 모든 예외를 잡아 빈 배열로 폴백한다.
+    """
+    from src.services.image.generate_characters import generate_character_images
+
+    try:
+        results = await generate_character_images(characters, genre_tags)
+
+        images: list[CharacterImageOut] = []
+        for r in results:
+            if r.image is not None:
+                images.append(CharacterImageOut(
+                    name=r.name,
+                    image_base64=base64.b64encode(r.image.image_bytes).decode("ascii"),
+                ))
+            else:
+                # 공급자 원문은 로그에만 남기고, 응답에는 안정적인 에러 코드만 내려보낸다.
+                logger.info("인물 이미지 실패: %s — %s", r.name, r.error)
+                images.append(CharacterImageOut(
+                    name=r.name,
+                    error=_classify_image_error(r.error),
+                ))
+        return images
+    except Exception:
+        logger.exception("인물 이미지 생성 중 예상치 못한 오류 — 이미지 없이 반환")
+        return []
+
+
+def _classify_image_error(error: str | None) -> str:
+    """이미지 생성 실패 사유를 안정적인 코드로 분류한다.
+
+    공급자 원문을 응답에 그대로 노출하지 않는다(텍스트 LLM의 _DETAIL_BY_CODE와 같은 원칙).
+    """
+    if error is None:
+        return "generation_failed"
+    lower = error.lower()
+    if "시간 초과" in error or "timeout" in lower:
+        return "timeout"
+    if "속도 제한" in error or "rate" in lower:
+        return "rate_limited"
+    if "거부" in error or "rejected" in lower or "safety" in lower:
+        return "rejected"
+    if "외형 필드 부족" in error:
+        return "appearance_missing"
+    return "generation_failed"
+
+
 async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     """시점 A-1: 희소 입력을 스토리 명세로 컴파일해 백엔드 계약(nested 통글)으로 반환한다.
 
@@ -816,4 +876,12 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         output_token_count=output_tokens,
         retry_count=attempts,  # 부분 재호출 횟수(0~_MAX_REFILL)
     )
+
+    # 인물별 이미지 병렬 생성(KNK-940). 컴파일 성공 후에 실행하며, 이미지 실패가
+    # 컴파일 전체를 502로 만들지 않는다 — 이미지는 부가물이라 실패한 인물만 빈다.
+    response.character_images = await _generate_character_images_safe(
+        spec.prompt_settings.character_setting,
+        request.genre_tags,
+    )
+
     return response

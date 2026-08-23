@@ -23,6 +23,19 @@ def _load(name: str) -> dict:
     return json.loads((_FIXTURES / name).read_text(encoding="utf-8"))
 
 
+@pytest.fixture(autouse=True)
+def _no_image_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """compile_story() 테스트에서 실제 이미지 API를 호출하지 않는다(KNK-940).
+
+    이미지 생성은 컴파일의 부가물이라, 컴파일 계약 테스트에서는 빈 결과로 대체한다.
+    """
+
+    async def fake_images(characters, genre_tags):
+        return []
+
+    monkeypatch.setattr(story_llm, "_generate_character_images_safe", fake_images)
+
+
 def _request() -> StoryCompileRequest:
     return StoryCompileRequest(
         selected_storyline="x",

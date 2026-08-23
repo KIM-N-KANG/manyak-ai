@@ -63,5 +63,13 @@ async def generate_character_images(
         return []
 
     semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
-    tasks = [_generate_one(c, genre_tags, semaphore) for c in characters]
-    return list(await asyncio.gather(*tasks))
+    tasks = [asyncio.create_task(_generate_one(c, genre_tags, semaphore)) for c in characters]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except Exception:
+        # 예상치 못한 예외 발생 시 아직 돌고 있는 나머지 작업을 취소한다.
+        # 취소하지 않으면 응답은 이미 갔는데 이미지 호출만 계속 돌아 비용이 낭비된다.
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        raise

@@ -103,12 +103,10 @@ async def test_generate_partial_failure(monkeypatch: pytest.MonkeyPatch) -> None
     """한 인물 실패 시 나머지는 정상 반환된다."""
     import src.services.image.generate_characters as gen_mod
 
-    call_count = 0
-
     async def fake_generate(prompt: str):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
+        # asyncio.gather 실행 순서에 의존하지 않도록 프롬프트 내용으로 실패를 결정한다.
+        # 세린만 gender="여성"이라 프롬프트에 <gender>여성</gender>이 들어간다.
+        if "<gender>여성</gender>" in prompt:
             raise ImageTimeout("시간 초과")
         return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
 
