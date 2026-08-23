@@ -385,6 +385,8 @@ jobs:
             --force-new-deployment --no-cli-pager \
             --query "service.deployments[?status=='PRIMARY'].id | [0]" --output text)
           echo "배포 id: $DEPLOY_ID"
+          # 헬스 검사 스텝이 "이번 배포가 띄운 태스크"만 고르는 데 쓴다.
+          echo "DEPLOY_ID=$DEPLOY_ID" >> "$GITHUB_ENV"
 
           # 그 배포가 COMPLETED 가 될 때까지 폴링한다. 롤백되면 rolloutState 가 FAILED 가 되거나
           # 배포 자체가 목록에서 사라지므로 둘 다 실패로 처리한다.
@@ -405,34 +407,49 @@ jobs:
       - name: Verify container health (ai 포함)
         if: steps.gate.outputs.skip != 'true'
         run: |
-          TASK=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" --service-name "$ECS_SERVICE" \
-            --query 'taskArns[0]' --output text)
-          aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
-            --query 'tasks[0].containers[].{name:name,status:lastStatus,health:healthStatus}' --output table
           # 단발 검사는 안 된다. 배포 완료 시점에도 ai 는 아직 UNKNOWN 일 수 있다 —
           # 태스크 헬스체크에 start period 와 재시도가 있고, ai 는 essential=false 라
           # 배포 완료 판정이 ai 의 healthy 를 기다려 주지 않는다.
           # 부분일치를 쓰지 않는다 — UNHEALTHY 도 "HEALTHY" 로 끝나서 비정상을 정상으로 오판한다.
           # 검사는 ai 컨테이너만 본다. 운영 태스크의 로그 사이드카 log_router(aws-for-fluent-bit)는
           # healthCheck 가 없어 healthStatus 가 영원히 UNKNOWN 이라, 전 컨테이너 검사는 매번 타임아웃한다.
+          # 검사 대상은 이번 배포가 띄운 태스크로 한정한다. 서비스 태스크의 startedBy 는
+          # update-service 가 돌려준 배포 id(ecs-svc/...)와 같은 값이다(운영·개발 서비스에서 실측 확인).
+          # ListTasks 는 --started-by 를 다른 필터와 함께 쓸 수 없어(InvalidParameterException)
+          # --service-name 은 넣지 않는다. 배포 id 가 유일하므로 클러스터 범위로 충분하다.
+          # taskArns[0] 한 개만 보면 desiredCount 가 2 이상일 때 나머지를 놓치고,
+          # 드레이닝 중인 옛 배포의 태스크를 잘못 볼 수도 있다.
           for i in $(seq 1 20); do
-            AI_HEALTH=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
-              --query "tasks[0].containers[?name=='ai'].healthStatus | [0]" --output text)
-            AI_STATUS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
-              --query "tasks[0].containers[?name=='ai'].lastStatus | [0]" --output text)
-            echo "ai: status=$AI_STATUS health=$AI_HEALTH"
-            if [ "$AI_HEALTH" = "HEALTHY" ]; then
-              echo "✅ ai HEALTHY"; break
+            TASKS=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" --started-by "$DEPLOY_ID" \
+              --query 'taskArns[]' --output text)
+            if [ -z "$TASKS" ]; then
+              echo "::error::배포 $DEPLOY_ID 로 시작된 태스크가 없습니다 — CloudWatch /ecs/manyak-prod 로그 확인"
+              exit 1
             fi
-            if [ "$AI_HEALTH" = "UNHEALTHY" ] || [ "$AI_STATUS" = "STOPPED" ]; then
-              echo "::error::ai 컨테이너가 기동에 실패했습니다(status=$AI_STATUS health=$AI_HEALTH) — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-prod 로그에서 확인"
+            aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query 'tasks[].containers[].{task:taskArn,name:name,status:lastStatus,health:healthStatus}' --output table
+            # 대상 컨테이너 수를 함께 센다. 이름이 바뀌어 대상이 0개가 되면 AI_PENDING 도 0 이라
+            # 아무것도 검사하지 않고 초록으로 끝나기 때문이다.
+            TARGETS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query "length(tasks[].containers[?name=='ai'][])" --output text)
+            if [ "$TARGETS" = "0" ]; then
+              echo "::error::검사 대상(ai) 컨테이너를 찾지 못했습니다 — 태스크 정의의 컨테이너 이름 확인"
+              exit 1
+            fi
+            AI_PENDING=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query "length(tasks[].containers[?name=='ai' && healthStatus!='HEALTHY'][])" --output text)
+            if [ "$AI_PENDING" = "0" ]; then
+              echo "✅ 전 태스크의 ai HEALTHY (대상 $TARGETS 개)"; exit 0
+            fi
+            AI_BAD=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query "length(tasks[].containers[?name=='ai' && (healthStatus=='UNHEALTHY' || lastStatus=='STOPPED')][])" --output text)
+            if [ "$AI_BAD" != "0" ]; then
+              echo "::error::ai 컨테이너가 기동에 실패했습니다 — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-prod 로그에서 확인"
               exit 1
             fi
             echo "ai 기동 대기 $i/20 (15s)..."; sleep 15
           done
-          if [ "$AI_HEALTH" != "HEALTHY" ]; then
-            echo "::error::제한 시간 안에 ai 가 HEALTHY 가 되지 않았습니다 — CloudWatch /ecs/manyak-prod 로그 확인"; exit 1
-          fi
+          echo "::error::제한 시간 안에 ai 가 HEALTHY 가 되지 않았습니다 — CloudWatch /ecs/manyak-prod 로그 확인"; exit 1
 
       - name: Smoke test (server /actuator/health)
         if: steps.gate.outputs.skip != 'true'
@@ -447,6 +464,9 @@ jobs:
 
   # [롤백 경로] 전용 SSM 문서(manyak-prod-ai-deploy)로 EC2에 AI 배포
   # (문서가 내부에서 deploy.sh + `up -d --wait ai` 로 health 게이트까지 수행)
+  # 이 잡은 manyak-terraform 에서 ALB 트래픽을 EC2 로 전환(ecs_traffic_weight = 0)한 뒤 실행하는
+  # 전제다. 전환 전에 돌리면 EC2 에 배포가 되더라도 api.manyak.app 은 여전히 ECS 를 가리켜,
+  # 도메인으로 하는 확인은 EC2 배포 결과를 보여 주지 않는다.
   # 운영 트래픽은 ECS 로 넘어갔고(KNK-856) 배포도 위 deploy-prod 가 담당한다. 이 잡은 ECS 배포가
   # 문제일 때 EC2 로 되돌리기 위한 수동 수단으로만 남긴다 — main 푸시가 아니라 workflow_dispatch 로만 돈다
   # (이미 ECR 에 있는 :short-sha 를 배포하므로 이 실행에서 이미지를 새로 빌드하지 않아도 된다).
