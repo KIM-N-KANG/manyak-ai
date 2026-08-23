@@ -495,9 +495,10 @@ jobs:
           for i in $(seq 1 20); do
             TASKS=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" --started-by "$DEPLOY_ID" \
               --query 'taskArns[]' --output text)
+            # 배포 COMPLETED 직후 목록이 잠깐 비어 오는 경우가 있어 즉시 실패시키지 않는다.
+            # 계속 비면 아래 루프 타임아웃에서 실패한다.
             if [ -z "$TASKS" ]; then
-              echo "::error::배포 $DEPLOY_ID 로 시작된 태스크가 없습니다 — CloudWatch /ecs/manyak-prod 로그 확인"
-              exit 1
+              echo "배포 $DEPLOY_ID 의 태스크 목록이 아직 비어 있습니다 — 재시도 $i/20 (15s)"; sleep 15; continue
             fi
             aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
               --query 'tasks[].containers[].{task:taskArn,name:name,status:lastStatus,health:healthStatus}' --output table
@@ -510,10 +511,17 @@ jobs:
               echo "::error::태스크 $TASK_COUNT 개인데 ai=$TARGETS 입니다 — 컨테이너 누락 또는 이름 변경. 태스크 정의 확인"
               exit 1
             fi
+            # 서비스의 desiredCount 와 대조한다. 일부 태스크만 떠 있는 순간에 통과하지 않도록.
+            DESIRED=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query 'services[0].desiredCount' --output text)
             AI_PENDING=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
               --query "length(tasks[].containers[?name=='ai' && healthStatus!='HEALTHY'][])" --output text)
             if [ "$AI_PENDING" = "0" ]; then
-              echo "✅ 전 태스크의 ai HEALTHY (대상 $TARGETS 개)"; exit 0
+              if [ "$TASK_COUNT" = "$DESIRED" ]; then
+                echo "✅ 전 태스크의 ai HEALTHY (태스크 $TASK_COUNT/$DESIRED, 대상 $TARGETS 개)"; exit 0
+              fi
+              # 헬스는 통과했지만 태스크 수가 아직 desired 에 못 미친다(교체 중일 수 있다) — 재시도.
+              echo "헬스 통과, 태스크 $TASK_COUNT/$DESIRED — 나머지 태스크 대기 $i/20 (15s)"; sleep 15; continue
             fi
             AI_BAD=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
               --query "length(tasks[].containers[?name=='ai' && (healthStatus=='UNHEALTHY' || lastStatus=='STOPPED')][])" --output text)
@@ -529,7 +537,7 @@ jobs:
         if: steps.image.outputs.exists == 'true'
         run: |
           for i in $(seq 1 12); do
-            if curl -fsS https://api.manyak.app/actuator/health | grep -q '"status":"UP"'; then
+            if curl -fsS --max-time 10 https://api.manyak.app/actuator/health | grep -q '"status":"UP"'; then
               echo "✅ health UP"; exit 0
             fi
             echo "health 대기 $i/12 (15s)..."; sleep 15
@@ -540,7 +548,7 @@ jobs:
       # circuit breaker 가 태스크를 롤백해도 :latest 는 실패 이미지를 가리킨 채라,
       # 다음 force-new-deployment(상대 레포 릴리스 포함)가 실패 이미지를 다시 띄운다.
       - name: Restore :latest on failure
-        if: failure() && steps.promote.outputs.promoted == 'true'
+        if: (failure() || cancelled()) && steps.promote.outputs.promoted == 'true'
         run: |
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}"
           if [ -z "$PREV_DIGEST" ]; then
@@ -576,12 +584,14 @@ jobs:
     name: Deploy AI to EC2 (prod, 롤백 경로 · 수동 실행)
     needs: docker
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    # 배포를 직렬화(큐잉)한다. cancel-in-progress=false: 진행 중 배포를 취소하지 않는다.
-    # (true 면 SSM send-command 로 EC2에 이미 dispatch된 원격 배포는 못 막고 GitHub 잡만 취소돼 레이스가 남음)
-    # 그룹명은 ECS 배포 잡·manyak-server 와 통일한다. 롤백(EC2)과 정상 배포(ECS)가 같은 운영 자원을
-    # 건드리므로, 레포 안에서만이라도 두 경로가 겹치지 않게 한 큐에 세운다(KNK-963).
+    # 배포 잡(manyak-prod-deploy)과 그룹을 분리한다. GitHub 는 그룹당 pending 을 1개만 두고
+    # 새 잡이 그 자리를 차지하므로, 같은 그룹이면 새 main push 의 deploy-prod 가 대기 중인
+    # 롤백을 취소해 버린다 — 사람이 의도한 유일한 롤백 실행을 배포가 밀어내면 안 된다.
+    # 롤백은 EC2 를, 배포는 ECS 를 치므로 자원도 겹치지 않는다.
+    # cancel-in-progress=false: SSM send-command 로 이미 dispatch 된 원격 배포는 잡을 취소해도
+    # 되돌릴 수 없어서, 취소보다 큐잉이 안전하다.
     concurrency:
-      group: manyak-prod-deploy
+      group: manyak-prod-rollback
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
