@@ -388,6 +388,26 @@ jobs:
           echo "::error::이미지 조회가 매니페스트 부재가 아닌 이유로 실패했습니다(인증·네트워크 등) — 위 출력 확인"
           exit 1
 
+      # 진행 중인 배포가 끝날 때까지 기다린 뒤에 승격·배포한다. server·ai 두 레포가 같은 manyak-prod
+      # 서비스를 갱신하는데 GitHub concurrency 는 레포 스코프라 상호배제가 되지 않아서,
+      # 한쪽 배포가 끝나기 전에 다른 쪽이 force-new-deployment 를 걸면 앞 배포를 대체해 버린다.
+      # 이 대기는 그 경합 창을 초 단위로 줄일 뿐 완전한 직렬화가 아니다(이 스텝 통과 직후에
+      # 상대 레포가 칠 수 있다). 근본 해법인 외부 락 또는 단일 조정 워크플로는 후속 티켓 몫이다.
+      - name: Wait for service to settle
+        if: steps.image.outputs.exists == 'true'
+        run: |
+          for i in $(seq 1 60); do
+            read -r COUNT STATE <<< "$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query "[length(services[0].deployments), services[0].deployments[?status=='PRIMARY'].rolloutState | [0]]" \
+              --output text)"
+            if [ "$COUNT" = "1" ] && [ "$STATE" = "COMPLETED" ]; then
+              echo "✅ 서비스 안정(배포 1개, PRIMARY COMPLETED) — 배포를 시작합니다"; exit 0
+            fi
+            echo "진행 중인 배포 대기 $i/60 (배포 $COUNT 개, PRIMARY=$STATE) — 10s"; sleep 10
+          done
+          echo "::error::10분 안에 서비스가 안정 상태가 되지 않았습니다 — 진행 중인 배포를 확인하세요"; exit 1
+
       # :latest 를 main HEAD 로 옮긴다. 빌드 잡에서 붙이면 늦게 끝난 옛 빌드가 태그를 되돌릴 수
       # 있다(dev 의 :dev 와 같은 버그, KNK-829). manifest 를 복사하므로 멀티아키 인덱스가 유지된다.
       - name: Promote main HEAD to :latest
@@ -419,26 +439,6 @@ jobs:
           docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${{ steps.gate.outputs.deploy_short_sha }}"
           echo "promoted=true" >> "$GITHUB_OUTPUT"
           echo "✅ :latest -> ${{ steps.gate.outputs.deploy_short_sha }}"
-
-      # 진행 중인 배포가 끝날 때까지 기다린 뒤에 친다. server·ai 두 레포가 같은 manyak-prod
-      # 서비스를 갱신하는데 GitHub concurrency 는 레포 스코프라 상호배제가 되지 않아서,
-      # 한쪽 배포가 끝나기 전에 다른 쪽이 force-new-deployment 를 걸면 앞 배포를 대체해 버린다.
-      # 이 대기는 그 경합 창을 초 단위로 줄일 뿐 완전한 직렬화가 아니다(이 스텝 통과 직후에
-      # 상대 레포가 칠 수 있다). 근본 해법인 외부 락 또는 단일 조정 워크플로는 후속 티켓 몫이다.
-      - name: Wait for service to settle
-        if: steps.image.outputs.exists == 'true'
-        run: |
-          for i in $(seq 1 60); do
-            read -r COUNT STATE <<< "$(aws ecs describe-services \
-              --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-              --query "[length(services[0].deployments), services[0].deployments[?status=='PRIMARY'].rolloutState | [0]]" \
-              --output text)"
-            if [ "$COUNT" = "1" ] && [ "$STATE" = "COMPLETED" ]; then
-              echo "✅ 서비스 안정(배포 1개, PRIMARY COMPLETED) — 배포를 시작합니다"; exit 0
-            fi
-            echo "진행 중인 배포 대기 $i/60 (배포 $COUNT 개, PRIMARY=$STATE) — 10s"; sleep 10
-          done
-          echo "::error::10분 안에 서비스가 안정 상태가 되지 않았습니다 — 진행 중인 배포를 확인하세요"; exit 1
 
       # 운영 태스크 정의는 이미 :latest 좌표를 들고 있으므로 새 리비전을 등록하지 않는다
       # (CI 역할에 RegisterTaskDefinition·iam:PassRole 권한이 없다).
