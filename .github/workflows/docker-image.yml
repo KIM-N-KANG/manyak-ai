@@ -331,22 +331,24 @@ jobs:
       ECS_CLUSTER: manyak-prod
       ECS_SERVICE: manyak-prod
     steps:
-      # 빌드 시간차로 순서가 뒤집혀도 older SHA 가 배포되지 않도록, 이 run 의 SHA 가 main HEAD 인지 확인.
-      - name: Gate — 최신 main SHA 확인(stale 배포 방지)
+      # 배포 대상은 "이 실행의 커밋"이 아니라 "현재 main HEAD"다.
+      # 예전처럼 "내가 HEAD 가 아니면 skip" 하면 최신 커밋이 아무 데서도 배포되지 않을 수 있다 —
+      # GitHub concurrency 는 대기 슬롯이 1개라, 늦게 끝난 옛 빌드의 잡이 큐에서 기다리던 최신
+      # 실행을 밀어내 취소시키고, 정작 자기는 게이트에서 skip 하기 때문이다.
+      # 어느 실행이 돌든 항상 HEAD 를 배포하면 그 구멍이 사라진다(중복 배포는 같은 이미지라 무해).
+      - name: Gate — 배포 대상(main HEAD) 확인
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          LATEST_SHA=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')
-          if [ "$LATEST_SHA" != "$GITHUB_SHA" ]; then
-            echo "::notice::최신 main($LATEST_SHA)이 더 있어 stale($GITHUB_SHA) 배포를 건너뜁니다"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          DEPLOY_SHA=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')
+          {
+            echo "deploy_sha=$DEPLOY_SHA"
+            echo "deploy_short_sha=${DEPLOY_SHA:0:7}"
+          } >> "$GITHUB_OUTPUT"
+          echo "배포 대상 main HEAD: $DEPLOY_SHA (이 실행의 커밋: $GITHUB_SHA)"
 
       - name: Configure AWS credentials (OIDC)
-        if: steps.gate.outputs.skip != 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -354,18 +356,33 @@ jobs:
 
       - name: Log in to Amazon ECR
         id: ecr-login
-        if: steps.gate.outputs.skip != 'true'
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 최신 SHA 게이트를 통과한 뒤에만 :latest 를 이 커밋으로 옮긴다. 빌드 잡에서 붙이면
-      # 늦게 끝난 옛 빌드가 태그를 되돌릴 수 있다(dev 의 :dev 와 같은 버그, KNK-829).
-      # manifest 를 복사하므로 멀티아키(amd64·arm64) 인덱스가 그대로 유지된다.
-      - name: Promote ${{ github.sha }} to :latest
-        if: steps.gate.outputs.skip != 'true'
+      # HEAD 의 이미지가 아직 ECR 에 없으면 = HEAD 빌드가 아직 안 끝났다는 뜻이라 여기서 멈춘다.
+      # 실패가 아니다 — 그 커밋 자신의 실행이 배포한다.
+      # ecr:DescribeImages 는 CI 역할에 없다(ecr-push 인라인 정책은 push/pull 액션만이고,
+      # simulate-principal-policy 로 implicitDeny 확인). 매니페스트 조회는 pull 권한
+      # (ecr:BatchGetImage = allowed)으로 되므로 ECR 로그인 뒤 imagetools inspect 로 확인한다.
+      - name: Check image for main HEAD
+        id: image
+        run: |
+          IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.gate.outputs.deploy_short_sha }}"
+          if docker buildx imagetools inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "배포 이미지 확인: $IMAGE"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main HEAD(${{ steps.gate.outputs.deploy_short_sha }}) 이미지가 아직 ECR 에 없습니다 — 그 커밋의 실행이 배포합니다"
+          fi
+
+      # :latest 를 main HEAD 로 옮긴다. 빌드 잡에서 붙이면 늦게 끝난 옛 빌드가 태그를 되돌릴 수
+      # 있다(dev 의 :dev 와 같은 버그, KNK-829). manifest 를 복사하므로 멀티아키 인덱스가 유지된다.
+      - name: Promote main HEAD to :latest
+        if: steps.image.outputs.exists == 'true'
         run: |
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}"
-          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${GITHUB_SHA::7}"
-          echo "✅ :latest -> ${GITHUB_SHA::7}"
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${{ steps.gate.outputs.deploy_short_sha }}"
+          echo "✅ :latest -> ${{ steps.gate.outputs.deploy_short_sha }}"
 
       # 운영 태스크 정의는 이미 :latest 좌표를 들고 있으므로 새 리비전을 등록하지 않는다
       # (CI 역할에 RegisterTaskDefinition·iam:PassRole 권한이 없다).
@@ -374,7 +391,7 @@ jobs:
       # 운영도 server·ai 가 태스크 정의 하나에 함께 있어, 이 배포는 두 컨테이너를 모두 재시작한다.
       # 둘 다 :latest 라 server 는 그 시점의 manyak-server 최신 이미지로 함께 뜬다.
       - name: Force new ECS deployment
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.image.outputs.exists == 'true'
         run: |
           # 이 호출이 만든 배포 id 를 잡아 둔다. services-stable 만으로는 부족하다 —
           # 서비스에 circuit breaker rollback 이 켜져 있어, 새 태스크가 못 뜨면 ECS 가
@@ -405,7 +422,7 @@ jobs:
       # 서비스가 안정화돼도 ai 는 죽어 있을 수 있다 — ai 컨테이너는 essential=false 라
       # 태스크를 죽이지 않고, ALB 헬스는 server 만 본다. AI 레포의 배포는 특히 이걸 봐야 한다.
       - name: Verify container health (ai 포함)
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.image.outputs.exists == 'true'
         run: |
           # 단발 검사는 안 된다. 배포 완료 시점에도 ai 는 아직 UNKNOWN 일 수 있다 —
           # 태스크 헬스체크에 start period 와 재시도가 있고, ai 는 essential=false 라
@@ -428,12 +445,13 @@ jobs:
             fi
             aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
               --query 'tasks[].containers[].{task:taskArn,name:name,status:lastStatus,health:healthStatus}' --output table
-            # 대상 컨테이너 수를 함께 센다. 이름이 바뀌어 대상이 0개가 되면 AI_PENDING 도 0 이라
-            # 아무것도 검사하지 않고 초록으로 끝나기 때문이다.
-            TARGETS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
-              --query "length(tasks[].containers[?name=='ai'][])" --output text)
-            if [ "$TARGETS" = "0" ]; then
-              echo "::error::검사 대상(ai) 컨테이너를 찾지 못했습니다 — 태스크 정의의 컨테이너 이름 확인"
+            # ai 컨테이너 수가 태스크 수와 정확히 일치하는지 본다. 0 인지만 보면 여러 태스크 중
+            # 일부에서 ai 가 빠져도 남은 쪽 개수로 통과한다. 기대값: 태스크마다 ai 1개.
+            read -r TASK_COUNT TARGETS <<< "$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query "[length(tasks), length(tasks[].containers[?name=='ai'][])]" --output text)"
+            if [ "$TARGETS" != "$TASK_COUNT" ]; then
+              echo "::error::태스크 $TASK_COUNT 개인데 ai=$TARGETS 입니다 — 컨테이너 누락 또는 이름 변경. 태스크 정의 확인"
               exit 1
             fi
             AI_PENDING=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
@@ -452,7 +470,7 @@ jobs:
           echo "::error::제한 시간 안에 ai 가 HEALTHY 가 되지 않았습니다 — CloudWatch /ecs/manyak-prod 로그 확인"; exit 1
 
       - name: Smoke test (server /actuator/health)
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.image.outputs.exists == 'true'
         run: |
           for i in $(seq 1 12); do
             if curl -fsS https://api.manyak.app/actuator/health | grep -q '"status":"UP"'; then
