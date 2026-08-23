@@ -465,8 +465,10 @@ jobs:
   # [롤백 경로] 전용 SSM 문서(manyak-prod-ai-deploy)로 EC2에 AI 배포
   # (문서가 내부에서 deploy.sh + `up -d --wait ai` 로 health 게이트까지 수행)
   # 이 잡은 manyak-terraform 에서 ALB 트래픽을 EC2 로 전환(ecs_traffic_weight = 0)한 뒤 실행하는
-  # 전제다. 전환 전에 돌리면 EC2 에 배포가 되더라도 api.manyak.app 은 여전히 ECS 를 가리켜,
-  # 도메인으로 하는 확인은 EC2 배포 결과를 보여 주지 않는다.
+  # 전제다. 배포 검증은 도메인 스모크가 아니라 전용 SSM 문서 안의 `docker compose up -d --wait ai`
+  # 헬스 게이트가 담당하므로(이 잡에는 도메인 스모크 스텝이 없다), 트래픽 전환 전에 실행해도
+  # EC2 배포 성패 자체는 판별된다. 다만 그 상태에서 api.manyak.app 은 여전히 ECS 를 가리키므로,
+  # 롤백이 실제로 사용자에게 반영됐는지는 트래픽을 전환해야 확인된다.
   # 운영 트래픽은 ECS 로 넘어갔고(KNK-856) 배포도 위 deploy-prod 가 담당한다. 이 잡은 ECS 배포가
   # 문제일 때 EC2 로 되돌리기 위한 수동 수단으로만 남긴다 — main 푸시가 아니라 workflow_dispatch 로만 돈다
   # (이미 ECR 에 있는 :short-sha 를 배포하므로 이 실행에서 이미지를 새로 빌드하지 않아도 된다).
