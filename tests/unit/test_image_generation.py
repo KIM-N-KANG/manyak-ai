@@ -1,0 +1,163 @@
+"""이미지 생성 통로 단위 테스트(KNK-938).
+
+외부 호출(OpenAI SDK)을 대체해 성공·시간 초과·API 오류·프롬프트 거부를 검증한다.
+"""
+
+import base64
+from dataclasses import dataclass
+from unittest.mock import AsyncMock
+
+import pytest
+
+from src.services.image import generate_image, ImageGenerationError
+from src.services.image.base import (
+    ImageBadRequest,
+    ImageRateLimited,
+    ImageRequest,
+    ImageTimeout,
+)
+from src.services.image import openai_api
+
+
+# ── 픽스처 ────────────────────────────────────────────────────────────────────
+
+_FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100  # 가짜 PNG 바이너리
+_FAKE_B64 = base64.b64encode(_FAKE_PNG).decode()
+
+
+@dataclass
+class _FakeImageData:
+    b64_json: str | None = _FAKE_B64
+
+
+@dataclass
+class _FakeResponse:
+    data: list = None
+
+    def __post_init__(self):
+        if self.data is None:
+            self.data = [_FakeImageData()]
+
+
+def _mock_client(monkeypatch, response=None, side_effect=None):
+    """openai_api._client를 가짜 클라이언트로 교체한다."""
+    mock = AsyncMock()
+    if side_effect:
+        mock.images.generate = AsyncMock(side_effect=side_effect)
+    else:
+        mock.images.generate = AsyncMock(return_value=response or _FakeResponse())
+    monkeypatch.setattr(openai_api, "_client", lambda *a, **kw: mock)
+    return mock
+
+
+# ── 어댑터 직접 호출 테스트 ───────────────────────────────────────────────────
+
+async def test_openai_generate_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정상 호출 시 PNG 바이너리와 모델·공급자를 돌려준다."""
+    _mock_client(monkeypatch)
+    req = ImageRequest(model="gpt-image-2-low", prompt="test prompt")
+    result = await openai_api.generate(req)
+
+    assert result.image_bytes == _FAKE_PNG
+    assert result.model == "gpt-image-2-low"
+    assert result.provider == "openai"
+
+
+async def test_openai_generate_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """시간 초과 시 ImageTimeout으로 변환된다."""
+    from openai import APITimeoutError
+    import httpx
+
+    _mock_client(
+        monkeypatch,
+        side_effect=APITimeoutError(request=httpx.Request("POST", "https://api.openai.com")),
+    )
+    req = ImageRequest(model="gpt-image-2-low", prompt="test", timeout=5.0)
+    with pytest.raises(ImageTimeout):
+        await openai_api.generate(req)
+
+
+def _httpx_response(status_code: int) -> "httpx.Response":
+    """테스트용 httpx.Response — request를 붙여야 OpenAI SDK 예외가 안 깨진다."""
+    import httpx
+
+    resp = httpx.Response(status_code)
+    resp._request = httpx.Request("POST", "https://api.openai.com")
+    return resp
+
+
+async def test_openai_generate_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """속도 제한 시 ImageRateLimited로 변환된다."""
+    from openai import RateLimitError
+
+    _mock_client(
+        monkeypatch,
+        side_effect=RateLimitError(
+            message="rate limited",
+            response=_httpx_response(429),
+            body=None,
+        ),
+    )
+    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    with pytest.raises(ImageRateLimited):
+        await openai_api.generate(req)
+
+
+async def test_openai_generate_bad_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """프롬프트 거부 시 ImageBadRequest로 변환된다."""
+    from openai import BadRequestError
+
+    _mock_client(
+        monkeypatch,
+        side_effect=BadRequestError(
+            message="content policy violation",
+            response=_httpx_response(400),
+            body=None,
+        ),
+    )
+    req = ImageRequest(model="gpt-image-2-low", prompt="bad prompt")
+    with pytest.raises(ImageBadRequest):
+        await openai_api.generate(req)
+
+
+async def test_openai_generate_empty_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """응답에 이미지 데이터가 없으면 ImageGenerationError."""
+    _mock_client(monkeypatch, response=_FakeResponse(data=[_FakeImageData(b64_json=None)]))
+    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    with pytest.raises(ImageGenerationError, match="데이터가 없습니다"):
+        await openai_api.generate(req)
+
+
+# ── 공개 함수(generate_image) 테스트 ─────────────────────────────────────────
+
+async def test_generate_image_routes_to_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """generate_image()가 모델 이름을 보고 OpenAI 어댑터로 분기한다."""
+    from src.core.config import settings
+    monkeypatch.setattr(settings, "image_model", "gpt-image-2-low")
+    monkeypatch.setattr(settings, "image_timeout", 30.0)
+    _mock_client(monkeypatch)
+
+    result = await generate_image("test prompt")
+    assert result.image_bytes == _FAKE_PNG
+    assert result.provider == "openai"
+
+
+async def test_generate_image_unknown_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """등록되지 않은 모델이면 ImageGenerationError."""
+    from src.core.config import settings
+    monkeypatch.setattr(settings, "image_model", "unknown-model-9000")
+
+    with pytest.raises(ImageGenerationError, match="등록되지 않았습니다"):
+        await generate_image("test")
+
+
+# ── 모델 등록 테스트 ──────────────────────────────────────────────────────────
+
+def test_registered_models_have_adapters() -> None:
+    """등록된 모든 이미지 모델이 유효한 어댑터를 가리킨다."""
+    from src.services.image import _MODEL_ADAPTERS
+    from src.services.image.base import ADAPTER_OPENAI_IMAGE
+
+    valid_adapters = {ADAPTER_OPENAI_IMAGE}
+    for model, adapter in _MODEL_ADAPTERS.items():
+        assert adapter in valid_adapters, f"모델 '{model}'의 어댑터 '{adapter}'가 유효하지 않다"
