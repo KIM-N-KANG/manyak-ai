@@ -26,6 +26,7 @@ from src.schemas.story_compile import Ending, StoryCompileRequest, StoryCompileR
 from src.services import llm
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt import (
+    COMPILE_GEMINI_VERSION,
     COMPILE_VERSION,
     GENDER_KO,
     STORYLINES_VERSION,
@@ -694,20 +695,25 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     → StorySpec 파싱 → nested 통글 변환.
     PromptCompiler 추상 경계는 spec/chat/4-SERVICE-IMPLEMENTATION.md §6.
     """
-    system_prompt, user_prompt = build_compile_prompt(
+    compile_provider = llm.provider_of(settings.story_compile_model)
+    system_prompt, user_prompt, version_key = build_compile_prompt(
         request.selected_storyline,
         request.additional_info,
         request.genre_tags,
         request.protagonist,
         request.supporting_characters,
         request.lorebooks,
+        provider=compile_provider,
+    )
+    prompt_version = (
+        COMPILE_GEMINI_VERSION if version_key == "COMPILE_GEMINI" else COMPILE_VERSION
     )
     data, usage = await _complete_json(
         system_prompt,
         user_prompt,
         label="compile",
         feature=FEATURE_STORY_COMPLETION,
-        prompt_versions={"COMPILE": COMPILE_VERSION},
+        prompt_versions={version_key: prompt_version},
     )
     _inject_genre(data, request.genre_tags)
     _inject_protagonist(data, request.protagonist)
@@ -737,13 +743,14 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             user_prompt,
             json.dumps(data, ensure_ascii=False),
             blocks,
+            provider=compile_provider,
         )
         refill, refill_usage = await _complete_json(
             refill_system,
             refill_user,
             label=f"refill#{attempts}",
             feature=FEATURE_STORY_COMPLETION,
-            prompt_versions={"COMPILE": COMPILE_VERSION},
+            prompt_versions={version_key: prompt_version},
         )
         input_tokens = _add_tokens(input_tokens, refill_usage.input_tokens)
         output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
@@ -775,7 +782,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             provider=usage.provider,
             error_code=ERROR_INVALID_AI_RESPONSE,
             model=usage.model,
-            prompt_versions={"COMPILE": COMPILE_VERSION},
+            prompt_versions={version_key: prompt_version},
             retry_count=attempts,
         )
         raise HTTPException(
@@ -792,7 +799,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             provider=usage.provider,
             error_code=ERROR_SCHEMA_VALIDATION_FAILED,
             model=usage.model,
-            prompt_versions={"COMPILE": COMPILE_VERSION},
+            prompt_versions={version_key: prompt_version},
             retry_count=attempts,
         )
         raise HTTPException(
@@ -803,7 +810,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     response = spec_to_response(spec)
     response.meta = StoryResponseMeta(
         model=usage.model,
-        prompt_versions={"COMPILE": COMPILE_VERSION},
+        prompt_versions={version_key: prompt_version},
         provider=usage.provider,
         input_token_count=input_tokens,
         output_token_count=output_tokens,

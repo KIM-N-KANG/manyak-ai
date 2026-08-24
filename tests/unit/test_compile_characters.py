@@ -14,7 +14,12 @@ from fastapi import HTTPException
 from src.schemas.story import CharacterInput
 from src.schemas.story_compile import StoryCompileRequest
 from src.services import story_llm
-from src.services.prompt import build_compile_prompt
+from src.services.llm.base import PROVIDER_GOOGLE
+from src.services.prompt import (
+    COMPILE_GEMINI_VERSION,
+    build_compile_prompt,
+    _COMPILE_GEMINI_SYSTEM,
+)
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -38,7 +43,7 @@ def _request(supporting: list[dict]) -> StoryCompileRequest:
 
 # ── 프롬프트 렌더링 ──────────────────────────────────────────────────────────
 def test_compile_prompt_renders_character_blocks() -> None:
-    _, user = build_compile_prompt(
+    _, user, _ = build_compile_prompt(
         "라인",
         "정보",
         ["다크 판타지"],
@@ -114,3 +119,64 @@ async def test_compile_story_passes_when_named_character_present(
     res = await story_llm.compile_story(_request([{"name": "세린"}]))  # 카드에 있는 이름
     assert calls == ["compile"]  # refill 없이 한 번에 통과
     assert "세린" in res.story_settings.character_setting
+
+
+# ── Gemini 통합 경로(KNK-958) ──────────────────────────────────────────────
+async def test_compile_story_gemini_uses_gemini_system_and_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gemini 모델이면 첫 호출·응답 meta 모두 Gemini 프롬프트·버전을 쓴다."""
+    captured_systems: list[str] = []
+    captured_versions: list[dict] = []
+
+    async def fake_complete(system: str, user: str, **kwargs: object):
+        captured_systems.append(system)
+        captured_versions.append(kwargs.get("prompt_versions", {}))
+        return _spec(), story_llm.LlmUsage("gemini-3.6-flash", 1, 1, provider="google")
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    # provider_of가 "google"을 반환하도록 — 실제 registry를 타지 않고 직접 패치
+    import src.services.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "provider_of", lambda model: PROVIDER_GOOGLE)
+
+    res = await story_llm.compile_story(_request([{"name": "세린"}]))
+
+    # 첫 호출에 Gemini system prompt가 갔는지
+    assert captured_systems[0] == _COMPILE_GEMINI_SYSTEM
+    # prompt_versions 키가 COMPILE_GEMINI인지
+    assert "COMPILE_GEMINI" in captured_versions[0]
+    assert captured_versions[0]["COMPILE_GEMINI"] == COMPILE_GEMINI_VERSION
+    # 응답 meta에도 COMPILE_GEMINI 키가 실리는지
+    assert "COMPILE_GEMINI" in res.meta.prompt_versions
+
+
+async def test_compile_story_gemini_refill_uses_gemini_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gemini 모델에서 refill이 돌 때도 Gemini system prompt를 쓴다."""
+    captured_systems: list[str] = []
+    captured_versions: list[dict] = []
+    spec = _spec()
+
+    async def fake_complete(system: str, user: str, **kwargs: object):
+        captured_systems.append(system)
+        captured_versions.append(kwargs.get("prompt_versions", {}))
+        return json.loads(json.dumps(spec)), story_llm.LlmUsage(
+            "gemini-3.6-flash", 1, 1, provider="google"
+        )
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    import src.services.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "provider_of", lambda model: PROVIDER_GOOGLE)
+
+    # "서린"은 카드에 없으므로 refill이 돈다
+    with pytest.raises(HTTPException) as ei:
+        await story_llm.compile_story(_request([{"name": "서린"}]))
+
+    assert ei.value.status_code == 502
+    # 첫 호출 + refill 2회 = 3회
+    assert len(captured_systems) == 3
+    # refill에도 Gemini system prompt가 갔는지
+    assert all(s == _COMPILE_GEMINI_SYSTEM for s in captured_systems)
+    # refill의 prompt_versions도 COMPILE_GEMINI인지
+    assert all("COMPILE_GEMINI" in v for v in captured_versions)

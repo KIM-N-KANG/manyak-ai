@@ -18,6 +18,18 @@
 
 ---
 
+## v0.2.5 — 2026-08-21 배포 완료
+
+- 범위: v0.2.4 이후 dev 누적 = KNK-829(개발 환경 자동 배포) + KNK-833(인물 단위 스토리 제작 입력) + 버전 올림.
+  - **KNK-833은 외부 요청 계약 변경.** 스토리라인·컴파일 요청의 `protagonist_tags`·`supporting_tags`를 `protagonist`·`supporting_characters[]`로 교체하고, 입력 인물의 이름·성별·특징 반영과 인물 누락 부분 재호출을 추가했다.
+  - KNK-829는 `dev` push에서만 ECS 개발 배포를 실행한다. 운영 `main` 배포는 기존 ECR·SSM 경로를 유지한다.
+- **AI·백엔드 동시 전환.** 백엔드 v0.2.12가 KNK-846으로 새 AI 요청 계약을 반영했다(PR #198, main 머지 `0a58695`). AI만 이전 버전으로 롤백하면 요청 필드가 다시 어긋나므로 롤백도 두 서비스를 함께 맞춘다.
+- PR #82 `[KNK-746] Release: v0.2.5 배포` → main 머지 `60cc18e`(Merge Commit) → 운영 워크플로의 테스트·이미지 health·ECR 빌드·SSM AI 배포 전부 success(run `32455858686`).
+- 검증: `prod-health.sh 0.2.5` → `{"status":"ok","version":"0.2.5"}`. 태그 `v0.2.5` → `60cc18e`.
+- QA: `qa.sh` 유닛·API 580 passed·5 skipped, 라이브 `tests/integration` 7 passed(실제 LLM, 92.74초), 종료코드 0. `infra-check.sh`도 종료코드 0.
+- 배포 전 적대적 리뷰 3관점(계약·환경변수/기동·런타임) — 차단 요인 없음. PR #80에서 보류한 부분 재호출 전체 시간 제한, 겹치는 이름 판정, 이름 없는 인물 수·주변 인물 성별 코드 강제는 후속 사안으로 유지.
+- 역류: `release/v0.2.5 → dev` Merge Commit(PR #83 → dev `eadd4e5`).
+
 ## v0.2.2 — 2026-07-23 배포 완료
 
 - 범위: v0.2.1 이후 dev 누적 = KNK-312(제품 코드) + KNK-658(스킬·문서 재정비) + 버전 올림.

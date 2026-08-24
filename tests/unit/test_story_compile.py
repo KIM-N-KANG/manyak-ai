@@ -100,7 +100,7 @@ def test_strip_code_fence() -> None:
 
 
 def test_build_compile_prompt_substitutes_all_slots() -> None:
-    system, user = build_compile_prompt(
+    system, user, _ = build_compile_prompt(
         "스토리라인 본문",
         "추가정보 본문",
         ["다크 판타지"],
@@ -116,7 +116,7 @@ def test_build_compile_prompt_substitutes_all_slots() -> None:
 
 
 def test_build_compile_prompt_empty_additional_info() -> None:
-    _, user = build_compile_prompt(
+    _, user, _ = build_compile_prompt(
         "라인", "", ["판타지"], CharacterInput(features=["용감한"]), [CharacterInput(features=["거친"])]
     )
     assert "{{" not in user
@@ -125,7 +125,7 @@ def test_build_compile_prompt_empty_additional_info() -> None:
 
 def test_build_compile_prompt_injects_lorebooks() -> None:
     # 로어북이 있으면 {{로어북}} 슬롯에 이름·내용이 실려 프롬프트에 들어간다.
-    _, user = build_compile_prompt(
+    _, user, _ = build_compile_prompt(
         "라인", "정보", ["무협"], CharacterInput(features=["신중한"]), [CharacterInput(features=["거친"])],
         [LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘.")],
     )
@@ -136,7 +136,7 @@ def test_build_compile_prompt_injects_lorebooks() -> None:
 
 def test_build_compile_prompt_multiple_lorebooks() -> None:
     # 로어북이 여러 개면 각 항목이 ### 헤더 블록으로 실린다(bullet 인라인 아님).
-    _, user = build_compile_prompt(
+    _, user, _ = build_compile_prompt(
         "라인", "정보", ["무협"], CharacterInput(features=["신중한"]), [CharacterInput(features=["거친"])],
         [
             LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘."),
@@ -151,7 +151,7 @@ def test_build_compile_prompt_multiple_lorebooks() -> None:
 
 def test_build_compile_prompt_strips_lorebook_whitespace() -> None:
     # 이름·내용 앞뒤 공백·개행이 있어도 ### 헤더·문단이 깔끔히 렌더된다(Gemini 리뷰).
-    _, user = build_compile_prompt(
+    _, user, _ = build_compile_prompt(
         "라인", "정보", ["무협"], CharacterInput(features=["신중한"]), [CharacterInput(features=["거친"])],
         [LorebookItem(name="  내공\n", content="\n기를 단전에 쌓는 힘.  ")],
     )
@@ -161,7 +161,7 @@ def test_build_compile_prompt_strips_lorebook_whitespace() -> None:
 
 def test_build_compile_prompt_null_lorebooks_slot() -> None:
     # lorebooks=None(명시적 null)도 (없음)으로 채워져 빈 배열·미전달과 동일하다.
-    _, user = build_compile_prompt(
+    _, user, _ = build_compile_prompt(
         "라인", "정보", ["무협"], CharacterInput(features=["신중한"]), [CharacterInput(features=["거친"])], None
     )
     assert "{{" not in user
@@ -171,10 +171,10 @@ def test_build_compile_prompt_null_lorebooks_slot() -> None:
 
 def test_build_compile_prompt_empty_lorebooks_slot() -> None:
     # 로어북 미전달·빈 배열이면 {{로어북}} 슬롯이 (없음)으로 채워지고(미주입), 두 경로가 동일하다.
-    _, user_none = build_compile_prompt(
+    _, user_none, _ = build_compile_prompt(
         "라인", "정보", ["무협"], CharacterInput(features=["신중한"]), [CharacterInput(features=["거친"])]
     )
-    _, user_empty = build_compile_prompt(
+    _, user_empty, _ = build_compile_prompt(
         "라인", "정보", ["무협"], CharacterInput(features=["신중한"]), [CharacterInput(features=["거친"])], []
     )
     assert "{{" not in user_none
@@ -404,6 +404,32 @@ async def test_compile_story_502_after_max_refill(monkeypatch: pytest.MonkeyPatc
 
 
 # ── 재호출 프롬프트 내용·토큰 합산·경계값 (KNK-574 감사 1-4) ──────────────────
+def test_build_compile_prompt_gemini_uses_gemini_template() -> None:
+    """provider="google"이면 Gemini용 템플릿과 version_key를 반환한다(KNK-958)."""
+    system_terra, user_terra, vk_terra = build_compile_prompt(
+        "라인", "정보", ["판타지"], CharacterInput(features=["신중한"]), [CharacterInput(features=["거친"])],
+    )
+    system_gemini, user_gemini, vk_gemini = build_compile_prompt(
+        "라인", "정보", ["판타지"], CharacterInput(features=["신중한"]), [CharacterInput(features=["거친"])],
+        provider="google",
+    )
+    # version_key가 다르다
+    assert vk_terra == "COMPILE"
+    assert vk_gemini == "COMPILE_GEMINI"
+    # system prompt가 다르다 (같은 모델이 아니라 다른 템플릿)
+    assert system_terra != system_gemini
+    # user prompt는 슬롯이 같으므로 내용이 같다
+    assert "라인" in user_gemini
+    assert "{{" not in user_gemini
+
+
+def test_build_refill_prompt_gemini_uses_gemini_system() -> None:
+    """provider="google"이면 refill도 Gemini system prompt를 쓴다(KNK-958)."""
+    system_terra, _ = build_refill_prompt("원본", '{}', ["world_setting"])
+    system_gemini, _ = build_refill_prompt("원본", '{}', ["world_setting"], provider="google")
+    assert system_terra != system_gemini  # 서로 다른 system prompt
+
+
 def test_build_refill_prompt_contains_context() -> None:
     # 재호출 프롬프트는 원본 맥락 + 누락 블록명 + 직전 JSON + "해당 블록만" 지시를 담는다.
     system, user = build_refill_prompt(

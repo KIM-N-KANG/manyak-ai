@@ -149,8 +149,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # main 푸시 → 배포용 ECR (OIDC, 장기 키 미보관)
+      # main 에서의 수동 실행(workflow_dispatch)도 포함한다. 롤백 경로인 EC2 배포 잡이 그 이벤트로만
+      # 도는데, 여기서 인증을 건너뛰면 태그가 ECR 이 아닌 GHCR 로 잡히고 push 도 되지 않아
+      # 롤백 실행이 "ECR 에 그 SHA 가 이미 있어야만" 성립하는 반쪽 경로가 된다(KNK-963).
       - name: Configure AWS credentials
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -158,19 +161,21 @@ jobs:
 
       - name: Log in to Amazon ECR
         id: ecr-login
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 대상 레지스트리/태그 결정: main → ECR(latest, short-sha), 그 외 → GHCR(dev, short-sha)
+      # 대상 레지스트리/태그 결정: main → ECR(short-sha), 그 외 → GHCR(short-sha)
       - name: Resolve image tags
         id: image-tags
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            # main 브랜치도 여기서 :latest 를 붙이지 않는다. 빌드 잡은 직렬화돼 있지 않아,
+            # 두 푸시가 겹치면 이전 빌드가 나중에 끝나며 :latest 를 옛 SHA 로 되돌릴 수 있다.
+            # :latest 승격은 deploy-prod 의 최신 SHA 게이트 뒤(직렬화 구간)에서 한다(KNK-963).
             REGISTRY="${{ steps.ecr-login.outputs.registry }}"
             {
               echo "tags<<EOF"
-              echo "${REGISTRY}/${ECR_REPOSITORY}:latest"
               echo "${REGISTRY}/${ECR_REPOSITORY}:${SHORT_SHA}"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
@@ -191,7 +196,7 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
           tags: ${{ steps.image-tags.outputs.tags }}
 
   # dev 푸시(GHCR 갱신) 후 → 개발 ECS 서비스에 새 배포를 트리거 (KNK-829)
@@ -309,37 +314,41 @@ jobs:
           done
           echo "::error::dev health 200/UP 확인 실패 — CloudWatch /ecs/manyak-dev 로그 확인"; exit 1
 
-  # main 푸시(ECR 갱신) 후 → 전용 SSM 문서(manyak-prod-ai-deploy)로 EC2에 AI 배포
-  # (문서가 내부에서 deploy.sh + `up -d --wait ai` 로 health 게이트까지 수행)
-  deploy:
-    name: Deploy AI to EC2 (prod)
+  # main 푸시(ECR 갱신) 후 → 운영 ECS 서비스에 새 배포를 트리거 + 헬스 검증 (KNK-963)
+  deploy-prod:
+    name: Deploy to ECS (prod)
     needs: docker
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    # 배포를 직렬화(큐잉)한다. cancel-in-progress=false: 진행 중 배포를 취소하지 않는다.
-    # (true 면 SSM send-command 로 EC2에 이미 dispatch된 원격 배포는 못 막고 GitHub 잡만 취소돼 레이스가 남음)
-    # 큐잉이라 푸시 순서대로 배포되어 최신 SHA 가 마지막에 반영된다. server 배포와는 레포가 달라 별도 그룹이다.
+    # manyak-server 의 같은 잡과 그룹명을 공유한다. 두 레포가 같은 ECS 서비스를 갱신하므로
+    # 레포별로 큐를 나누면 동시 배포가 겹칠 수 있다(GitHub concurrency 는 레포 스코프라
+    # 완전한 상호배제는 아니지만, 같은 레포 안의 연속 푸시는 이걸로 직렬화된다).
+    # cancel-in-progress=false — 이미 ECS 로 dispatch 된 배포는 잡을 취소해도 되돌릴 수 없다.
     concurrency:
-      group: manyak-ai-prod-deploy
+      group: manyak-prod-deploy
       cancel-in-progress: false
     runs-on: ubuntu-latest
+    env:
+      ECS_CLUSTER: manyak-prod
+      ECS_SERVICE: manyak-prod
     steps:
-      # 빌드 시간차로 순서가 뒤집혀도 older SHA 가 배포되지 않도록, 이 run 의 SHA 가 main HEAD 인지 확인.
-      # 아니면(더 새 푸시가 있으면) 이후 배포·스모크 스텝을 건너뛴다(concurrency 큐잉의 순서 미보장 보완).
-      - name: Gate — 최신 main SHA 확인(stale 배포 방지)
+      # 배포 대상은 "이 실행의 커밋"이 아니라 "현재 main HEAD"다.
+      # 예전처럼 "내가 HEAD 가 아니면 skip" 하면 최신 커밋이 아무 데서도 배포되지 않을 수 있다 —
+      # GitHub concurrency 는 대기 슬롯이 1개라, 늦게 끝난 옛 빌드의 잡이 큐에서 기다리던 최신
+      # 실행을 밀어내 취소시키고, 정작 자기는 게이트에서 skip 하기 때문이다.
+      # 어느 실행이 돌든 항상 HEAD 를 배포하면 그 구멍이 사라진다(중복 배포는 같은 이미지라 무해).
+      - name: Gate — 배포 대상(main HEAD) 확인
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          LATEST_SHA=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')
-          if [ "$LATEST_SHA" != "$GITHUB_SHA" ]; then
-            echo "::notice::최신 main($LATEST_SHA)이 더 있어 stale($GITHUB_SHA) 배포를 건너뜁니다"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          DEPLOY_SHA=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')
+          {
+            echo "deploy_sha=$DEPLOY_SHA"
+            echo "deploy_short_sha=${DEPLOY_SHA:0:7}"
+          } >> "$GITHUB_OUTPUT"
+          echo "배포 대상 main HEAD: $DEPLOY_SHA (이 실행의 커밋: $GITHUB_SHA)"
 
       - name: Configure AWS credentials (OIDC)
-        if: steps.gate.outputs.skip != 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -347,12 +356,264 @@ jobs:
 
       - name: Log in to Amazon ECR
         id: ecr-login
-        if: steps.gate.outputs.skip != 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # HEAD 의 이미지가 아직 ECR 에 없으면 = HEAD 빌드가 아직 안 끝났다는 뜻이라 여기서 멈춘다.
+      # 실패가 아니다 — 그 커밋 자신의 실행이 배포한다.
+      # ecr:DescribeImages 는 CI 역할에 없다(ecr-push 인라인 정책은 push/pull 액션만이고,
+      # simulate-principal-policy 로 implicitDeny 확인). 매니페스트 조회는 pull 권한
+      # (ecr:BatchGetImage = allowed)으로 되므로 ECR 로그인 뒤 imagetools inspect 로 확인한다.
+      - name: Check image for main HEAD
+        id: image
+        run: |
+          IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.gate.outputs.deploy_short_sha }}"
+          if OUT=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "배포 이미지 확인: $IMAGE"
+            exit 0
+          fi
+          echo "$OUT"
+          # 조회 실패를 뭉뚱그려 "아직 빌드 안 됨"으로 넘기지 않는다(fail-closed).
+          # 이 실행이 HEAD 자신이면 build 잡이 방금 push 한 이미지라 없을 수가 없다 — 무조건 실패.
+          if [ "${{ steps.gate.outputs.deploy_sha }}" = "$GITHUB_SHA" ]; then
+            echo "::error::이 실행이 방금 push 한 HEAD 이미지($IMAGE)를 조회하지 못했습니다 — 빌드 또는 권한 문제"
+            exit 1
+          fi
+          # HEAD 가 다른 커밋일 때만, 매니페스트 부재로 판별되는 경우에 한해 건너뛴다.
+          if printf '%s' "$OUT" | grep -qiE 'not found|manifest unknown|manifest_unknown|does not exist|no such manifest'; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main HEAD(${{ steps.gate.outputs.deploy_short_sha }}) 이미지가 아직 ECR 에 없습니다(매니페스트 부재로 판별) — 그 커밋의 실행이 배포합니다"
+            exit 0
+          fi
+          echo "::error::이미지 조회가 매니페스트 부재가 아닌 이유로 실패했습니다(인증·네트워크 등) — 위 출력 확인"
+          exit 1
+
+      # 진행 중인 배포가 끝날 때까지 기다린 뒤에 승격·배포한다. server·ai 두 레포가 같은 manyak-prod
+      # 서비스를 갱신하는데 GitHub concurrency 는 레포 스코프라 상호배제가 되지 않아서,
+      # 한쪽 배포가 끝나기 전에 다른 쪽이 force-new-deployment 를 걸면 앞 배포를 대체해 버린다.
+      # 이 대기는 그 경합 창을 초 단위로 줄일 뿐 완전한 직렬화가 아니다(이 스텝 통과 직후에
+      # 상대 레포가 칠 수 있다). 근본 해법인 외부 락 또는 단일 조정 워크플로는 후속 티켓 몫이다.
+      - name: Wait for service to settle
+        if: steps.image.outputs.exists == 'true'
+        run: |
+          for i in $(seq 1 60); do
+            read -r COUNT STATE <<< "$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query "[length(services[0].deployments), services[0].deployments[?status=='PRIMARY'].rolloutState | [0]]" \
+              --output text)"
+            if [ "$COUNT" = "1" ] && [ "$STATE" = "COMPLETED" ]; then
+              echo "✅ 서비스 안정(배포 1개, PRIMARY COMPLETED) — 배포를 시작합니다"; exit 0
+            fi
+            echo "진행 중인 배포 대기 $i/60 (배포 $COUNT 개, PRIMARY=$STATE) — 10s"; sleep 10
+          done
+          echo "::error::10분 안에 서비스가 안정 상태가 되지 않았습니다 — 진행 중인 배포를 확인하세요"; exit 1
+
+      # :latest 를 main HEAD 로 옮긴다. 빌드 잡에서 붙이면 늦게 끝난 옛 빌드가 태그를 되돌릴 수
+      # 있다(dev 의 :dev 와 같은 버그, KNK-829). manifest 를 복사하므로 멀티아키 인덱스가 유지된다.
+      - name: Promote main HEAD to :latest
+        id: promote
+        if: steps.image.outputs.exists == 'true'
+        run: |
+          IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}"
+          # 승격 전 현재 :latest 의 digest 를 보관한다(아래 복구 스텝이 되돌릴 대상).
+          # 인덱스 digest 라 되돌려도 멀티아키 인덱스가 유지된다. :latest 가 아직 없으면 빈 값.
+          # 캡처와 파싱을 분리한다 — 러너 기본 셸이 `bash -eo pipefail` 이라, 조회를 파이프라인
+          # 안에서 하면 :latest 부재 시 스텝 자체가 죽어 "빈 값이면 경고" 분기에 닿지 못한다.
+          if LATEST_INSPECT=$(docker buildx imagetools inspect "${IMAGE}:latest" 2>&1); then
+            PREV_DIGEST=$(printf '%s\n' "$LATEST_INSPECT" | awk '/^Digest:/{print $2; exit}')
+          else
+            # HEAD 조회와 같은 원칙으로 fail-closed 다. 매니페스트 부재일 때만 "아직 :latest 없음"
+            # 으로 보고 빈 값을 두고, 인증·네트워크 오류면 승격 전에 잡을 실패시킨다 —
+            # 그대로 승격하면 복구 대상 digest 없이 :latest 만 바뀐다.
+            echo "$LATEST_INSPECT"
+            if printf '%s' "$LATEST_INSPECT" | grep -qiE 'not found|manifest unknown|manifest_unknown|does not exist|no such manifest'; then
+              PREV_DIGEST=""
+              echo "현재 :latest 가 없습니다(매니페스트 부재로 판별) — 실패 시 되돌릴 대상 없음"
+            else
+              echo "::error:::latest 조회가 매니페스트 부재가 아닌 이유로 실패했습니다(인증·네트워크 등) — 위 출력 확인"
+              exit 1
+            fi
+          fi
+          echo "PREV_DIGEST=$PREV_DIGEST" >> "$GITHUB_ENV"
+          echo "승격 전 :latest digest: ${PREV_DIGEST:-(없음)}"
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${{ steps.gate.outputs.deploy_short_sha }}"
+          echo "promoted=true" >> "$GITHUB_OUTPUT"
+          echo "✅ :latest -> ${{ steps.gate.outputs.deploy_short_sha }}"
+
+      # 운영 태스크 정의는 이미 :latest 좌표를 들고 있으므로 새 리비전을 등록하지 않는다
+      # (CI 역할에 RegisterTaskDefinition·iam:PassRole 권한이 없다).
+      # force-new-deployment 가 같은 정의로 태스크를 다시 띄우면서 위에서 승격한 :latest 를 다시 pull 한다.
+      #
+      # 운영도 server·ai 가 태스크 정의 하나에 함께 있어, 이 배포는 두 컨테이너를 모두 재시작한다.
+      # 둘 다 :latest 라 server 는 그 시점의 manyak-server 최신 이미지로 함께 뜬다.
+      - name: Force new ECS deployment
+        if: steps.image.outputs.exists == 'true'
+        run: |
+          # 이 호출이 만든 배포 id 를 잡아 둔다. services-stable 만으로는 부족하다 —
+          # 서비스에 circuit breaker rollback 이 켜져 있어, 새 태스크가 못 뜨면 ECS 가
+          # 직전 배포로 되돌리고, 그 상태도 "안정적인 배포 1개 + desired 충족"이라 waiter 가 성공한다.
+          # 그러면 이후 헬스 검사는 옛 태스크를 보게 되어 실패한 배포가 초록으로 끝난다.
+          DEPLOY_ID=$(aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --force-new-deployment --no-cli-pager \
+            --query "service.deployments[?status=='PRIMARY'].id | [0]" --output text)
+          echo "배포 id: $DEPLOY_ID"
+          # 헬스 검사 스텝이 "이번 배포가 띄운 태스크"만 고르는 데 쓴다.
+          echo "DEPLOY_ID=$DEPLOY_ID" >> "$GITHUB_ENV"
+
+          # 그 배포가 COMPLETED 가 될 때까지 폴링한다. 롤백되면 rolloutState 가 FAILED 가 되거나
+          # 배포 자체가 목록에서 사라지므로 둘 다 실패로 처리한다.
+          for i in $(seq 1 60); do
+            STATE=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query "services[0].deployments[?id=='$DEPLOY_ID'].rolloutState | [0]" --output text)
+            case "$STATE" in
+              COMPLETED) echo "✅ 배포 $DEPLOY_ID COMPLETED"; break ;;
+              FAILED) echo "::error::배포 $DEPLOY_ID 가 FAILED — circuit breaker 롤백 발생. CloudWatch /ecs/manyak-prod 확인"; exit 1 ;;
+              None|"") echo "::error::배포 $DEPLOY_ID 가 사라졌습니다(롤백으로 교체) — CloudWatch /ecs/manyak-prod 확인"; exit 1 ;;
+              *) echo "배포 $STATE — 대기 $i/60 (10s)"; sleep 10 ;;
+            esac
+          done
+          [ "$STATE" = "COMPLETED" ]
+
+      # 서비스가 안정화돼도 ai 는 죽어 있을 수 있다 — ai 컨테이너는 essential=false 라
+      # 태스크를 죽이지 않고, ALB 헬스는 server 만 본다. AI 레포의 배포는 특히 이걸 봐야 한다.
+      - name: Verify container health (ai 포함)
+        if: steps.image.outputs.exists == 'true'
+        run: |
+          # 단발 검사는 안 된다. 배포 완료 시점에도 ai 는 아직 UNKNOWN 일 수 있다 —
+          # 태스크 헬스체크에 start period 와 재시도가 있고, ai 는 essential=false 라
+          # 배포 완료 판정이 ai 의 healthy 를 기다려 주지 않는다.
+          # 부분일치를 쓰지 않는다 — UNHEALTHY 도 "HEALTHY" 로 끝나서 비정상을 정상으로 오판한다.
+          # 검사는 ai 컨테이너만 본다. 운영 태스크의 로그 사이드카 log_router(aws-for-fluent-bit)는
+          # healthCheck 가 없어 healthStatus 가 영원히 UNKNOWN 이라, 전 컨테이너 검사는 매번 타임아웃한다.
+          # 검사 대상은 이번 배포가 띄운 태스크로 한정한다. 서비스 태스크의 startedBy 는
+          # update-service 가 돌려준 배포 id(ecs-svc/...)와 같은 값이다(운영·개발 서비스에서 실측 확인).
+          # ListTasks 는 --started-by 를 다른 필터와 함께 쓸 수 없어(InvalidParameterException)
+          # --service-name 은 넣지 않는다. 배포 id 가 유일하므로 클러스터 범위로 충분하다.
+          # taskArns[0] 한 개만 보면 desiredCount 가 2 이상일 때 나머지를 놓치고,
+          # 드레이닝 중인 옛 배포의 태스크를 잘못 볼 수도 있다.
+          for i in $(seq 1 20); do
+            TASKS=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" --started-by "$DEPLOY_ID" \
+              --query 'taskArns[]' --output text)
+            # 배포 COMPLETED 직후 목록이 잠깐 비어 오는 경우가 있어 즉시 실패시키지 않는다.
+            # 계속 비면 아래 루프 타임아웃에서 실패한다.
+            if [ -z "$TASKS" ]; then
+              echo "배포 $DEPLOY_ID 의 태스크 목록이 아직 비어 있습니다 — 재시도 $i/20 (15s)"; sleep 15; continue
+            fi
+            aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query 'tasks[].containers[].{task:taskArn,name:name,status:lastStatus,health:healthStatus}' --output table
+            # ai 컨테이너 수가 태스크 수와 정확히 일치하는지 본다. 0 인지만 보면 여러 태스크 중
+            # 일부에서 ai 가 빠져도 남은 쪽 개수로 통과한다. 기대값: 태스크마다 ai 1개.
+            read -r TASK_COUNT TARGETS <<< "$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query "[length(tasks), length(tasks[].containers[?name=='ai'][])]" --output text)"
+            if [ "$TARGETS" != "$TASK_COUNT" ]; then
+              echo "::error::태스크 $TASK_COUNT 개인데 ai=$TARGETS 입니다 — 컨테이너 누락 또는 이름 변경. 태스크 정의 확인"
+              exit 1
+            fi
+            # 서비스의 desiredCount 와 대조한다. 일부 태스크만 떠 있는 순간에 통과하지 않도록.
+            DESIRED=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query 'services[0].desiredCount' --output text)
+            AI_PENDING=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query "length(tasks[].containers[?name=='ai' && healthStatus!='HEALTHY'][])" --output text)
+            if [ "$AI_PENDING" = "0" ]; then
+              if [ "$TASK_COUNT" = "$DESIRED" ]; then
+                echo "✅ 전 태스크의 ai HEALTHY (태스크 $TASK_COUNT/$DESIRED, 대상 $TARGETS 개)"; exit 0
+              fi
+              # 헬스는 통과했지만 태스크 수가 아직 desired 에 못 미친다(교체 중일 수 있다) — 재시도.
+              echo "헬스 통과, 태스크 $TASK_COUNT/$DESIRED — 나머지 태스크 대기 $i/20 (15s)"; sleep 15; continue
+            fi
+            AI_BAD=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
+              --query "length(tasks[].containers[?name=='ai' && (healthStatus=='UNHEALTHY' || lastStatus=='STOPPED')][])" --output text)
+            if [ "$AI_BAD" != "0" ]; then
+              echo "::error::ai 컨테이너가 기동에 실패했습니다 — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-prod 로그에서 확인"
+              exit 1
+            fi
+            echo "ai 기동 대기 $i/20 (15s)..."; sleep 15
+          done
+          echo "::error::제한 시간 안에 ai 가 HEALTHY 가 되지 않았습니다 — CloudWatch /ecs/manyak-prod 로그 확인"; exit 1
+
+      - name: Smoke test (server /actuator/health)
+        if: steps.image.outputs.exists == 'true'
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS --max-time 10 https://api.manyak.app/actuator/health | grep -q '"status":"UP"'; then
+              echo "✅ health UP"; exit 0
+            fi
+            echo "health 대기 $i/12 (15s)..."; sleep 15
+          done
+          echo "::error::health 200/UP 확인 실패 — CloudWatch /ecs/manyak-prod 로그 확인"; exit 1
+
+      # 배포·헬스·스모크가 실패하면 :latest 를 승격 전 이미지로 되돌린다.
+      # circuit breaker 가 태스크를 롤백해도 :latest 는 실패 이미지를 가리킨 채라,
+      # 다음 force-new-deployment(상대 레포 릴리스 포함)가 실패 이미지를 다시 띄운다.
+      - name: Restore :latest on failure
+        if: (failure() || cancelled()) && steps.promote.outputs.promoted == 'true'
+        run: |
+          IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}"
+          if [ -z "$PREV_DIGEST" ]; then
+            echo "::warning:::latest 가 승격 전에 없었어 되돌릴 대상이 없습니다 — :latest 는 실패한 ${{ steps.gate.outputs.deploy_short_sha }} 를 가리킵니다. 수동 조치 필요"
+            exit 0
+          fi
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${PREV_DIGEST}"
+          echo "↩️ :latest 복구 -> $PREV_DIGEST"
+          # 태그만 되돌리면 실행 중인 태스크는 여전히 실패 이미지다. 한 번 더 배포를 걸어 교체한다.
+          # 잡은 이미 실패 상태라 안정화 폴링은 하지 않는다(원 실패를 가리지 않도록).
+          # 이 재배포가 실패해도 스텝을 죽이지 않고 경고만 남긴다.
+          if RESTORE_DEPLOY_ID=$(aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --force-new-deployment --no-cli-pager \
+            --query "service.deployments[?status=='PRIMARY'].id | [0]" --output text); then
+            echo "복구 배포 id: $RESTORE_DEPLOY_ID"
+            echo "::warning::복구용 재배포를 트리거했습니다($RESTORE_DEPLOY_ID). 완료를 기다리지 않으니 서비스 상태를 직접 확인하세요"
+          else
+            echo "::warning::복구용 재배포 트리거에 실패했습니다 — :latest 는 되돌렸지만 실행 중 태스크는 실패 이미지입니다. 수동 조치 필요"
+          fi
+  # [롤백 경로] 전용 SSM 문서(manyak-prod-ai-deploy)로 EC2에 AI 배포
+  # (문서가 내부에서 deploy.sh + `up -d --wait ai` 로 health 게이트까지 수행)
+  # 이 잡은 manyak-terraform 에서 ALB 트래픽을 EC2 로 전환(ecs_traffic_weight = 0)한 뒤 실행하는
+  # 전제다. 배포 검증은 도메인 스모크가 아니라 전용 SSM 문서 안의 `docker compose up -d --wait ai`
+  # 헬스 게이트가 담당하므로(이 잡에는 도메인 스모크 스텝이 없다), 트래픽 전환 전에 실행해도
+  # EC2 배포 성패 자체는 판별된다. 다만 그 상태에서 api.manyak.app 은 여전히 ECS 를 가리키므로,
+  # 롤백이 실제로 사용자에게 반영됐는지는 트래픽을 전환해야 확인된다.
+  # 운영 트래픽은 ECS 로 넘어갔고(KNK-856) 배포도 위 deploy-prod 가 담당한다. 이 잡은 ECS 배포가
+  # 문제일 때 EC2 로 되돌리기 위한 수동 수단으로만 남긴다 — main 푸시가 아니라 workflow_dispatch 로만 돈다
+  # (이미 ECR 에 있는 :short-sha 를 배포하므로 이 실행에서 이미지를 새로 빌드하지 않아도 된다).
+  # EC2 를 회수하면 이 잡을 통째로 제거한다(KNK-963).
+  deploy:
+    name: Deploy AI to EC2 (prod, 롤백 경로 · 수동 실행)
+    needs: docker
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    # 배포 잡(manyak-prod-deploy)과 그룹을 분리한다. GitHub 는 그룹당 pending 을 1개만 두고
+    # 새 잡이 그 자리를 차지하므로, 같은 그룹이면 새 main push 의 deploy-prod 가 대기 중인
+    # 롤백을 취소해 버린다 — 사람이 의도한 유일한 롤백 실행을 배포가 밀어내면 안 된다.
+    # 롤백은 EC2 를, 배포는 ECS 를 치므로 자원도 겹치지 않는다.
+    # cancel-in-progress=false: SSM send-command 로 이미 dispatch 된 원격 배포는 잡을 취소해도
+    # 되돌릴 수 없어서, 취소보다 큐잉이 안전하다.
+    concurrency:
+      group: manyak-prod-rollback
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      # 최신 main SHA 게이트를 두지 않는다. 이 잡은 사람이 의도해서 돌리는 유일한 롤백 실행이라,
+      # 롤백 도중 main 이 전진했다는 이유로 skip 하면 롤백 자체가 사라진다.
+      # 배포 대상은 이 실행이 체크아웃한 커밋의 이미지다.
+      - name: 배포 대상 알림
+        run: |
+          echo "::notice::수동 롤백 실행 — 이 실행의 커밋 ${GITHUB_SHA::7} 이미지를 EC2 에 배포합니다"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Resolve target EC2 instance
         id: ec2
-        if: steps.gate.outputs.skip != 'true'
         run: |
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Project,Values=manyak" "Name=tag:Name,Values=manyak-prod-app" "Name=instance-state-name,Values=running" \
@@ -364,7 +625,6 @@ jobs:
           echo "대상 인스턴스: $INSTANCE_ID"
 
       - name: Deploy via SSM (전용 문서 manyak-prod-ai-deploy)
-        if: steps.gate.outputs.skip != 'true'
         run: |
           # 이 워크플로가 빌드·푸시한 정확한 이미지(short-sha)를 배포 — :latest 의 동시 push 모호성·추적성 문제 회피
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA::7}"
