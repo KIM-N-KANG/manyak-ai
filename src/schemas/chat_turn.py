@@ -5,7 +5,7 @@ spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
 구조다. AI는 턴 사이에 아무것도 보관하지 않으며, 세션 식별자도 두지 않는다.
 
 - 입력: 백엔드 → AI (매 턴) — ChatTurnRequest
-- 출력: AI → 백엔드 (SSE 스트림). AI는 token·completed·error만 발행하고,
+- 출력: AI → 백엔드 (SSE 스트림). AI는 token·character_image·completed·error·ping 5개를 발행하고,
         started·chatId·turnId는 백엔드가 발행·부착한다(manyak-server 규격과 통일).
 """
 
@@ -116,6 +116,13 @@ class EndingCandidate(BaseModel):
     epilogue: str
 
 
+class CharacterImageMapping(BaseModel):
+    """백엔드가 매 턴 전달하는 인물 이름과 저장 이미지 URL의 매핑."""
+
+    name: str
+    image_url: str
+
+
 class ChatTurnRequest(BaseModel):
     """채팅 턴 API 입력 (매 턴, 완전 stateless).
 
@@ -150,6 +157,10 @@ class ChatTurnRequest(BaseModel):
     target_main_event: TargetMainEvent | None = None
     occurred_main_event_names: list[str] = Field(default_factory=list)
     endings: list[EndingCandidate] = Field(default_factory=list)
+    # 이미지가 저장된 주변 인물만 전달한다. 없으면 기존 채팅과 동일하게 동작한다.
+    character_images: list[CharacterImageMapping] = Field(
+        default_factory=list, max_length=5
+    )
 
     @field_validator("user_source", mode="before")
     @classmethod
@@ -169,11 +180,12 @@ class ChatTurnRequest(BaseModel):
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────
 # manyak-server의 SSE 규격(started→token→completed→error)과 통일한다.
-# AI(manyak-ai)가 발행하는 이벤트는 token·completed·error·ping 4개다.
+# AI(manyak-ai)가 발행하는 이벤트는 token·character_image·completed·error·ping 5개다.
 # started는 백엔드가 SSE 스트림을 열며 자체 발행한다(chatId 신호 — AI 미발행).
 # chatId·turnId도 백엔드가 부착하므로 AI 페이로드에는 넣지 않는다.
 
 EVENT_TOKEN = "token"
+EVENT_CHARACTER_IMAGE = "character_image"
 EVENT_COMPLETED = "completed"
 EVENT_ERROR = "error"
 
@@ -208,6 +220,13 @@ class TokenData(BaseModel):
     text: str
 
 
+class CharacterImageData(BaseModel):
+    """event: character_image와 completed가 공유하는 인물 이미지 정보."""
+
+    name: str
+    image_url: str = Field(serialization_alias="imageUrl")
+
+
 class TargetMainEventOut(BaseModel):
     """completed 판정 메타 — 이번 턴 판정 후 목표 사건 상태.
 
@@ -236,6 +255,9 @@ class CompletedData(BaseModel):
     # 둔다. ⚠️ 직렬화 시 반드시 model_dump(by_alias=True)를 써야 와이어가 aiOutput이 된다(T3).
     ai_output: str = Field(serialization_alias="aiOutput")
     choices: list[str] = Field(default_factory=list, max_length=0)
+    character_image: CharacterImageData | None = Field(
+        default=None, serialization_alias="characterImage"
+    )
     # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
     meta: ChatResponseMeta | None = None
     # ── 주요 사건·엔딩 판정 메타 (KNK-483, §5-3-4·D11) ─────────────────────────

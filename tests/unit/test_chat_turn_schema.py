@@ -8,7 +8,13 @@ completed 판정 메타 3필드는 camelCase 와이어 키로 직렬화되고 �
 import pytest
 from pydantic import ValidationError
 
-from src.schemas.chat_turn import ChatTurnRequest, CompletedData, TargetMainEventOut
+from src.schemas.chat_turn import (
+    EVENT_CHARACTER_IMAGE,
+    CharacterImageData,
+    ChatTurnRequest,
+    CompletedData,
+    TargetMainEventOut,
+)
 
 # 기존 계약(재료 필드 없음)의 최소 유효 페이로드 — 와이어(snake_case) 형태.
 _BASE_PAYLOAD = {
@@ -44,6 +50,7 @@ def test_request_without_event_materials_passes_with_defaults() -> None:
     assert req.target_main_event is None
     assert req.occurred_main_event_names == []
     assert req.endings == []
+    assert req.character_images == []
 
 
 # ── 재료 포함 요청 파싱 ─────────────────────────────────────────────────────
@@ -67,6 +74,23 @@ def test_request_with_event_materials_parses() -> None:
     assert req.target_main_event.progress_turns == 3
     assert req.occurred_main_event_names == ["선왕의 죽음"]
     assert req.endings[0].name == "왕좌를 되찾다"
+
+
+def test_request_with_character_images_parses() -> None:
+    req = ChatTurnRequest.model_validate(
+        {
+            **_BASE_PAYLOAD,
+            "character_images": [
+                {
+                    "name": "레이",
+                    "image_url": "https://cdn.example.com/characters/rei.webp",
+                }
+            ],
+        }
+    )
+
+    assert req.character_images[0].name == "레이"
+    assert req.character_images[0].image_url.endswith("/rei.webp")
 
 
 @pytest.mark.parametrize("user_source", ["choice", "edited_choice", "typed"])
@@ -106,6 +130,17 @@ def test_main_events_over_ten_rejected() -> None:
         ChatTurnRequest.model_validate(payload)
 
 
+def test_character_images_over_five_rejected() -> None:
+    image = {
+        "name": "레이",
+        "image_url": "https://cdn.example.com/characters/rei.webp",
+    }
+    with pytest.raises(ValidationError):
+        ChatTurnRequest.model_validate(
+            {**_BASE_PAYLOAD, "character_images": [image] * 6}
+        )
+
+
 def test_ending_candidate_has_no_min_turns_field() -> None:
     # min_turns는 백엔드가 결정적으로 걸러 보내는 값이라 후보 계약에 없다(D11 분담).
     # 모르는 필드는 pydantic 기본(ignore)으로 무시된다 — 실려 와도 파싱이 깨지지 않는다.
@@ -132,6 +167,7 @@ def test_completed_judgement_meta_defaults_to_null_camel_case() -> None:
     assert payload["targetMainEvent"] is None
     assert payload["occurredMainEventName"] is None
     assert payload["endingName"] is None
+    assert payload["characterImage"] is None
 
 
 def test_completed_judgement_meta_serializes_camel_case() -> None:
@@ -144,6 +180,27 @@ def test_completed_judgement_meta_serializes_camel_case() -> None:
     assert payload["targetMainEvent"] == {"name": "반란의 서막", "progressTurns": 4}
     assert payload["occurredMainEventName"] == "선왕의 죽음"
     assert payload["endingName"] == "왕좌를 되찾다"
+
+
+def test_character_image_serializes_camel_case() -> None:
+    character_image = CharacterImageData(
+        name="레이",
+        image_url="https://cdn.example.com/characters/rei.webp",
+    )
+
+    assert EVENT_CHARACTER_IMAGE == "character_image"
+    assert character_image.model_dump(by_alias=True) == {
+        "name": "레이",
+        "imageUrl": "https://cdn.example.com/characters/rei.webp",
+    }
+    completed = CompletedData(
+        ai_output="[[character:레이]]레이가 들어선다.",
+        character_image=character_image,
+    ).model_dump(by_alias=True)
+    assert completed["characterImage"] == {
+        "name": "레이",
+        "imageUrl": "https://cdn.example.com/characters/rei.webp",
+    }
 
 
 # ── completed choices 빈 배열 강제 (KNK-625 선택지 분리) ────────────────────
