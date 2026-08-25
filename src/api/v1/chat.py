@@ -11,8 +11,8 @@
 
 AI가 발행하는 SSE 이벤트는 token·character_image·completed·error·ping 5개다. ping은 판정을 기다리는
 동안만 나가는 신호로, 백엔드의 이벤트 간 상한 시계를 되돌린다(KNK-750 — `EVENT_PING` 주석).
-started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed의 ai_output·meta는 와이어 계약 키(aiOutput·
-camelCase)로 직렬화한다(by_alias=True). completed의 choices는 하위호환 빈 배열 고정 —
+started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed의 ai_output·character_images·meta는
+와이어 계약 키(aiOutput·characterImages·camelCase)로 직렬화한다(by_alias=True). completed의 choices는 하위호환 빈 배열 고정 —
 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3)이라 선행 배포에 안전하다.
 판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 재료 없는 요청에서
 null이고, 서버 DTO가 ignoreUnknown이라 역시 선행 배포에 안전하다.
@@ -204,6 +204,7 @@ async def _event_stream(
                     # 하위호환 빈 배열 — 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3).
                     # 프론트·백엔드 전환 완료 후 필드 제거를 검토한다.
                     choices=[],
+                    character_images=ev.get("character_images", []),
                     meta=meta,
                     target_main_event=judgement.target_main_event,
                     occurred_main_event_name=judgement.occurred_main_event_name,

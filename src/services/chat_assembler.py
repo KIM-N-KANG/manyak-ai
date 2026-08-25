@@ -20,6 +20,7 @@ from src.schemas.chat_turn import (
     MainEvent,
     TargetMainEvent,
 )
+from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.prompt_meta import read_version
 
 _CHAT_DIR = Path(__file__).parent.parent.parent / "prompt" / "chat"
@@ -142,7 +143,10 @@ def _history_messages(history: list[ChatHistoryItem]) -> list[dict]:
 
     SYSTEM은 스키마(Literal)상 들어올 수 없고 백엔드도 제외해 보낸다(명세 4.2).
     """
-    return [{"role": _ROLE_MAP[h.role], "content": h.content} for h in history]
+    return [
+        {"role": _ROLE_MAP[h.role], "content": strip_character_image_syntax(h.content)}
+        for h in history
+    ]
 
 
 def _depth_block(summary: str) -> str:

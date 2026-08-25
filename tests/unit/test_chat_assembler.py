@@ -60,6 +60,19 @@ def test_message_order_and_roles() -> None:
     assert messages[-1]["role"] == "system"
 
 
+def test_history_removes_character_image_syntax_only_from_llm_copy() -> None:
+    stored = (
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
+        "[character:미라]미라: 나도 왔어."
+    )
+    history = [ChatHistoryItem(role="ASSISTANT", content=stored)]
+
+    messages = assemble(_request(history=history))
+
+    assert messages[1]["content"] == "세린: 기다렸어?\n미라: 나도 왔어."
+    assert history[0].content == stored
+
+
 # ── 슬롯 치환 ────────────────────────────────────────────────────────────────
 def test_no_unsubstituted_slots() -> None:
     messages = assemble(_request())

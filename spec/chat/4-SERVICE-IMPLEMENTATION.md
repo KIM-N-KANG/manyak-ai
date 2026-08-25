@@ -482,19 +482,22 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 1. 백엔드 request 도착: 통글 4필드 + 장르 + 시작 설정 + 최근 10턴 History(오프닝 시드 포함)
    + 사용자 입력 + 메모리 요약(summary) + 이미지 보유 인물 매핑(character_images). session_id 없음.
 2. 슬롯 치환: 통글·장르·시작 설정과 이미지 보유 인물 이름을 STORY/CHARACTER/USER 슬롯에 결정적 치환(LLM 없음). 이미지 URL은 프롬프트에서 제외한다.
-3. History 정규화: role 대문자(USER/ASSISTANT) → LLM 호출용 소문자(user/assistant) 변환, SYSTEM 제외
+3. History 정규화: role 대문자(USER/ASSISTANT) → LLM 호출용 소문자(user/assistant) 변환, SYSTEM 제외.
+   저장 원문은 유지하고 LLM 입력 복사본에서 `[[인물이름:URL]]` 마커와 노출된 `[character:이름]` 태그를 제거한다.
    · 사용자 입력(*지문*/대사/선택지)은 별도 필드(`user_input`)로 받아, 조립기가 변환 없이
      History 뒤 마지막 user 턴으로 붙인다 (2.5·2.6)
 4. MEMORY-TEMPLATE.md 양식에 받은 summary 렌더 → "[현재 상태]" 블록 (빈 문자열이면 빈 칸 그대로)
 5. 조립기: 시스템(앞) + History + 사용자 입력(마지막 user 턴) + Depth(현재 상태) + PHI 구성
 6. 본문 호출: ChatProvider.complete(messages, stream=True) → 본문 스트림(상황 묘사 + 주변 인물 또는 단역·배경 인물 대사 최소 한 줄, 선택지 없음, 2.5). 이미지 보유 인물이 말할 때마다 해당 대사 `인물명:` 바로 앞에 내부 이미지 태그가 붙는다. 같은 인물이 다시 말하면 태그도 다시 붙으며, 이미지가 없는 인물의 대사에는 태그가 없다.
-7. 본문 완료 후 판정 호출(재료가 있을 때만): JUDGEMENT 프롬프트로 호출 → 판정 메타 3필드.
+7. 본문 완료 후 판정 호출(재료가 있을 때만): 저장 마커와 노출된 원본 태그를 제거한 본문 복사본을
+   JUDGEMENT 프롬프트로 호출 → 판정 메타 3필드.
    재료 없으면 스킵, 실패하면 null 흡수(턴을 깨지 않음, 2.8 ④⑤).
    선택지는 이 흐름에서 만들지 않는다 — 전용 엔드포인트로 분리(KNK-625, 아래 선택지 흐름)
 8. SSE로 백엔드에 흘려보낸다 — 유효한 내부 이미지 태그는 token에서 빼고, 태그마다 인물 이름과 URL을
    `character_image` 이벤트로 전달한다. 같은 인물의 태그가 다시 나오면 이미지 이벤트도 다시 전달한다.
    매핑에 없는 인물의 태그와 완성되지 않은 태그는 본문에 그대로 표시한다. 본문은 token으로 스트리밍하고,
-   completed에 {본문, choices 빈 배열(하위호환),
+   completed의 본문에는 유효한 태그를 `[[인물이름:URL]]` 마커로 바꿔 저장한다. 마커와 같은 순서로
+   `characterImages[]`를 구성하고, completed에 {본문, 인물 이미지 목록, choices 빈 배열(하위호환),
    판정 메타(targetMainEvent·occurredMainEventName·endingName, 재료 없으면 null), meta}를 전달
    (meta = 모델·프롬프트 버전(6레이어+JUDGEMENT)·토큰 수(본문+판정 합산)·retry_count 0 고정).
    completed가 선택지를 기다리지 않으므로 본문 확정이 밀리지 않는다.
@@ -503,6 +506,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 > **선택지 흐름 (전용 엔드포인트 `POST /chat/choices`, KNK-625).** 백엔드가 completed 이후
 > (턴 저장 뒤) 턴 요청과 같은 재료 + 방금 본문(`ai_output`)으로 호출하는 **동기 REST**다.
+> AI 서버는 선택지 LLM 입력을 만들 때 History와 `ai_output` 복사본에서 저장 마커와 노출된 원본 태그를 제거한다.
 > CHOICES 프롬프트로 별도 LLM 호출(비스트리밍 JSON) → 다음 행동 3개. 코드가 개수를 검증해
 > 보충(최대 2회)·패딩으로 항상 정확히 3개를 보장하고(2.5) 호출 실패도 흡수하므로 **유효한
 > 요청이면 LLM 생성 실패도 항상 200**이다(스키마 위반 요청은 422 검증 오류 — "항상 200"은

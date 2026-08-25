@@ -31,6 +31,7 @@ from src.core.sentry import (
 from src.schemas.chat_turn import ChatTurnRequest
 from src.services import llm
 from src.services.chat_assembler import format_main_events, format_target_main_event
+from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt_meta import read_version
 
@@ -120,7 +121,10 @@ def _strip_code_fence(text: str) -> str:
 def _format_history(req: ChatTurnRequest) -> str:
     """History를 읽기 쉬운 텍스트로 만든다(역할은 한글 라벨). 비면 빈 문자열."""
     label = {"USER": "주인공", "ASSISTANT": "이야기"}
-    lines = [f"{label.get(h.role, h.role)}: {h.content}" for h in req.history]
+    lines = [
+        f"{label.get(h.role, h.role)}: {strip_character_image_syntax(h.content)}"
+        for h in req.history
+    ]
     return "\n\n".join(lines)
 
 
@@ -141,7 +145,7 @@ def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
         "{{summary}}": req.summary or "(아직 없음)",
         "{{history}}": _format_history(req) or "(없음)",
         "{{user_input}}": req.user_input,
-        "{{ai_output}}": ai_output,
+        "{{ai_output}}": strip_character_image_syntax(ai_output),
         "{{main_events}}": format_main_events(req.main_events),
         "{{target_main_event}}": format_target_main_event(req.target_main_event),
         "{{occurred_main_event_names}}": "\n".join(

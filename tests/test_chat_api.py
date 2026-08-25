@@ -136,7 +136,15 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
             },
             {
                 "event": "completed",
-                "ai_output": "[character:세린]세린: 안녕.",
+                "ai_output": (
+                    "[[세린:https://cdn.example.com/serin.webp]]세린: 안녕."
+                ),
+                "character_images": [
+                    {
+                        "name": "세린",
+                        "image_url": "https://cdn.example.com/serin.webp",
+                    }
+                ],
                 "model": "deepseek-v4-flash",
                 "provider": "deepseek",
             },
@@ -154,6 +162,16 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
         "name": "세린",
         "imageUrl": "https://cdn.example.com/serin.webp",
     }
+    completed = _data_of(response.text, "completed")
+    assert completed["aiOutput"] == (
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 안녕."
+    )
+    assert completed["characterImages"] == [
+        {
+            "name": "세린",
+            "imageUrl": "https://cdn.example.com/serin.webp",
+        }
+    ]
 
 
 async def test_chat_turn_meta_body_tokens_and_fixed_retry(client, mock_events) -> None:

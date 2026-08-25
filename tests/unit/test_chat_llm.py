@@ -112,9 +112,15 @@ async def test_stream_strips_speaker_bold_after_character_tag_in_completed(
 
     assert completed["ai_output"] == (
         "*문이 열린다.*\n"
-        "[character:세린]세린: 기다렸어?\n"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
         "레이: 늦었네."
     )
+    assert completed["character_images"] == [
+        {
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        }
+    ]
 
 
 # ── 인물 이미지 태그 스트림 변환(KNK-991) ─────────────────────────
@@ -163,8 +169,26 @@ async def test_stream_converts_every_valid_tag_across_chunk_boundaries(mock_stre
             "image_url": "https://cdn.example.com/serin.webp",
         },
     ]
-    # URL 마커 치환은 KNK-992의 몫이다. 이 단계의 완료 본문은 LLM 원문을 유지한다.
-    assert "[character:세린]" in completed["ai_output"]
+    assert completed["ai_output"] == (
+        "*문이 열린다.*\n"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
+        "[[레이:https://cdn.example.com/rei.webp]]레이: 들어가자.\n"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 다시 확인할게."
+    )
+    assert completed["character_images"] == [
+        {
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        },
+        {
+            "name": "레이",
+            "image_url": "https://cdn.example.com/rei.webp",
+        },
+        {
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        },
+    ]
 
 
 async def test_stream_exposes_unmapped_empty_and_unclosed_tags(mock_stream) -> None:
@@ -177,9 +201,12 @@ async def test_stream_exposes_unmapped_empty_and_unclosed_tags(mock_stream) -> N
         async for event in stream_chat_turn([], character_images=_character_images())
     ]
     visible = "".join(event["text"] for event in events if event["event"] == "token")
+    completed = next(event for event in events if event["event"] == "completed")
 
     assert visible == raw
     assert not any(event["event"] == "character_image" for event in events)
+    assert completed["ai_output"] == raw
+    assert completed["character_images"] == []
 
 
 async def test_stream_exposes_empty_tag_even_if_mapping_name_is_empty(mock_stream) -> None:
@@ -209,6 +236,57 @@ async def test_stream_restarts_tag_detection_at_nested_open_bracket(mock_stream)
 
     assert visible == "[여기 세린: 찾았어."
     assert [image["name"] for image in images] == ["세린"]
+
+
+async def test_completed_recovers_valid_tag_inside_broken_character_tag(
+    mock_stream,
+) -> None:
+    raw = "[character:잘못됨[character:세린]세린: 왔어."
+    mock_stream([raw])
+
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+    visible = "".join(event["text"] for event in events if event["event"] == "token")
+    images = [event for event in events if event["event"] == "character_image"]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert visible == "[character:잘못됨세린: 왔어."
+    assert [image["name"] for image in images] == ["세린"]
+    assert completed["ai_output"] == (
+        "[character:잘못됨"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 왔어."
+    )
+    assert completed["character_images"] == [
+        {
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        }
+    ]
+
+
+async def test_stream_and_completed_both_reject_tag_over_buffer_limit(mock_stream) -> None:
+    long_name = "가" * 20
+    raw = f"[character:{long_name}]{long_name}: 늦었어."
+    mock_stream([raw])
+    images = [
+        CharacterImageMapping(
+            name=long_name,
+            image_url="https://cdn.example.com/long-name.webp",
+        )
+    ]
+
+    events = [
+        event async for event in stream_chat_turn([], character_images=images)
+    ]
+    visible = "".join(event["text"] for event in events if event["event"] == "token")
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert visible == raw
+    assert not any(event["event"] == "character_image" for event in events)
+    assert completed["ai_output"] == raw
+    assert completed["character_images"] == []
 
 
 async def test_stream_flushes_pending_tag_before_error_and_keeps_sent_image(

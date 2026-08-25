@@ -34,6 +34,7 @@ from src.core.sentry import (
 from src.schemas.chat_turn import ChatTurnRequest, TargetMainEventOut
 from src.services import llm
 from src.services.chat_assembler import format_main_events, format_target_main_event
+from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt_meta import read_version
 
@@ -147,7 +148,7 @@ def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
         "{{occurred_main_event_names}}": _format_occurred(req),
         "{{endings}}": _format_endings(req),
         "{{user_input}}": req.user_input,
-        "{{ai_output}}": ai_output,
+        "{{ai_output}}": strip_character_image_syntax(ai_output),
     }
     text = _USER_TEMPLATE
     for k, v in repl.items():

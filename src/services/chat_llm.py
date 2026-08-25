@@ -8,7 +8,7 @@
 이벤트(dict)를 async generator로 낸다. SSE 와이어 변환·선택지 합치기는 엔드포인트(chat.py)가 맡는다.
 - {"event": "token",     "text": ...}
 - {"event": "character_image", "name": ..., "image_url": ...}
-- {"event": "completed", "ai_output": ..., "model": ..., "provider": ..., "input_tokens": ..., "output_tokens": ...}
+- {"event": "completed", "ai_output": ..., "character_images": [...], "model": ..., "provider": ..., "input_tokens": ..., "output_tokens": ...}
 - {"event": "error",     "code": ..., "message": ...}
 """
 
@@ -44,7 +44,7 @@ _TIMEOUT_SECONDS = 90.0
 # `[` 뒤로 이만큼을 읽어도 `]`가 없으면 이미지 태그가 아니다. 평범한 본문을
 # 오래 잡아두지 않고 바로 token으로 되돌린다(이미지 로직 계획 KNK-991).
 _TAG_BUFFER_MAX_CHARS = 30
-_CHARACTER_TAG_RE = re.compile(r"\[character:([^\]\r\n]*)\]")
+_CHARACTER_TAG_RE = re.compile(r"\[character:([^\[\]\r\n]*)\]")
 
 
 # 줄머리 볼드 화자 라벨을 평문으로 정규화한다: `**설하:**`·`**설하**:` → `설하:`.
@@ -71,6 +71,35 @@ def _strip_speaker_bold(text: str) -> str:
         return f"{m.group(3)}{m.group(4).strip()}: "
 
     return _SPEAKER_BOLD_RE.sub(_repl, text)
+
+
+def _character_image_for_tag(
+    raw_tag: str, images: dict[str, CharacterImageMapping]
+) -> CharacterImageMapping | None:
+    """스트리밍과 완료 응답이 같은 규칙으로 유효한 내부 태그를 찾는다."""
+    if len(raw_tag) - 1 > _TAG_BUFFER_MAX_CHARS:
+        return None
+    match = _CHARACTER_TAG_RE.fullmatch(raw_tag)
+    name = match.group(1).strip() if match else ""
+    return images.get(name) if name else None
+
+
+def _replace_character_tags_for_storage(
+    text: str, character_images: list[CharacterImageMapping]
+) -> tuple[str, list[dict]]:
+    """유효한 내부 태그를 URL 마커로 바꾸고 표시 순서의 이미지 목록을 만든다."""
+    images_by_name = {image.name: image for image in character_images}
+    displayed: list[dict] = []
+
+    def replace(match: "re.Match[str]") -> str:
+        raw_tag = match.group(0)
+        image = _character_image_for_tag(raw_tag, images_by_name)
+        if image is None:
+            return raw_tag
+        displayed.append({"name": image.name, "image_url": image.image_url})
+        return f"[[{image.name}:{image.image_url}]]"
+
+    return _CHARACTER_TAG_RE.sub(replace, text), displayed
 
 
 class _CharacterTagStreamParser:
@@ -107,12 +136,7 @@ class _CharacterTagStreamParser:
             if char == "]":
                 raw_tag = self._buffer
                 self._buffer = ""
-                match = _CHARACTER_TAG_RE.fullmatch(raw_tag)
-                name = match.group(1).strip() if match else ""
-                if not name:
-                    visible.append(raw_tag)
-                    continue
-                image = self._images.get(name)
+                image = _character_image_for_tag(raw_tag, self._images)
                 if image is None:
                     visible.append(raw_tag)
                     continue
@@ -148,8 +172,9 @@ async def stream_chat_turn(
 
     인물 이미지 매핑이 있으면 유효한 `[character:이름]` 태그를 이미지 이벤트로
     바꾸고 token에서 숨긴다. 매핑에 없거나 깨진 태그는 본문에 그대로 남긴다.
-    완료 시 누적 본문에서 줄머리 볼드 화자 라벨만 정규화해 `ai_output`으로 낸다 — 선택지는
-    여기서 만들지 않으며, 엔드포인트가 본문 종료 후 별도 호출로 받아 completed에 합친다.
+    완료 시 줄머리 볼드 화자 라벨을 정리하고 유효 태그를 URL 저장 마커로 바꿔
+    `ai_output`과 표시 순서의 `character_images`를 낸다. 선택지는 여기서 만들지 않으며,
+    엔드포인트가 본문 종료 후 별도 호출로 받아 completed에 합친다.
     """
     full = ""                              # 전체 누적 — 완료 시 ai_output
     model: str | None = None               # 응답이 돌려준 실제 모델(로깅 메타)
@@ -198,13 +223,17 @@ async def stream_chat_turn(
             for parsed in tag_parser.flush():
                 yield parsed
 
-        ai_output = _strip_speaker_bold(full.strip())  # 화자 라벨의 볼드 제거(저장·표시값)
+        normalized = _strip_speaker_bold(full.strip())  # 마커 치환 전에 화자 볼드부터 제거
+        ai_output, completed_images = _replace_character_tags_for_storage(
+            normalized, character_images or []
+        )
         # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가 판정 호출 메타를 합산하고
         # prompt_versions·provider를 더해 completed의 meta로 조립한다(KNK-243).
         # 선택지 몫 메타는 KNK-625로 /chat/choices 응답 meta에 분리됐다.
         yield {
             "event": EVENT_COMPLETED,
             "ai_output": ai_output,
+            "character_images": completed_images,
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,

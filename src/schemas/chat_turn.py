@@ -241,8 +241,10 @@ class TargetMainEventOut(BaseModel):
 class CompletedData(BaseModel):
     """event: completed — 한 턴 응답 완료(본문 + 판정 메타).
 
-    - aiOutput: 본문(상황 묘사 + 인물 대사)만. 백엔드가 chatId·turnId를 더해 이 값만
-      DB(history)에 저장한다.
+    - aiOutput: 본문(상황 묘사 + 인물 대사)과 `[[인물이름:URL]]` 저장 마커.
+      백엔드가 chatId·turnId를 더해 마커 포함 원문을 DB(history)에 저장한다.
+    - characterImages: 저장 마커와 같은 순서의 인물 이미지 목록. 같은 인물이 다시
+      말하면 같은 이미지도 다시 들어간다.
     - choices: **하위호환 빈 배열 고정**(KNK-625). 선택지 생성은 전용 엔드포인트
       `/chat/choices`로 분리됐다 — completed가 선택지를 기다리지 않아 본문 확정이
       밀리지 않는다. 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3)이라
