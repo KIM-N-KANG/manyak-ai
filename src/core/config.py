@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
-    app_version: str = "0.2.5"
+    app_version: str = "0.2.6"
     debug: bool = False
 
     deepseek_api_key: str
