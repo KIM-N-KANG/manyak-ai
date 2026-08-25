@@ -491,7 +491,10 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 7. 본문 완료 후 판정 호출(재료가 있을 때만): JUDGEMENT 프롬프트로 호출 → 판정 메타 3필드.
    재료 없으면 스킵, 실패하면 null 흡수(턴을 깨지 않음, 2.8 ④⑤).
    선택지는 이 흐름에서 만들지 않는다 — 전용 엔드포인트로 분리(KNK-625, 아래 선택지 흐름)
-8. SSE로 백엔드에 흘려보낸다 — 본문은 token으로 스트리밍, completed에 {본문, choices 빈 배열(하위호환),
+8. SSE로 백엔드에 흘려보낸다 — 유효한 내부 이미지 태그는 token에서 빼고, 태그마다 인물 이름과 URL을
+   `character_image` 이벤트로 전달한다. 같은 인물의 태그가 다시 나오면 이미지 이벤트도 다시 전달한다.
+   매핑에 없는 인물의 태그와 완성되지 않은 태그는 본문에 그대로 표시한다. 본문은 token으로 스트리밍하고,
+   completed에 {본문, choices 빈 배열(하위호환),
    판정 메타(targetMainEvent·occurredMainEventName·endingName, 재료 없으면 null), meta}를 전달
    (meta = 모델·프롬프트 버전(6레이어+JUDGEMENT)·토큰 수(본문+판정 합산)·retry_count 0 고정).
    completed가 선택지를 기다리지 않으므로 본문 확정이 밀리지 않는다.
@@ -597,7 +600,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 5. 입력 스키마 정의 · 6. `PromptCompiler` 구현
 
 **Phase 3 — 런타임 조립기 + 채팅 API (시점 B)** (4절)
-7. `PromptAssembler`(받은 재료 → 슬롯 치환 + 6레이어 조립) · 8. PHI 내부 순서 보장 · 9. `ChatProvider` 연동(본문 `stream=True`) · 10. `CHOICES-TEMPLATE.md` + 선택지 생성기(별도 JSON 호출 → 코드가 정확히 3개 보장, 2.5) · 11. SSE 채팅 턴 엔드포인트(`token`·`completed`·`error`·`ping`) — 처음엔 completed에 선택지 3개를 합산 발행했고, 이후 KNK-625에서 선택지를 전용 엔드포인트 `/chat/choices`로 분리(completed의 choices는 하위호환 빈 배열). `ping`은 KNK-750에서 추가했다 — 본문이 끝난 뒤 판정을 기다리는 구간에 프레임이 하나도 안 나가면 백엔드의 이벤트 간 상한(60초)이 정상 턴을 끊어서, 그 시계를 되돌리려고 주기적으로 내보내는 빈 신호다(백엔드는 모르는 이벤트를 무시하므로 백엔드 변경 없이 동작한다)
+7. `PromptAssembler`(받은 재료 → 슬롯 치환 + 6레이어 조립) · 8. PHI 내부 순서 보장 · 9. `ChatProvider` 연동(본문 `stream=True`) · 10. `CHOICES-TEMPLATE.md` + 선택지 생성기(별도 JSON 호출 → 코드가 정확히 3개 보장, 2.5) · 11. SSE 채팅 턴 엔드포인트(`token`·`character_image`·`completed`·`error`·`ping`) — 처음엔 completed에 선택지 3개를 합산 발행했고, 이후 KNK-625에서 선택지를 전용 엔드포인트 `/chat/choices`로 분리(completed의 choices는 하위호환 빈 배열). `character_image`는 KNK-991에서 추가했다. 유효한 내부 이미지 태그마다 인물 이름과 URL을 전달하며, 해당 태그는 `token`에 노출하지 않는다. `ping`은 KNK-750에서 추가했다 — 본문이 끝난 뒤 판정을 기다리는 구간에 프레임이 하나도 안 나가면 백엔드의 이벤트 간 상한(60초)이 정상 턴을 끊어서, 그 시계를 되돌리려고 주기적으로 내보내는 빈 신호다(백엔드는 모르는 이벤트를 무시하므로 백엔드 변경 없이 동작한다)
 
 **Phase 4 — 메모리 요약 생성 (백엔드 주도, 별개 기능)** (5절)
 11. 백엔드가 History → `summary`로 요약·갱신해 다음 턴 request로 전달한다. AI는 받은 summary를 참조만 하므로 조립기 구조는 그대로 두고 Depth에 채워 넣기만 한다(참조와 생성 분리).
