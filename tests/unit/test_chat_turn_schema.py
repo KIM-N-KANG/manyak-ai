@@ -167,7 +167,7 @@ def test_completed_judgement_meta_defaults_to_null_camel_case() -> None:
     assert payload["targetMainEvent"] is None
     assert payload["occurredMainEventName"] is None
     assert payload["endingName"] is None
-    assert payload["characterImage"] is None
+    assert payload["characterImages"] == []
 
 
 def test_completed_judgement_meta_serializes_camel_case() -> None:
@@ -182,25 +182,38 @@ def test_completed_judgement_meta_serializes_camel_case() -> None:
     assert payload["endingName"] == "왕좌를 되찾다"
 
 
-def test_character_image_serializes_camel_case() -> None:
-    character_image = CharacterImageData(
+def test_character_images_serialize_in_display_order_with_duplicates() -> None:
+    rei = CharacterImageData(
         name="레이",
         image_url="https://cdn.example.com/characters/rei.webp",
     )
+    serin = CharacterImageData(
+        name="세린",
+        image_url="https://cdn.example.com/characters/serin.webp",
+    )
 
     assert EVENT_CHARACTER_IMAGE == "character_image"
-    assert character_image.model_dump(by_alias=True) == {
+    assert rei.model_dump(by_alias=True) == {
         "name": "레이",
         "imageUrl": "https://cdn.example.com/characters/rei.webp",
     }
     completed = CompletedData(
-        ai_output="[[character:레이]]레이가 들어선다.",
-        character_image=character_image,
+        ai_output=(
+            "[[레이:https://cdn.example.com/characters/rei.webp]]레이: 들어가자.\n"
+            "[[세린:https://cdn.example.com/characters/serin.webp]]세린: 기다려.\n"
+            "[[레이:https://cdn.example.com/characters/rei.webp]]레이: 시간이 없어."
+        ),
+        character_images=[rei, serin, rei],
     ).model_dump(by_alias=True)
-    assert completed["characterImage"] == {
-        "name": "레이",
-        "imageUrl": "https://cdn.example.com/characters/rei.webp",
-    }
+    assert "characterImage" not in completed
+    assert completed["characterImages"] == [
+        {"name": "레이", "imageUrl": "https://cdn.example.com/characters/rei.webp"},
+        {
+            "name": "세린",
+            "imageUrl": "https://cdn.example.com/characters/serin.webp",
+        },
+        {"name": "레이", "imageUrl": "https://cdn.example.com/characters/rei.webp"},
+    ]
 
 
 # ── completed choices 빈 배열 강제 (KNK-625 선택지 분리) ────────────────────

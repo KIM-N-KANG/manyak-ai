@@ -221,7 +221,7 @@ class TokenData(BaseModel):
 
 
 class CharacterImageData(BaseModel):
-    """event: character_image와 completed가 공유하는 인물 이미지 정보."""
+    """character_image 이벤트 한 건과 completed 목록 한 항목의 이미지 정보."""
 
     name: str
     image_url: str = Field(serialization_alias="imageUrl")
@@ -255,8 +255,8 @@ class CompletedData(BaseModel):
     # 둔다. ⚠️ 직렬화 시 반드시 model_dump(by_alias=True)를 써야 와이어가 aiOutput이 된다(T3).
     ai_output: str = Field(serialization_alias="aiOutput")
     choices: list[str] = Field(default_factory=list, max_length=0)
-    character_image: CharacterImageData | None = Field(
-        default=None, serialization_alias="characterImage"
+    character_images: list[CharacterImageData] = Field(
+        default_factory=list, serialization_alias="characterImages"
     )
     # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
     meta: ChatResponseMeta | None = None
