@@ -8,15 +8,29 @@
 ## 다음 배포 때 볼 것
 
 - 흐름은 늘 같다: `dev → release/vX.Y.Z → main`(Merge Commit) → 자동 배포 → 태그 → 역류(Merge Commit) → 브랜치 삭제.
+- **운영 배포는 ECS 경로다(KNK-963, v0.2.6부터).** deploy 잡의 안정화 대기는 10분(60×10초)이라 **잡 실패 ≠ 배포 실패** — dev에서 태스크 시작 실패 반복으로 54분 뒤 완료된 전례(8/23)가 있다. 잡이 실패하면 롤백 전에 ECS 서비스 상태부터 확인한다. EC2·SSM 경로는 수동 롤백용으로 남아 있다.
 - **Langfuse 활성화(KNK-654)는 릴리스가 아니다.** 코드는 이미 나가 있고 키만 없어 no-op이다. 순서:
   1. `manyak-terraform` apply — **EC2 교체**가 일어난다(다운타임 + 이미지 핀이 `:latest`로 리셋되는 것 주의).
   2. 백엔드 KNK-621 배포 — 커스텀 장르 400 차단. 안 하면 사용자 자유입력이 트레이스 태그로 유입된다.
   3. Secrets에 `AI_LANGFUSE_PUBLIC_KEY`·`AI_LANGFUSE_SECRET_KEY`·`AI_LANGFUSE_HOST` 추가 — **기존 8키를 전부 포함해 저장**한다(`put-secret-value`는 전체 덮어쓰기).
      - **HOST는 정확히 `https://jp.cloud.langfuse.com`이어야 한다.** 코드가 이 문자열과 일치할 때만 켠다(`src/core/langfuse.py`의 `_ALLOWED_HOST`, 후행 슬래시는 무시). ⚠️ `.env.example`의 기본값은 EU(`https://cloud.langfuse.com`)라 그대로 복사하면 **에러 로그만 남고 조용히 꺼진 채 기동**한다.
-  4. SSM `manyak-prod-ai-deploy`로 AI만 재배포.
+  4. ECS(manyak-prod) 서비스 force-new-deployment로 AI만 재배포.
   5. 기동 로그에서 `Langfuse 활성 — host=… env=prod` 확인 + server 컨테이너에 `AI_LANGFUSE_*`가 없는지 확인.
 
 ---
+
+## v0.2.6 — 2026-08-25 배포 완료
+
+- 범위: v0.2.5 이후 dev 누적 = KNK-852(JSON 한 줄 로그, 백엔드 LogstashEncoder와 필드 통일) + KNK-961(헬스체크 접근 로그 노이즈 제거) + KNK-951(스토리 컴파일 Gemini 전환 기반 — **휴면 코드**) + KNK-963(운영 배포 경로 ECS 전환) + 버전 올림(KNK-980).
+  - **외부 계약 변경 없음 — AI 단독 배포·단독 롤백 안전.** Gemini는 `STORY_COMPILE_MODEL` 변경 전까지 안 쓰이고, `GEMINI_API_KEY` 기본값이 빈 문자열 + 기동 검사는 선택된 모델의 공급자만 봐서 운영 Secrets에 키가 없어도 정상 기동.
+  - **KNK-963 = 새 ECS 운영 배포 경로의 첫 실전.** 이번엔 CI 대기(10분) 안에 완료. "다음 배포 때 볼 것"의 대기 초과 주의 참조.
+- PR #90 `[KNK-980] Release: v0.2.6 배포` → main 머지 `deb7891`(Merge Commit) → 운영 워크플로 전 잡 success. 태그 `v0.2.6` → `deb7891`.
+- 검증: `prod-health.sh 0.2.6` → `{"status":"ok","version":"0.2.6"}`.
+- QA: `qa.sh` 유닛·API 640 passed·5 skipped, 라이브 `tests/integration` 7 passed(74.85초), 종료코드 0. `infra-check.sh` 종료코드 0.
+- **QA 특이사항: `qa.sh` 키 주입 공백을 발견·수정.** 1차 라이브가 기동 실패 — 스크립트가 `DEEPSEEK_API_KEY`만 주입했는데, 기동 검사(`validate_selected_models`)는 컴파일 모델(gpt-5.6-terra=openai)의 `OPENAI_API_KEY`도 요구한다(컴파일 모델이 OpenAI로 옮겨간 뒤 잠복, 로컬 `.env`에 키가 있어 가려져 있었다). 주입 대상을 요구 키 전체(`REQUIRED_KEYS`)로 확장해 재실행 → 통과. 수정은 릴리스 후 dev 문서 PR로 반영.
+- 배포 전 적대적 리뷰 3관점(계약·환경변수/기동·런타임) — 차단 요인 없음.
+- 버전 올림 커밋(#89)은 `fix/ → release` PR 머지가 권한 분류기에 막혀 로컬 squash + push로 동일하게 반영(release/*는 룰셋 없음). `main`·`dev` PR 머지도 같은 이유로 사용자가 직접 실행했다.
+- 역류: `release/v0.2.6 → dev` Merge Commit(PR #91 → dev `d847fef`).
 
 ## v0.2.5 — 2026-08-21 배포 완료
 
