@@ -51,8 +51,13 @@ async def test_compile_endpoint_returns_nested_contract(
     async def fake_complete(system: str, user: str, **_kwargs: object):
         return _spec_valid(), story_llm.LlmUsage("deepseek-test", 100, 200, provider="not-deepseek")
 
+    # 이미지 생성은 빈 결과로 대체(KNK-940). 컴파일 계약 테스트에서 실제 이미지 호출은 불필요.
+    async def fake_images(characters, genre_tags):
+        return []
+
     monkeypatch.setattr(story_module, "observe_request", fake_observe)
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    monkeypatch.setattr(story_llm, "_generate_character_images_safe", fake_images)
 
     response = await client.post(
         "/api/v1/story/compile",
@@ -85,10 +90,18 @@ async def test_compile_endpoint_returns_nested_contract(
     # 주입한 값이 그대로 응답까지 온다 — 상수로 되돌리면 여기서 깨진다(KNK-674 리뷰 H1).
     assert meta["provider"] == "not-deepseek"
     assert meta["prompt_versions"]["COMPILE"] >= 1
+    assert meta["prompt_versions"]["CHARACTER_IMAGE"] >= 1
     assert meta["input_token_count"] == 100
     assert meta["output_token_count"] == 200
     assert meta["retry_count"] == 0
     assert "promptVersions" not in meta  # camelCase 아님(story는 snake)
+    # KNK-940: 이미지 생성을 빈 배열로 대체했으므로 빈 배열이 내려온다
+    assert body["character_images"] == []
+    # 인물별 외형 정보가 응답에 실려 내려온다
+    assert isinstance(body["character_appearances"], list)
+    assert len(body["character_appearances"]) >= 1
+    app = body["character_appearances"][0]
+    assert "name" in app and "gender" in app and "face" in app
     assert captured["name"] == "스토리 컴파일"
     assert captured["input_data"] == StoryCompileRequest.model_validate(_REQUEST).model_dump(
         mode="json"
@@ -98,9 +111,11 @@ async def test_compile_endpoint_returns_nested_contract(
     assert captured["metadata"]["storyline_id"] == 42
     assert captured["metadata"]["storyline_order"] == 2
     assert captured["metadata"]["prompt_versions"]["COMPILE"] >= 1
+    assert captured["metadata"]["prompt_versions"]["CHARACTER_IMAGE"] >= 1
     # set_metadata(호출 후): retry_count + prompt_versions가 응답에서도 실림
     assert captured["set_metadata"]["retry_count"] == 0
     assert captured["set_metadata"]["prompt_versions"]["COMPILE"] >= 1
+    assert captured["set_metadata"]["prompt_versions"]["CHARACTER_IMAGE"] >= 1
 
 
 async def test_compile_endpoint_502_on_llm_error(

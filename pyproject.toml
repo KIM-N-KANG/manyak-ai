@@ -8,7 +8,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     # Google SDK 어댑터용(KNK-951).
     "google-genai>=2.0.0",
-    "openai>=1.0.0",
+    "openai>=3.3.1",
     # Anthropic 어댑터용(KNK-675). 하한은 **실제로 열어보고 확인한 버전**이다 — 예외 계층
     # (APITimeoutError가 APIConnectionError의 하위)과 클라이언트 인자를 이 버전에서 직접 확인했다.
     # 더 낮은 버전이 되는지는 확인하지 않았다. 낮출 이유가 생기면 그때 같은 방식으로 확인하고 정한다.
