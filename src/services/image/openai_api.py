@@ -8,6 +8,7 @@ gpt-image-2 계열 모델을 OpenAI SDK로 호출한다. 하는 일은 셋이다
 """
 
 import base64
+import binascii
 import hashlib
 import logging
 
@@ -89,12 +90,22 @@ async def generate(req: ImageRequest) -> ImageResult:
     except OpenAIError as exc:
         raise ImageGenerationError(f"이미지 생성 실패: {exc}") from exc
 
-    b64_data = response.data[0].b64_json
+    # 응답 해석 실패도 반드시 ImageGenerationError로 접는다. 인물 단위 실패 처리
+    # (generate_characters._generate_one)는 이 예외만 "해당 인물 실패"로 알아듣고,
+    # 다른 예외는 병렬 생성 전체를 중단시켜 성공한 인물 이미지까지 버린다(PR #92 리뷰).
+    data = response.data or []
+    b64_data = data[0].b64_json if data else None
     if not b64_data:
         raise ImageGenerationError("이미지 응답에 데이터가 없습니다.")
 
+    try:
+        # validate=True: base64가 아닌 글자가 섞이면 조용히 건너뛰지 않고 실패시킨다.
+        image_bytes = base64.b64decode(b64_data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ImageGenerationError(f"이미지 응답의 base64가 잘못됐습니다: {exc}") from exc
+
     return ImageResult(
-        image_bytes=base64.b64decode(b64_data),
+        image_bytes=image_bytes,
         model=req.model,
         provider=PROVIDER_OPENAI,
     )

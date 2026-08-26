@@ -90,6 +90,7 @@ async def test_compile_endpoint_returns_nested_contract(
     # 주입한 값이 그대로 응답까지 온다 — 상수로 되돌리면 여기서 깨진다(KNK-674 리뷰 H1).
     assert meta["provider"] == "not-deepseek"
     assert meta["prompt_versions"]["COMPILE"] >= 1
+    assert meta["prompt_versions"]["CHARACTER_IMAGE"] >= 1
     assert meta["input_token_count"] == 100
     assert meta["output_token_count"] == 200
     assert meta["retry_count"] == 0
@@ -110,9 +111,11 @@ async def test_compile_endpoint_returns_nested_contract(
     assert captured["metadata"]["storyline_id"] == 42
     assert captured["metadata"]["storyline_order"] == 2
     assert captured["metadata"]["prompt_versions"]["COMPILE"] >= 1
+    assert captured["metadata"]["prompt_versions"]["CHARACTER_IMAGE"] >= 1
     # set_metadata(호출 후): retry_count + prompt_versions가 응답에서도 실림
     assert captured["set_metadata"]["retry_count"] == 0
     assert captured["set_metadata"]["prompt_versions"]["COMPILE"] >= 1
+    assert captured["set_metadata"]["prompt_versions"]["CHARACTER_IMAGE"] >= 1
 
 
 async def test_compile_endpoint_502_on_llm_error(

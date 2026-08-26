@@ -10,9 +10,13 @@ import re
 from pathlib import Path
 
 from src.schemas.story_compile import CharacterSetting
+from src.services.prompt_meta import read_version
 
 # src/services/image/ → 프로젝트 루트까지 3단계 올라간다.
 _TEMPLATE_PATH = Path(__file__).parent.parent.parent.parent / "prompt" / "image" / "CHARACTER-IMAGE-TEMPLATE.md"
+
+# 버전은 이미지 프롬프트 frontmatter가 SSOT다. 컴파일 응답·관측 메타에 함께 싣는다.
+CHARACTER_IMAGE_VERSION = read_version(_TEMPLATE_PATH)
 
 
 def _load_template() -> str:
@@ -42,8 +46,15 @@ def build_image_prompt(character: CharacterSetting, genre_tags: list[str]) -> st
     <character> 블록의 {{...}} 자리표시자를 교체한다.
     외형 필드가 하나라도 비어 있으면 None을 반환한다(이미지 생성 불가).
     """
-    if not all([character.age, character.body, character.face,
-                character.hair, character.outfit, character.visual_identity]):
+    appearance = (
+        character.age,
+        character.body,
+        character.face,
+        character.hair,
+        character.outfit,
+        character.visual_identity,
+    )
+    if not all(value.strip() for value in appearance):
         return None
 
     mapping = {

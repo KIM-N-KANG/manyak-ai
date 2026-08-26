@@ -124,6 +124,22 @@ async def test_images_safe_skips_missing_appearance(monkeypatch: pytest.MonkeyPa
     assert result[1].error == "appearance_missing"
 
 
+@pytest.mark.parametrize(
+    "error",
+    ["rate limit exceeded", "rate_limited", "rate-limited", "이미지 생성 속도 제한"],
+)
+def test_classify_image_error_recognizes_explicit_rate_limit(error: str) -> None:
+    assert story_llm._classify_image_error(error) == "rate_limited"
+
+
+@pytest.mark.parametrize(
+    "error",
+    ["failed to generate image", "image was generated incorrectly", "moderated image"],
+)
+def test_classify_image_error_does_not_mistake_words_containing_rate(error: str) -> None:
+    assert story_llm._classify_image_error(error) == "generation_failed"
+
+
 # ── CharacterImageOut 스키마 테스트 ───────────────────────────────────────────
 
 
@@ -198,6 +214,7 @@ async def test_compile_story_includes_character_images(monkeypatch: pytest.Monke
         return ImageResult(image_bytes=_FAKE_WEBP, model="test", provider="openai")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    monkeypatch.setattr(story_llm, "_generate_character_images_safe", _generate_character_images_safe)
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     response = await story_llm.compile_story(_request())

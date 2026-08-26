@@ -7,6 +7,7 @@ from src.schemas.story import StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
 from src.core.config import settings
 from src.services import story_llm
+from src.services.image.prompt import CHARACTER_IMAGE_VERSION
 from src.services.llm import provider_of
 from src.services.llm.base import PROVIDER_GOOGLE
 from src.services.prompt import (
@@ -75,9 +76,15 @@ async def create_story_compile(request: StoryCompileRequest) -> StoryCompileResp
     # prompt_versions는 호출 전에 넣어야 실패해도 기록된다(Codex 리뷰 P2).
     compile_provider = provider_of(settings.story_compile_model)
     if compile_provider == PROVIDER_GOOGLE:
-        _pv = {"COMPILE_GEMINI": COMPILE_GEMINI_VERSION}
+        _pv = {
+            "COMPILE_GEMINI": COMPILE_GEMINI_VERSION,
+            "CHARACTER_IMAGE": CHARACTER_IMAGE_VERSION,
+        }
     else:
-        _pv = {"COMPILE": COMPILE_VERSION}
+        _pv = {
+            "COMPILE": COMPILE_VERSION,
+            "CHARACTER_IMAGE": CHARACTER_IMAGE_VERSION,
+        }
     with observe_request(
         "스토리 컴파일",
         input_data=request.model_dump(mode="json"),

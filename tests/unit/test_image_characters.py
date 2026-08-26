@@ -70,6 +70,11 @@ def test_build_image_prompt_returns_none_when_appearance_missing() -> None:
     assert build_image_prompt(_char(visual_identity=""), _GENRE) is None
 
 
+def test_build_image_prompt_returns_none_when_appearance_is_whitespace() -> None:
+    """외형 필드가 공백뿐이어도 None을 반환한다."""
+    assert build_image_prompt(_char(hair="   "), _GENRE) is None
+
+
 def test_build_image_prompt_has_fixed_blocks() -> None:
     """고정 블록(task, composition 등)이 프롬프트에 포함된다."""
     prompt = build_image_prompt(_char(), _GENRE)
@@ -139,6 +144,49 @@ async def test_generate_skips_missing_appearance(monkeypatch: pytest.MonkeyPatch
     assert results[0].image is not None  # 레이는 성공
     assert results[1].image is None  # 세린은 건너뜀
     assert "외형 필드 부족" in results[1].error
+
+
+async def test_generate_survives_malformed_provider_response(monkeypatch) -> None:
+    """공급자 응답이 깨진 인물만 실패하고 나머지 인물 이미지는 살아남는다(PR #92 리뷰).
+
+    generate_image를 가짜로 바꾸지 않고 어댑터(openai_api)까지 실제로 태운다 —
+    어댑터가 응답 해석 실패를 ImageGenerationError로 접지 않으면 gather가 터져
+    성공한 인물까지 빈 배열이 되는 회귀를 여기서 잡는다.
+    """
+    import base64
+    from dataclasses import dataclass
+    from unittest.mock import AsyncMock
+
+    from src.core.config import settings
+    from src.services.image import openai_api
+
+    @dataclass
+    class _Data:
+        b64_json: str | None
+
+    @dataclass
+    class _Resp:
+        data: list
+
+    good = _Resp(data=[_Data(b64_json=base64.b64encode(_FAKE_PNG).decode())])
+    broken = _Resp(data=[_Data(b64_json="!!!not-base64!!!")])
+
+    async def fake_generate(**kwargs):
+        # 세린만 gender="여성"이라 프롬프트로 구분한다(실행 순서 비의존).
+        return broken if "<gender>여성</gender>" in kwargs["prompt"] else good
+
+    mock = AsyncMock()
+    mock.images.generate = AsyncMock(side_effect=fake_generate)
+    monkeypatch.setattr(openai_api, "_client", lambda *a, **kw: mock)
+    monkeypatch.setattr(settings, "image_model", "gpt-image-2-2026-04-21")
+
+    chars = [_char(name="레이"), _char(name="세린", gender="여성"), _char(name="칸")]
+    results = await generate_character_images(chars, _GENRE)
+
+    assert [r.name for r in results] == ["레이", "세린", "칸"]
+    assert results[0].image is not None
+    assert results[1].image is None and "base64" in results[1].error
+    assert results[2].image is not None
 
 
 async def test_generate_empty_list() -> None:

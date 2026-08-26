@@ -121,6 +121,124 @@ async def test_compile_story_passes_when_named_character_present(
     assert "세린" in res.story_settings.character_setting
 
 
+async def test_compile_story_repairs_blocks_names_and_appearance_in_one_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """서로 다른 문제를 한 재호출에 담고, 요청한 인물 필드만 원본에 합친다."""
+    initial = _spec()
+    original_start = dict(initial["start"])
+    cards = initial["prompt_settings"]["character_setting"]
+    original_personality = cards[0]["personality"]
+    initial["start"]["prologue"] = ""
+    cards[0]["hair"] = "   "
+    cards[1]["name"] = cards[0]["name"]
+    calls: list[str] = []
+
+    async def fake_complete(system: str, user: str, **kwargs: object):
+        calls.append(user)
+        if len(calls) == 1:
+            return initial, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+        return {
+            "start": original_start,
+            "character_updates": [
+                {"index": 0, "hair": "짧은 흑발", "personality": "바뀌면 안 됨"},
+                {"index": 1, "name": "라온"},
+            ],
+        }, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request([]))
+
+    assert len(calls) == 2
+    assert "start" in calls[1]
+    assert "index 0: hair" in calls[1]
+    assert "index 1: name" in calls[1]
+    assert res.story_start_settings.prologue == original_start["prologue"]
+    assert res.character_appearances[0].hair == "짧은 흑발"
+    assert res.character_appearances[1].name == "라온"
+    assert original_personality in res.story_settings.character_setting
+
+
+async def test_compile_story_refills_whole_character_block_before_field_repairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """카드 필수 내용이 비면 같은 카드의 index 기반 필드 수정은 함께 요청하지 않는다."""
+    initial = _spec()
+    initial["prompt_settings"]["character_setting"][0]["tone"] = ""
+    initial["prompt_settings"]["character_setting"][0]["hair"] = ""
+    valid_cards = _spec()["prompt_settings"]["character_setting"]
+    calls: list[str] = []
+
+    async def fake_complete(system: str, user: str, **kwargs: object):
+        calls.append(user)
+        if len(calls) == 1:
+            return initial, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+        return {"character_setting": valid_cards}, story_llm.LlmUsage(
+            "m", 1, 1, provider="deepseek"
+        )
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request([]))
+
+    assert len(calls) == 2
+    assert "character_setting" in calls[1]
+    assert "character_updates" not in calls[1]
+    assert res.character_appearances[0].hair == valid_cards[0]["hair"]
+
+
+async def test_compile_story_502_when_duplicate_name_remains_after_refills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = _spec()
+    duplicate = initial["prompt_settings"]["character_setting"][0]["name"]
+    initial["prompt_settings"]["character_setting"][1]["name"] = duplicate
+    calls = 0
+
+    async def fake_complete(system: str, user: str, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return initial, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+        return {"character_updates": [{"index": 1, "name": duplicate}]}, story_llm.LlmUsage(
+            "m", 1, 1, provider="deepseek"
+        )
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    with pytest.raises(HTTPException) as exc:
+        await story_llm.compile_story(_request([]))
+
+    assert exc.value.status_code == 502
+    assert calls == 3
+
+
+async def test_compile_story_keeps_success_when_appearance_remains_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = _spec()
+    initial["prompt_settings"]["character_setting"][0]["hair"] = None
+    calls = 0
+
+    async def fake_complete(system: str, user: str, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return initial, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+        return {"character_updates": [{"index": 0, "hair": "\n"}]}, story_llm.LlmUsage(
+            "m", 1, 1, provider="deepseek"
+        )
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+
+    res = await story_llm.compile_story(_request([]))
+
+    assert calls == 3
+    assert res.meta.retry_count == 2
+    assert res.character_appearances[0].hair == ""
+
+
 # ── Gemini 통합 경로(KNK-958) ──────────────────────────────────────────────
 async def test_compile_story_gemini_uses_gemini_system_and_version(
     monkeypatch: pytest.MonkeyPatch,
@@ -223,7 +341,7 @@ def test_appearance_not_in_togul() -> None:
 
 
 def test_missing_appearance_field_not_blocking() -> None:
-    """외형 필드가 비어도 _find_missing_keys가 잡지 않는다(선택 필드)."""
+    """외형은 필수 블록 누락이 아니라 인물 필드 재호출 대상으로 잡는다."""
     spec = _spec()
     for card in spec["prompt_settings"]["character_setting"]:
         for field in _APPEARANCE_FIELDS:
@@ -232,6 +350,52 @@ def test_missing_appearance_field_not_blocking() -> None:
     # 외형 필드 경로가 누락 목록에 없어야 한다
     appearance_missing = [p for p in missing if any(f in p for f in _APPEARANCE_FIELDS)]
     assert appearance_missing == []
+    repairs = story_llm._find_character_field_repairs(spec)
+    assert repairs == {i: _APPEARANCE_FIELDS for i in range(3)}
+
+
+def test_character_field_repairs_detects_blank_and_duplicate_names() -> None:
+    spec = _spec()
+    cards = spec["prompt_settings"]["character_setting"]
+    cards[0]["name"] = " \n "
+    cards[2]["name"] = cards[1]["name"]
+
+    repairs = story_llm._find_character_field_repairs(spec)
+
+    assert repairs[0] == ("name",)
+    assert repairs[2] == ("name",)
+
+
+def test_character_field_repairs_treats_whitespace_appearance_as_empty() -> None:
+    spec = _spec()
+    card = spec["prompt_settings"]["character_setting"][1]
+    card["hair"] = "   "
+    card["outfit"] = "\n"
+
+    repairs = story_llm._find_character_field_repairs(spec)
+
+    assert repairs == {1: ("hair", "outfit")}
+
+
+def test_merge_character_field_repairs_changes_only_requested_fields() -> None:
+    spec = _spec()
+    original_personality = spec["prompt_settings"]["character_setting"][1]["personality"]
+    requested = {1: ("name", "hair")}
+    refill = {
+        "character_updates": [{
+            "index": 1,
+            "name": "라온",
+            "hair": "짧은 은빛 곱슬머리",
+            "personality": "요청하지 않은 변경",
+        }]
+    }
+
+    story_llm._merge_character_field_repairs(spec, refill, requested)
+
+    card = spec["prompt_settings"]["character_setting"][1]
+    assert card["name"] == "라온"
+    assert card["hair"] == "짧은 은빛 곱슬머리"
+    assert card["personality"] == original_personality
 
 
 def test_appearance_fields_default_empty() -> None:

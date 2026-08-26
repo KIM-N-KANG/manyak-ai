@@ -23,19 +23,6 @@ def _load(name: str) -> dict:
     return json.loads((_FIXTURES / name).read_text(encoding="utf-8"))
 
 
-@pytest.fixture(autouse=True)
-def _no_image_generation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """compile_story() 테스트에서 실제 이미지 API를 호출하지 않는다(KNK-940).
-
-    이미지 생성은 컴파일의 부가물이라, 컴파일 계약 테스트에서는 빈 결과로 대체한다.
-    """
-
-    async def fake_images(characters, genre_tags):
-        return []
-
-    monkeypatch.setattr(story_llm, "_generate_character_images_safe", fake_images)
-
-
 def _request() -> StoryCompileRequest:
     return StoryCompileRequest(
         selected_storyline="x",
@@ -240,7 +227,7 @@ def test_find_missing_keys_tolerates_wrong_types() -> None:
     data["prompt_settings"]["character_setting"] = ["레이", "세린"]
     missing = story_llm._find_missing_keys(data)
     assert "meta.title" in missing
-    assert "prompt_settings.character_setting[0].name" in missing
+    assert "prompt_settings.character_setting[0].gender" in missing
 
 
 def test_block_of_maps_paths() -> None:
@@ -340,8 +327,9 @@ async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyP
     assert res.meta.model == "deepseek-test"
     # 주입한 값이 그대로 meta까지 온다 — 상수로 되돌리면 여기서 깨진다(KNK-674 리뷰 H1).
     assert res.meta.provider == "not-deepseek"
-    assert list(res.meta.prompt_versions) == ["COMPILE"]
+    assert list(res.meta.prompt_versions) == ["COMPILE", "CHARACTER_IMAGE"]
     assert res.meta.prompt_versions["COMPILE"] >= 1
+    assert res.meta.prompt_versions["CHARACTER_IMAGE"] >= 1
     assert res.meta.input_token_count == 100
     assert res.meta.output_token_count == 200
     assert res.meta.retry_count == 0
@@ -388,13 +376,13 @@ async def test_compile_story_refills_missing_block(monkeypatch: pytest.MonkeyPat
     res = await story_llm.compile_story(_request())
     assert len(calls) == 2  # 최초 1 + 부분 재호출 1
     assert "복구된 세계관 설정" in res.story_settings.world_setting
-    # 재호출 프롬프트에 '무엇을 보냈는가'도 계약이다 — 누락 블록명·직전 JSON·"해당 블록만"
-    # 지시가 실려야 정밀 회복(빈 블록만 재요청)이 전체 재시도로 퇴화하는 회귀를 잡는다.
+    # 재호출 프롬프트에 '무엇을 보냈는가'도 계약이다 — 누락 블록명·직전 JSON과
+    # 요청한 값만 보내라는 지시가 있어야 정밀 회복이 전체 재시도로 퇴화하지 않는다.
     refill_prompt = calls[1]
     assert "world_setting" in refill_prompt  # 누락 블록명
     assert "직전 생성 결과" in refill_prompt  # 직전 JSON 맥락
-    assert "해당 블록만" in refill_prompt  # 그 블록만 채우라는 지시
-    assert "다른 블록은 절대 포함하지 말 것" in refill_prompt
+    assert "요청한 블록" in refill_prompt
+    assert "요청하지 않은 블록과 인물 필드는 절대 포함하지 말 것" in refill_prompt
     # retry_count=재호출 횟수, 토큰은 본호출+재호출 합산
     assert res.meta.retry_count == 1
     assert res.meta.input_token_count == 110  # 100 + 10
@@ -454,7 +442,7 @@ def test_build_refill_prompt_gemini_uses_gemini_system() -> None:
 
 
 def test_build_refill_prompt_contains_context() -> None:
-    # 재호출 프롬프트는 원본 맥락 + 누락 블록명 + 직전 JSON + "해당 블록만" 지시를 담는다.
+    # 재호출 프롬프트는 원본 맥락 + 누락 블록명 + 직전 JSON + 요청한 값만 반환하라는 지시를 담는다.
     system, user = build_refill_prompt(
         "원본 유저 프롬프트", '{"world_setting": ""}', ["world_setting", "start"]
     )
@@ -462,8 +450,23 @@ def test_build_refill_prompt_contains_context() -> None:
     assert "원본 유저 프롬프트" in user
     assert "world_setting, start" in user  # 누락 블록명 나열
     assert '{"world_setting": ""}' in user  # 직전 생성 결과(JSON)
-    assert "해당 블록만" in user
-    assert "다른 블록은 절대 포함하지 말 것" in user
+    assert "한 번의 응답에서 모두 고쳐라" in user
+    assert "요청한 블록" in user
+    assert "요청하지 않은 블록과 인물 필드는 절대 포함하지 말 것" in user
+
+
+def test_build_refill_prompt_contains_character_field_targets() -> None:
+    _, user = build_refill_prompt(
+        "원본",
+        '{"prompt_settings": {"character_setting": []}}',
+        ["start"],
+        {0: ("hair",), 2: ("name", "outfit")},
+    )
+    assert "start" in user
+    assert "index 0: hair" in user
+    assert "index 2: name, outfit" in user
+    assert "character_updates" in user
+    assert "배열 index는 0부터 시작" in user
 
 
 def test_add_tokens_mixed_none() -> None:

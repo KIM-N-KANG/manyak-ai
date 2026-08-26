@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.services.image import generate_image, ImageGenerationError
+from src.services.image import generate_image, validate_startup, ImageGenerationError
 from src.services.image.base import (
     ImageBadRequest,
     ImageRateLimited,
@@ -128,6 +128,29 @@ async def test_openai_generate_empty_data(monkeypatch: pytest.MonkeyPatch) -> No
         await openai_api.generate(req)
 
 
+# ── 응답 해석 실패도 ImageGenerationError로 접는다 (PR #92 리뷰) ────────────
+# 이 예외만 인물 단위 실패로 처리된다. IndexError·binascii.Error가 그대로 새면
+# 병렬 생성 전체가 중단돼 성공한 인물 이미지까지 버려진다.
+
+@pytest.mark.parametrize("data", [[], None], ids=["empty_list", "none"])
+async def test_openai_generate_missing_data_list(monkeypatch, data) -> None:
+    """data 목록 자체가 비어 있어도 IndexError가 아니라 ImageGenerationError."""
+    response = _FakeResponse(data=[_FakeImageData()])
+    response.data = data
+    _mock_client(monkeypatch, response=response)
+    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    with pytest.raises(ImageGenerationError, match="데이터가 없습니다"):
+        await openai_api.generate(req)
+
+
+async def test_openai_generate_malformed_base64(monkeypatch: pytest.MonkeyPatch) -> None:
+    """base64가 깨져 있으면 binascii.Error가 아니라 ImageGenerationError."""
+    _mock_client(monkeypatch, response=_FakeResponse(data=[_FakeImageData(b64_json="!!!not-base64!!!")]))
+    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    with pytest.raises(ImageGenerationError, match="base64"):
+        await openai_api.generate(req)
+
+
 # ── 공개 함수(generate_image) 테스트 ─────────────────────────────────────────
 
 async def test_generate_image_routes_to_openai(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,3 +184,72 @@ def test_registered_models_have_adapters() -> None:
     valid_adapters = {ADAPTER_OPENAI_IMAGE}
     for model, adapter in _MODEL_ADAPTERS.items():
         assert adapter in valid_adapters, f"모델 '{model}'의 어댑터 '{adapter}'가 유효하지 않다"
+
+
+# ── 기동 설정 검사 ────────────────────────────────────────────────────────────
+
+def _valid_image_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "image_model", "gpt-image-2-2026-04-21")
+    monkeypatch.setattr(settings, "openai_api_key", "openai-test-key")
+    monkeypatch.setattr(settings, "openai_api_url", None)
+    monkeypatch.setattr(settings, "image_quality", "low")
+    monkeypatch.setattr(settings, "image_size", "1024x768")
+    monkeypatch.setattr(settings, "image_timeout", 60.0)
+
+
+def test_image_startup_validation_accepts_valid_settings(monkeypatch) -> None:
+    _valid_image_settings(monkeypatch)
+
+    validate_startup()
+
+
+def test_image_startup_validation_rejects_unknown_model(monkeypatch) -> None:
+    from src.core.config import settings
+
+    _valid_image_settings(monkeypatch)
+    monkeypatch.setattr(settings, "image_model", "unknown-image-model")
+
+    with pytest.raises(ImageGenerationError, match="IMAGE_MODEL"):
+        validate_startup()
+
+
+@pytest.mark.parametrize(
+    ("bad_key", "problem"),
+    [
+        ("", "비어"),
+        (" openai-test-key", "앞뒤 공백"),
+        ("openai-test\nkey", "개행"),
+        ("openai—test-key", "ASCII"),
+    ],
+)
+def test_image_startup_validation_rejects_bad_key(monkeypatch, bad_key, problem) -> None:
+    from src.core.config import settings
+
+    _valid_image_settings(monkeypatch)
+    monkeypatch.setattr(settings, "openai_api_key", bad_key)
+
+    with pytest.raises(ImageGenerationError, match=problem):
+        validate_startup()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "problem"),
+    [
+        ("openai_api_url", "not-a-url", "OPENAI_API_URL"),
+        ("image_quality", "ultra", "IMAGE_QUALITY"),
+        ("image_size", "wide", "IMAGE_SIZE"),
+        ("image_timeout", 0.0, "IMAGE_TIMEOUT"),
+    ],
+)
+def test_image_startup_validation_rejects_bad_parameters(
+    monkeypatch, field, value, problem
+) -> None:
+    from src.core.config import settings
+
+    _valid_image_settings(monkeypatch)
+    monkeypatch.setattr(settings, field, value)
+
+    with pytest.raises(ImageGenerationError, match=problem):
+        validate_startup()

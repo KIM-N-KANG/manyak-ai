@@ -31,6 +31,7 @@ from src.schemas.story_compile import (
     StorySpec,
 )
 from src.services import llm
+from src.services.image.prompt import CHARACTER_IMAGE_VERSION
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt import (
     COMPILE_GEMINI_VERSION,
@@ -546,7 +547,8 @@ def _find_missing_keys(data: dict) -> list[str]:
     else:
         for i, raw in enumerate(chars):
             c = _as_dict(raw)
-            for k in ("name", "gender", "personality", "tone", "motivation", "attitude_to_user"):
+            # name의 빈값·중복은 카드 전체가 아니라 name만 고치는 전용 경로가 맡는다.
+            for k in ("gender", "personality", "tone", "motivation", "attitude_to_user"):
                 if _is_empty(c.get(k)):
                     missing.append(f"prompt_settings.character_setting[{i}].{k}")
 
@@ -668,6 +670,14 @@ def _endings_incomplete(data: dict) -> bool:
 
 
 _CHARACTER_CARDS_PATH = "prompt_settings.character_setting"
+_CHARACTER_APPEARANCE_FIELDS = (
+    "age",
+    "body",
+    "face",
+    "hair",
+    "outfit",
+    "visual_identity",
+)
 
 
 def _missing_required_characters(data: dict, required_names: tuple[str, ...]) -> bool:
@@ -692,6 +702,84 @@ def _missing_required_characters(data: dict, required_names: tuple[str, ...]) ->
         if isinstance(c, dict) and isinstance(c.get("name"), str)
     )
     return any(n not in card_names for n in required_names)
+
+
+def _find_character_field_repairs(data: dict) -> dict[int, tuple[str, ...]]:
+    """인물 카드 전체를 갈아끼우지 않고 고칠 이름·외형 필드를 찾는다.
+
+    이름은 빈값·공백·비문자열과 앞 카드에 이미 나온 중복을 잡는다. 외형은 이미지
+    생성용 선택 필드라 빈값만 잡고, 두 번의 재호출로도 못 채우면 컴파일은 살린다.
+    """
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(cards, list):
+        return {}
+
+    repairs: dict[int, tuple[str, ...]] = {}
+    seen_names: set[str] = set()
+    for index, raw in enumerate(cards):
+        if not isinstance(raw, dict):
+            continue  # 잘못된 카드 객체는 기존 character_setting 블록 재호출이 맡는다
+
+        fields: list[str] = []
+        name = raw.get("name")
+        if not isinstance(name, str) or _is_empty(name):
+            fields.append("name")
+        else:
+            normalized = unicodedata.normalize("NFC", name.strip()).casefold()
+            if normalized in seen_names:
+                fields.append("name")
+            else:
+                seen_names.add(normalized)
+
+        for field_name in _CHARACTER_APPEARANCE_FIELDS:
+            value = raw.get(field_name)
+            if not isinstance(value, str) or _is_empty(value):
+                fields.append(field_name)
+
+        if fields:
+            repairs[index] = tuple(fields)
+    return repairs
+
+
+def _merge_character_field_repairs(
+    data: dict,
+    refill: dict,
+    requested: dict[int, tuple[str, ...]],
+) -> None:
+    """재호출에서 요청한 인물 필드의 비어 있지 않은 문자열만 원본에 합친다."""
+    updates = refill.get("character_updates")
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(updates, list) or not isinstance(cards, list):
+        return
+
+    for raw_update in updates:
+        if not isinstance(raw_update, dict):
+            continue
+        index = raw_update.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index not in requested:
+            continue
+        if not (0 <= index < len(cards)) or not isinstance(cards[index], dict):
+            continue
+        for field_name in requested[index]:
+            value = raw_update.get(field_name)
+            if isinstance(value, str) and value.strip():
+                cards[index][field_name] = value.strip()
+
+
+def _clear_unresolved_appearance_fields(
+    data: dict,
+    repairs: dict[int, tuple[str, ...]],
+) -> None:
+    """재호출로도 못 채운 외형을 빈 문자열로 맞춰 컴파일 본체는 살린다."""
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(cards, list):
+        return
+    for index, fields in repairs.items():
+        if not (0 <= index < len(cards)) or not isinstance(cards[index], dict):
+            continue
+        for field_name in fields:
+            if field_name in _CHARACTER_APPEARANCE_FIELDS:
+                cards[index][field_name] = ""
 
 
 async def _generate_character_images_safe(
@@ -738,7 +826,12 @@ def _classify_image_error(error: str | None) -> str:
     lower = error.lower()
     if "시간 초과" in error or "timeout" in lower:
         return "timeout"
-    if "속도 제한" in error or "rate" in lower:
+    if (
+        "속도 제한" in error
+        or "rate limit" in lower
+        or "rate_limit" in lower
+        or "rate-limited" in lower
+    ):
         return "rate_limited"
     if "거부" in error or "rejected" in lower or "safety" in lower:
         return "rejected"
@@ -751,7 +844,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     """시점 A-1: 희소 입력을 스토리 명세로 컴파일해 백엔드 계약(nested 통글)으로 반환한다.
 
     흐름: LLM 세분 JSON → genre·주인공 이름/성별 주입 → 빈 필수키·사용자 인물 카드 검증(KNK-833) →
-    모자란 블록만 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
+    모자란 블록과 이름·외형 필드를 한 번에 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
     → StorySpec 파싱 → nested 통글 변환.
     PromptCompiler 추상 경계는 spec/chat/4-SERVICE-IMPLEMENTATION.md §6.
     """
@@ -784,25 +877,39 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     # 사용자가 이름 지은 주변 인물이 카드에서 빠지면 카드 블록도 refill 대상에 넣는다(KNK-833).
     required_names = tuple(c.name for c in request.supporting_characters if c.name)
 
-    def _current_missing() -> list[str]:
+    def _current_issues() -> tuple[list[str], dict[int, tuple[str, ...]]]:
         found = _find_missing_keys(data)
         if _missing_required_characters(data, required_names) and _CHARACTER_CARDS_PATH not in found:
             found.append(_CHARACTER_CARDS_PATH)
-        return found
+        character_fields = _find_character_field_repairs(data)
+        # 카드 블록을 통째로 다시 받는 차수에는 기존 index가 무효가 되므로 필드 수정을 함께 요청하지 않는다.
+        if "character_setting" in {_block_of(path) for path in found}:
+            character_fields = {}
+        return found, character_fields
 
-    # 빈 필수 필드가 있으면 해당 블록만 다시 채운다(최대 _MAX_REFILL회).
-    missing = _current_missing()
-    if missing:
-        logger.info("compile 1차 응답 누락 블록: %s", missing)
+    # 빈 필수 블록과 인물 이름·외형 문제를 한 요청에 모아 다시 채운다(최대 _MAX_REFILL회).
+    missing, character_fields = _current_issues()
+    if missing or character_fields:
+        logger.info(
+            "compile 1차 응답 문제: 블록=%s, 인물필드=%s",
+            missing or "없음",
+            character_fields or "없음",
+        )
     attempts = 0
-    while missing and attempts < _MAX_REFILL:
+    while (missing or character_fields) and attempts < _MAX_REFILL:
         attempts += 1
         blocks = sorted({_block_of(p) for p in missing})
-        logger.info("compile 재호출 #%d 대상 블록=%s", attempts, blocks)
+        logger.info(
+            "compile 재호출 #%d 대상 블록=%s, 인물필드=%s",
+            attempts,
+            blocks or "없음",
+            character_fields or "없음",
+        )
         refill_system, refill_user = build_refill_prompt(
             user_prompt,
             json.dumps(data, ensure_ascii=False),
             blocks,
+            character_fields,
             provider=compile_provider,
         )
         refill, refill_usage = await _complete_json(
@@ -815,14 +922,16 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         input_tokens = _add_tokens(input_tokens, refill_usage.input_tokens)
         output_tokens = _add_tokens(output_tokens, refill_usage.output_tokens)
         _merge_blocks(data, refill, blocks)
+        _merge_character_field_repairs(data, refill, character_fields)
         _inject_genre(data, request.genre_tags)
         _inject_protagonist(data, request.protagonist)
-        missing = _current_missing()
+        missing, character_fields = _current_issues()
     logger.info(
-        "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 누락=%s",
+        "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 블록=%s, 최종 인물필드=%s",
         1 + attempts,
         attempts,
         missing or "없음",
+        character_fields or "없음",
     )
 
     # 엔딩은 soft 블록(KNK-465): 엔딩 사유로는 502를 내지 않는다. 최종 판정은 _endings_incomplete가
@@ -834,8 +943,17 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         logger.info("compile 엔딩 폴백: 재호출 후에도 엔딩 미완성 → 빈 배열([])로 반환")
         data["endings"] = []
 
-    if missing:
-        exc = _InvalidAiResponse(f"재호출 후에도 필수 필드 누락: {missing}")
+    # 외형은 이미지 생성의 부가 입력이므로 끝까지 비어 있어도 컴파일을 살린다.
+    # 이름은 저장·이미지 매칭 기준이라 빈값·중복이 남으면 필수 블록 누락과 함께 502로 막는다.
+    name_repairs = {
+        index: fields
+        for index, fields in character_fields.items()
+        if "name" in fields
+    }
+    if missing or name_repairs:
+        exc = _InvalidAiResponse(
+            f"재호출 후에도 필수 필드 누락: blocks={missing}, character_names={name_repairs}"
+        )
         capture_ai_exception(
             exc,
             feature=FEATURE_STORY_COMPLETION,
@@ -849,6 +967,8 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="재호출 후에도 컴파일 결과에 필수 필드가 비어 있습니다.",
         ) from exc
+
+    _clear_unresolved_appearance_fields(data, character_fields)
 
     try:
         spec = StorySpec(**data)
@@ -870,7 +990,10 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     response = spec_to_response(spec)
     response.meta = StoryResponseMeta(
         model=usage.model,
-        prompt_versions={version_key: prompt_version},
+        prompt_versions={
+            version_key: prompt_version,
+            "CHARACTER_IMAGE": CHARACTER_IMAGE_VERSION,
+        },
         provider=usage.provider,
         input_token_count=input_tokens,
         output_token_count=output_tokens,
