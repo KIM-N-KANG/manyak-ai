@@ -7,12 +7,15 @@ StorySpec의 주변 인물 카드에서 외형 필드를 꺼내 이미지 프롬
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
+from src.core.config import settings
+from src.core.sentry import FEATURE_CHARACTER_IMAGE, capture_ai_exception
 from src.schemas.story_compile import CharacterSetting
 from src.services.image import generate_image, ImageGenerationError
-from src.services.image.base import ImageResult
-from src.services.image.prompt import build_image_prompt
+from src.services.image.base import PROVIDER_OPENAI, ImageResult
+from src.services.image.prompt import CHARACTER_IMAGE_VERSION, build_image_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +44,24 @@ async def _generate_one(
         return CharacterImageResult(name=character.name, error="외형 필드 부족")
 
     async with semaphore:
+        start = time.monotonic()
         try:
             result = await generate_image(prompt)
             logger.info("이미지 생성 성공: %s", character.name)
             return CharacterImageResult(name=character.name, image=result)
         except ImageGenerationError as exc:
+            # 실패는 인물만 비우고 컴파일은 살리므로 여기서 Sentry에 보내지 않으면 아무도
+            # 모른다(PR #92 리뷰). 외형 부족은 위에서 걸러져 여기 오지 않는다 — 공급자
+            # 실패(시간 초과·429·거부·응답 해석 실패)만 보고된다. 인물 이름은 싣지 않는다.
+            capture_ai_exception(
+                exc,
+                feature=FEATURE_CHARACTER_IMAGE,
+                provider=PROVIDER_OPENAI,
+                model=settings.image_model,
+                prompt_versions={"CHARACTER_IMAGE": CHARACTER_IMAGE_VERSION},
+                retry_count=0,
+                latency_ms=int((time.monotonic() - start) * 1000),
+            )
             logger.warning("이미지 생성 실패: %s — %s", character.name, exc)
             return CharacterImageResult(name=character.name, error=str(exc))
 

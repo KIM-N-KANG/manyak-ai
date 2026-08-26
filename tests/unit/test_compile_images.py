@@ -106,6 +106,36 @@ async def test_images_safe_total_failure_returns_empty(monkeypatch: pytest.Monke
     assert result == []
 
 
+async def test_images_safe_total_failure_is_reported_to_sentry(monkeypatch) -> None:
+    """예상치 못한 예외로 이미지가 통째로 비면 Sentry에 unexpected_error로 보고한다(PR #92 리뷰).
+
+    인물 단위 실패는 생성기가 보고하지만, 그 그물을 벗어난 예외는 여기서만 잡히므로
+    보고하지 않으면 컴파일은 200인데 이미지만 전부 사라진 상황을 아무도 모른다.
+    """
+    calls: list[dict] = []
+
+    def _record(exc, **kwargs):
+        calls.append({"exc": exc, **kwargs})
+
+    monkeypatch.setattr(story_llm, "capture_ai_exception", _record)
+
+    async def boom(characters, genre_tags):
+        raise RuntimeError("예상치 못한 오류")
+
+    monkeypatch.setattr(
+        "src.services.image.generate_characters.generate_character_images",
+        boom,
+    )
+
+    await _generate_character_images_safe([_char(name="레이")], _GENRE)
+
+    assert len(calls) == 1
+    assert isinstance(calls[0]["exc"], RuntimeError)
+    assert calls[0]["feature"] == "character_image_generation"
+    assert calls[0]["error_code"] == "unexpected_error"
+    assert calls[0]["provider"] == "openai"
+
+
 async def test_images_safe_skips_missing_appearance(monkeypatch: pytest.MonkeyPatch) -> None:
     """외형 필드가 비어 프롬프트를 못 만드는 인물은 error로 돌아온다."""
     import src.services.image.generate_characters as gen_mod

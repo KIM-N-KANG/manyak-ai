@@ -16,6 +16,8 @@ from src.core.sentry import (
     ERROR_PROVIDER_TIMEOUT,
     ERROR_PROVIDER_UNAVAILABLE,
     ERROR_SCHEMA_VALIDATION_FAILED,
+    ERROR_UNEXPECTED,
+    FEATURE_CHARACTER_IMAGE,
     FEATURE_STORY_COMPLETION,
     FEATURE_STORYLINE_GENERATION,
     capture_ai_exception,
@@ -31,6 +33,7 @@ from src.schemas.story_compile import (
     StorySpec,
 )
 from src.services import llm
+from src.services.image.base import PROVIDER_OPENAI
 from src.services.image.prompt import CHARACTER_IMAGE_VERSION
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt import (
@@ -896,7 +899,17 @@ async def _generate_character_images_safe(
                     error=_classify_image_error(r.error),
                 ))
         return images
-    except Exception:
+    except Exception as exc:
+        # 인물 단위 실패는 어댑터·병렬 생성기가 이미 보고했다. 여기까지 온 것은 그 그물을
+        # 벗어난 예외라 따로 보고한다 — 삼키기만 하면 이미지가 통째로 비어도 아무도 모른다.
+        capture_ai_exception(
+            exc,
+            feature=FEATURE_CHARACTER_IMAGE,
+            provider=PROVIDER_OPENAI,
+            error_code=ERROR_UNEXPECTED,
+            model=settings.image_model,
+            prompt_versions={"CHARACTER_IMAGE": CHARACTER_IMAGE_VERSION},
+        )
         logger.exception("인물 이미지 생성 중 예상치 못한 오류 — 이미지 없이 반환")
         return []
 

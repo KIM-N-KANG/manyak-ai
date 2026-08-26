@@ -210,3 +210,58 @@ async def test_generate_all_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(results) == 2
     assert all(r.image is None for r in results)
     assert all(r.error is not None for r in results)
+
+
+# ── 실패는 Sentry로 보고한다 (PR #92 리뷰) ────────────────────────────────────
+# 이미지 실패는 인물만 비우고 컴파일은 살리므로, 여기서 보고하지 않으면 시간 초과·429·거부가
+# 로그에만 남아 아무도 모른다. 외형 부족은 공급자 실패가 아니라 보고하지 않는다.
+
+def _capture_recorder(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    import src.services.image.generate_characters as gen_mod
+
+    calls: list[dict] = []
+
+    def _record(exc, **kwargs):
+        calls.append({"exc": exc, **kwargs})
+
+    monkeypatch.setattr(gen_mod, "capture_ai_exception", _record)
+    return calls
+
+
+async def test_provider_failure_is_reported_to_sentry(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.services.image.generate_characters as gen_mod
+
+    calls = _capture_recorder(monkeypatch)
+
+    async def fake_generate(prompt: str):
+        if "<gender>여성</gender>" in prompt:
+            raise ImageTimeout("시간 초과")
+        return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
+
+    monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
+
+    chars = [_char(name="레이"), _char(name="세린", gender="여성")]
+    await generate_character_images(chars, _GENRE)
+
+    assert len(calls) == 1  # 실패한 세린 1건만
+    call = calls[0]
+    assert isinstance(call["exc"], ImageTimeout)
+    assert call["feature"] == "character_image_generation"
+    assert call["provider"] == "openai"
+    assert "CHARACTER_IMAGE" in call["prompt_versions"]
+    assert call["latency_ms"] >= 0
+
+
+async def test_missing_appearance_is_not_reported_to_sentry(monkeypatch) -> None:
+    import src.services.image.generate_characters as gen_mod
+
+    calls = _capture_recorder(monkeypatch)
+
+    async def fake_generate(prompt: str):
+        return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
+
+    monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
+
+    await generate_character_images([_char(name="세린", face="")], _GENRE)
+
+    assert calls == []
