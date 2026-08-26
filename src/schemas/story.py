@@ -67,16 +67,18 @@ def _check_duplicate_names(
     """주인공과 주변 인물을 합쳐 이름 중복이 있으면 거부한다(KNK-841).
 
     이름을 비운 인물(None)은 LLM이 짓는다 — 중복 판정 대상이 아니다.
-    _clean_name이 먼저 돌아 NFC 정규화·공백 정리가 끝난 상태에서 비교한다.
+    _clean_name이 먼저 돌아 NFC 정규화·공백 정리가 끝난 상태에서 대소문자를
+    구분하지 않고 비교한다. 컴파일 결과의 중복 이름 검사와 같은 기준이다.
     """
     seen: set[str] = set()
     names = [protagonist.name] + [c.name for c in supporting_characters]
     for n in names:
         if n is None:
             continue
-        if n in seen:
+        normalized = n.casefold()
+        if normalized in seen:
             raise ValueError(f"인물 이름이 중복됩니다: {n}")
-        seen.add(n)
+        seen.add(normalized)
 
 
 class StorylinesRequest(BaseModel):
