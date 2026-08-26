@@ -1,6 +1,7 @@
 import re
 
 from src.schemas.chat_turn import (
+    CharacterImageMapping,
     ChatHistoryItem,
     ChatStartSettings,
     ChatStorySettings,
@@ -14,6 +15,7 @@ def _request(
     summary: str = "",
     history: list[ChatHistoryItem] | None = None,
     user_input: str = "*문을 연다*",
+    character_images: list[CharacterImageMapping] | None = None,
 ) -> ChatTurnRequest:
     return ChatTurnRequest(
         genre="판타지",
@@ -33,6 +35,7 @@ def _request(
         else [ChatHistoryItem(role="ASSISTANT", content="*레이가 들어선다.*")],
         user_input=user_input,
         summary=summary,
+        character_images=character_images or [],
     )
 
 
@@ -57,6 +60,19 @@ def test_message_order_and_roles() -> None:
     assert messages[-1]["role"] == "system"
 
 
+def test_history_removes_character_image_syntax_only_from_llm_copy() -> None:
+    stored = (
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
+        "[character:미라]미라: 나도 왔어."
+    )
+    history = [ChatHistoryItem(role="ASSISTANT", content=stored)]
+
+    messages = assemble(_request(history=history))
+
+    assert messages[1]["content"] == "세린: 기다렸어?\n미라: 나도 왔어."
+    assert history[0].content == stored
+
+
 # ── 슬롯 치환 ────────────────────────────────────────────────────────────────
 def test_no_unsubstituted_slots() -> None:
     messages = assemble(_request())
@@ -73,6 +89,31 @@ def test_system_front_contains_all_slot_materials() -> None:
     assert "촛불만 흔들리는 빈소에 레이가 들어선다." in front  # start_settings.start_situation
     assert "냉정하다." in front  # character_setting
     assert "카이" in front  # user_role_setting
+
+
+def test_character_image_names_are_injected_without_urls() -> None:
+    images = [
+        CharacterImageMapping(name="레이", image_url="https://cdn.example.com/rei.webp"),
+        CharacterImageMapping(name="세린", image_url="https://cdn.example.com/serin.webp"),
+    ]
+    messages = assemble(_request(character_images=images))
+    blob = "\n".join(message["content"] for message in messages)
+
+    assert chat_assembler.format_character_image_names(images) == "- 레이\n- 세린"
+    assert "# 인물 이미지 태그 대상\n\n- 레이\n- 세린" in messages[0]["content"]
+    assert "[character:세린]세린: 기다렸어?" in blob
+    assert "[character:인물 이름]" not in blob
+    assert "[character:선택한 이름]" not in blob
+    assert "https://cdn.example.com/rei.webp" not in blob
+    assert "https://cdn.example.com/serin.webp" not in blob
+
+
+def test_empty_character_images_disable_tag() -> None:
+    front = assemble(_request(character_images=[]))[0]["content"]
+
+    assert "# 인물 이미지 태그 대상\n\n(없음)" in front
+    assert "위 목록이 `(없음)`이면 어떤 대사도 이미지 대상으로 정하지 않는다" in front
+    assert "[character:none]" not in front
 
 
 def test_system_front_layer_order() -> None:
@@ -119,6 +160,29 @@ def test_phi_order() -> None:
         < phi.index("# CORE")
         < phi.index("# SAFETY")
     )
+
+
+def test_phi_places_character_image_tag_before_every_eligible_dialogue() -> None:
+    phi = assemble(_request(character_images=[]))[-1]["content"]
+
+    assert "이미지 대상으로 정한 모든 대사의 `인물명:` 바로 앞" in phi
+    assert "같은 인물이 다시 말하면 태그도 다시 붙인다" in phi
+    assert "매 답변에 주변 인물이나 단역·배경 인물의 대사를 최소 한 줄" in phi
+    assert "이미지 대상이 아닌 대사에는 태그를 쓰지 않는다" in phi
+
+
+def test_core_has_tagged_and_untagged_response_examples() -> None:
+    front = assemble(_request())[0]["content"]
+
+    assert "*세린이 젖은 소매를 걷으며 복도로 들어온다.*" in front
+    assert "[character:세린]세린: 기다렸어?" in front
+    assert "*복도 끝의 어둠 속에서 레이가 젖은 어깨를 털며 걸어 나온다.*" in front
+    assert "[character:세린]세린: 그럼 먼저 확인해 보자." in front
+    assert "[character:레이]레이: 복도 끝에서 인기척이 났습니다." in front
+    assert "*세린이 복도 끝으로 고개를 돌린다.*" in front
+    assert "경비병: 이쪽에는 아무것도 없습니다." in front
+    assert "[character:경비병]" not in front
+    assert "[character:none]" not in front
 
 
 # ── 헬퍼 ────────────────────────────────────────────────────────────────────

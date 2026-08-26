@@ -4,7 +4,13 @@ import json
 import pytest
 
 from src.api.v1 import chat as chat_module
-from src.schemas.chat_turn import EVENT_PING, ChatTurnRequest, PingData, TargetMainEventOut
+from src.schemas.chat_turn import (
+    EVENT_CHARACTER_IMAGE,
+    EVENT_PING,
+    ChatTurnRequest,
+    PingData,
+    TargetMainEventOut,
+)
 from src.services import chat_judgement as chat_judgement_module
 from src.services.chat_judgement import JudgementResult
 
@@ -34,11 +40,17 @@ def mock_events(monkeypatch):
     """엔드포인트가 쓰는 stream_chat_turn을 가짜 이벤트 시퀀스로 바꾼다(본문 LLM 회피)."""
 
     def _set(events: list[dict]) -> None:
-        async def _fake(messages):
+        async def _fake(messages, *, character_images):
             for e in events:
                 yield e
 
-        monkeypatch.setattr(chat_module, "stream_chat_turn", lambda m: _fake(m))
+        monkeypatch.setattr(
+            chat_module,
+            "stream_chat_turn",
+            lambda messages, *, character_images: _fake(
+                messages, character_images=character_images
+            ),
+        )
 
     return _set
 
@@ -112,6 +124,54 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     assert completed["occurredMainEventName"] is None
     assert completed["endingName"] is None
     assert meta["promptVersions"]["JUDGEMENT"] >= 1
+
+
+async def test_chat_turn_serializes_character_image_event(client, mock_events) -> None:
+    mock_events(
+        [
+            {
+                "event": EVENT_CHARACTER_IMAGE,
+                "name": "세린",
+                "image_url": "https://cdn.example.com/serin.webp",
+            },
+            {
+                "event": "completed",
+                "ai_output": (
+                    "[[세린:https://cdn.example.com/serin.webp]]세린: 안녕."
+                ),
+                "character_images": [
+                    {
+                        "name": "세린",
+                        "image_url": "https://cdn.example.com/serin.webp",
+                    }
+                ],
+                "model": "deepseek-v4-flash",
+                "provider": "deepseek",
+            },
+        ]
+    )
+    payload = _payload()
+    payload["character_images"] = [
+        {"name": "세린", "image_url": "https://cdn.example.com/serin.webp"}
+    ]
+
+    response = await client.post("/api/v1/chat/turns", json=payload)
+
+    assert response.status_code == 200
+    assert _data_of(response.text, EVENT_CHARACTER_IMAGE) == {
+        "name": "세린",
+        "imageUrl": "https://cdn.example.com/serin.webp",
+    }
+    completed = _data_of(response.text, "completed")
+    assert completed["aiOutput"] == (
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 안녕."
+    )
+    assert completed["characterImages"] == [
+        {
+            "name": "세린",
+            "imageUrl": "https://cdn.example.com/serin.webp",
+        }
+    ]
 
 
 async def test_chat_turn_meta_body_tokens_and_fixed_retry(client, mock_events) -> None:
@@ -300,7 +360,11 @@ async def test_concurrent_chat_turn_streams_keep_connection_metadata_isolated(
         }
 
     monkeypatch.setattr(chat_module, "observe_request", _fake_observe)
-    monkeypatch.setattr(chat_module, "stream_chat_turn", lambda messages: _events(messages))
+    monkeypatch.setattr(
+        chat_module,
+        "stream_chat_turn",
+        lambda messages, *, character_images: _events(messages),
+    )
 
     async def _post(label: str, chat_id: str, turn_number: int):
         return await client.post(
@@ -510,7 +574,11 @@ async def test_judgement_budget_subtracts_the_time_the_body_took(
         seen["budget"] = budget_seconds
         return JudgementResult(None, None, None, None, None)
 
-    monkeypatch.setattr(chat_module, "stream_chat_turn", lambda m: _slow_body(m))
+    monkeypatch.setattr(
+        chat_module,
+        "stream_chat_turn",
+        lambda messages, *, character_images: _slow_body(messages),
+    )
     monkeypatch.setattr(chat_module, "generate_judgement", _capture)
 
     await client.post("/api/v1/chat/turns", json=_payload())
@@ -632,7 +700,11 @@ async def test_ping_payload_comes_from_the_schema(
         yield {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
                "provider": "deepseek"}
 
-    monkeypatch.setattr(chat_module, "stream_chat_turn", lambda m: _events(m))
+    monkeypatch.setattr(
+        chat_module,
+        "stream_chat_turn",
+        lambda messages, *, character_images: _events(messages),
+    )
 
     body = (await client.post("/api/v1/chat/turns", json=_payload())).text
 

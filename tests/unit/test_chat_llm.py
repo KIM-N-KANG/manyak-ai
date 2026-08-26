@@ -2,6 +2,7 @@ import pytest
 
 from tests.conftest import FakeStream
 
+from src.schemas.chat_turn import CharacterImageMapping
 from src.services import chat_llm
 from src.services.chat_llm import _strip_speaker_bold, stream_chat_turn
 
@@ -90,6 +91,233 @@ async def test_stream_strips_speaker_bold_in_completed(mock_stream) -> None:
     completed = next(e for e in events if e["event"] == "completed")
     assert "**" not in completed["ai_output"]
     assert "설하: 늦었군요." in completed["ai_output"]
+
+
+async def test_stream_strips_speaker_bold_after_character_tag_in_completed(
+    mock_stream,
+) -> None:
+    mock_stream(
+        [
+            "*문이 열린다.*\n"
+            "[character:세린]**세린:** 기다렸어?\n"
+            "**레이:** 늦었네."
+        ]
+    )
+
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert completed["ai_output"] == (
+        "*문이 열린다.*\n"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
+        "레이: 늦었네."
+    )
+    assert completed["character_images"] == [
+        {
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        }
+    ]
+
+
+# ── 인물 이미지 태그 스트림 변환(KNK-991) ─────────────────────────
+def _character_images() -> list[CharacterImageMapping]:
+    return [
+        CharacterImageMapping(name="세린", image_url="https://cdn.example.com/serin.webp"),
+        CharacterImageMapping(name="레이", image_url="https://cdn.example.com/rei.webp"),
+    ]
+
+
+async def test_stream_converts_every_valid_tag_across_chunk_boundaries(mock_stream) -> None:
+    mock_stream(
+        [
+            "*문이 열린다.*\n[char",
+            "acter: 세린 ]세린: 기다렸어?\n[character:레이]",
+            "레이: 들어가자.\n[character:세린]세린: 다시 확인할게.",
+        ]
+    )
+
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+    visible = "".join(event["text"] for event in events if event["event"] == "token")
+    images = [event for event in events if event["event"] == "character_image"]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert visible == (
+        "*문이 열린다.*\n세린: 기다렸어?\n"
+        "레이: 들어가자.\n세린: 다시 확인할게."
+    )
+    assert images == [
+        {
+            "event": "character_image",
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        },
+        {
+            "event": "character_image",
+            "name": "레이",
+            "image_url": "https://cdn.example.com/rei.webp",
+        },
+        {
+            "event": "character_image",
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        },
+    ]
+    assert completed["ai_output"] == (
+        "*문이 열린다.*\n"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
+        "[[레이:https://cdn.example.com/rei.webp]]레이: 들어가자.\n"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 다시 확인할게."
+    )
+    assert completed["character_images"] == [
+        {
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        },
+        {
+            "name": "레이",
+            "image_url": "https://cdn.example.com/rei.webp",
+        },
+        {
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        },
+    ]
+
+
+async def test_stream_exposes_unmapped_empty_and_unclosed_tags(mock_stream) -> None:
+    unclosed = "[character:세린" + "x" * 30
+    raw = f"[character:미라]미라: 안녕.\n[character:]빈 태그\n{unclosed} 끝"
+    mock_stream([raw[:18], raw[18:41], raw[41:]])
+
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+    visible = "".join(event["text"] for event in events if event["event"] == "token")
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert visible == raw
+    assert not any(event["event"] == "character_image" for event in events)
+    assert completed["ai_output"] == raw
+    assert completed["character_images"] == []
+
+
+async def test_stream_exposes_empty_tag_even_if_mapping_name_is_empty(mock_stream) -> None:
+    mock_stream(["[character:]빈 태그"])
+    images = [
+        CharacterImageMapping(name="", image_url="https://cdn.example.com/empty.webp")
+    ]
+
+    events = [
+        event async for event in stream_chat_turn([], character_images=images)
+    ]
+    visible = "".join(event["text"] for event in events if event["event"] == "token")
+
+    assert visible == "[character:]빈 태그"
+    assert not any(event["event"] == "character_image" for event in events)
+
+
+async def test_stream_restarts_tag_detection_at_nested_open_bracket(mock_stream) -> None:
+    mock_stream(["[여기 [char", "acter:세린]세린: 찾았어."])
+
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+    visible = "".join(event["text"] for event in events if event["event"] == "token")
+    images = [event for event in events if event["event"] == "character_image"]
+
+    assert visible == "[여기 세린: 찾았어."
+    assert [image["name"] for image in images] == ["세린"]
+
+
+async def test_completed_recovers_valid_tag_inside_broken_character_tag(
+    mock_stream,
+) -> None:
+    raw = "[character:잘못됨[character:세린]세린: 왔어."
+    mock_stream([raw])
+
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+    visible = "".join(event["text"] for event in events if event["event"] == "token")
+    images = [event for event in events if event["event"] == "character_image"]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert visible == "[character:잘못됨세린: 왔어."
+    assert [image["name"] for image in images] == ["세린"]
+    assert completed["ai_output"] == (
+        "[character:잘못됨"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 왔어."
+    )
+    assert completed["character_images"] == [
+        {
+            "name": "세린",
+            "image_url": "https://cdn.example.com/serin.webp",
+        }
+    ]
+
+
+async def test_stream_and_completed_both_reject_tag_over_buffer_limit(mock_stream) -> None:
+    long_name = "가" * 20
+    raw = f"[character:{long_name}]{long_name}: 늦었어."
+    mock_stream([raw])
+    images = [
+        CharacterImageMapping(
+            name=long_name,
+            image_url="https://cdn.example.com/long-name.webp",
+        )
+    ]
+
+    events = [
+        event async for event in stream_chat_turn([], character_images=images)
+    ]
+    visible = "".join(event["text"] for event in events if event["event"] == "token")
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert visible == raw
+    assert not any(event["event"] == "character_image" for event in events)
+    assert completed["ai_output"] == raw
+    assert completed["character_images"] == []
+
+
+async def test_stream_flushes_pending_tag_before_error_and_keeps_sent_image(
+    monkeypatch, install_llm_sdk
+) -> None:
+    from openai import APIConnectionError
+
+    monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda *a, **k: None)
+    request = __import__("httpx").Request("POST", "https://api.deepseek.com/v1")
+
+    async def _create(**kwargs):
+        return FakeStream(
+            [_FakeChunk("[character:세린]세린: 말한다.\n[character:미")],
+            error=APIConnectionError(request=request),
+        )
+
+    install_llm_sdk(_create)
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+
+    assert [event["event"] for event in events] == [
+        "character_image",
+        "token",
+        "token",
+        "error",
+    ]
+    assert events[0]["name"] == "세린"
+    assert events[1]["text"] == "세린: 말한다.\n"
+    assert events[2]["text"] == "[character:미"
 
 
 # ── 로깅 메타 재료 수집(KNK-243) — model·usage ───────────────────────────────

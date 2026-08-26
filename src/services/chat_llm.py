@@ -7,7 +7,8 @@
 
 이벤트(dict)를 async generator로 낸다. SSE 와이어 변환·선택지 합치기는 엔드포인트(chat.py)가 맡는다.
 - {"event": "token",     "text": ...}
-- {"event": "completed", "ai_output": ..., "model": ..., "provider": ..., "input_tokens": ..., "output_tokens": ...}
+- {"event": "character_image", "name": ..., "image_url": ...}
+- {"event": "completed", "ai_output": ..., "character_images": [...], "model": ..., "provider": ..., "input_tokens": ..., "output_tokens": ...}
 - {"event": "error",     "code": ..., "message": ...}
 """
 
@@ -19,7 +20,13 @@ from contextlib import aclosing
 
 from src.core.config import settings
 from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
-from src.schemas.chat_turn import EVENT_COMPLETED, EVENT_ERROR, EVENT_TOKEN
+from src.schemas.chat_turn import (
+    EVENT_CHARACTER_IMAGE,
+    EVENT_COMPLETED,
+    EVENT_ERROR,
+    EVENT_TOKEN,
+    CharacterImageMapping,
+)
 from src.services import llm
 from src.services.chat_assembler import LAYER_VERSIONS
 from src.services.llm.base import LlmError, LlmRequest, TextDelta
@@ -34,14 +41,22 @@ logger = logging.getLogger(__name__)
 # **호출마다 반드시 넘긴다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
 _TIMEOUT_SECONDS = 90.0
 
+# `[` 뒤로 이만큼을 읽어도 `]`가 없으면 이미지 태그가 아니다. 평범한 본문을
+# 오래 잡아두지 않고 바로 token으로 되돌린다(이미지 로직 계획 KNK-991).
+_TAG_BUFFER_MAX_CHARS = 30
+_CHARACTER_TAG_RE = re.compile(r"\[character:([^\[\]\r\n]*)\]")
+
 
 # 줄머리 볼드 화자 라벨을 평문으로 정규화한다: `**설하:**`·`**설하**:` → `설하:`.
+# 앞에 내부 이미지 태그가 있으면 태그는 보존하고 뒤의 화자 라벨만 정리한다.
 # 모델이 사전학습 편향으로 화자 이름을 볼드로 감싸는 경향이 강해(프롬프트로 못 막음 —
 # KNK-194 검증에서 100건 중 약 절반 발생) 완료 출력에서 코드로 떼어낸다. 콜론을 동반한
 # 줄머리 볼드만 손대므로 본문 강조 `**단어**`(콜론 없음)는 건드리지 않는다.
 _SPEAKER_BOLD_RE = re.compile(
-    r"^([ \t]*)\*\*\s*([^\n*]{1,20}?)\s*\*\*\s*:[ \t]*"  # **설하**:
-    r"|^([ \t]*)\*\*\s*([^\n*]{1,20}?)\s*:\s*\*\*[ \t]*",  # **설하:**
+    r"^([ \t]*(?:\[character:[^\]\r\n]*\])?[ \t]*)"
+    r"\*\*\s*([^\n*]{1,20}?)\s*\*\*\s*:[ \t]*"  # [태그]**설하**:
+    r"|^([ \t]*(?:\[character:[^\]\r\n]*\])?[ \t]*)"
+    r"\*\*\s*([^\n*]{1,20}?)\s*:\s*\*\*[ \t]*",  # [태그]**설하:**
     re.M,
 )
 
@@ -58,17 +73,116 @@ def _strip_speaker_bold(text: str) -> str:
     return _SPEAKER_BOLD_RE.sub(_repl, text)
 
 
-async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
-    """messages를 LLM에 스트리밍 호출하고 token→completed(또는 error) 이벤트를 낸다.
+def _character_image_for_tag(
+    raw_tag: str, images: dict[str, CharacterImageMapping]
+) -> CharacterImageMapping | None:
+    """스트리밍과 완료 응답이 같은 규칙으로 유효한 내부 태그를 찾는다."""
+    if len(raw_tag) - 1 > _TAG_BUFFER_MAX_CHARS:
+        return None
+    match = _CHARACTER_TAG_RE.fullmatch(raw_tag)
+    name = match.group(1).strip() if match else ""
+    return images.get(name) if name else None
 
-    본문은 선택지 없이 지문·대사만 생성하므로, 받은 델타를 가공 없이 그대로 흘린다.
-    완료 시 누적 본문에서 줄머리 볼드 화자 라벨만 정규화해 `ai_output`으로 낸다 — 선택지는
-    여기서 만들지 않으며, 엔드포인트가 본문 종료 후 별도 호출로 받아 completed에 합친다.
+
+def _replace_character_tags_for_storage(
+    text: str, character_images: list[CharacterImageMapping]
+) -> tuple[str, list[dict]]:
+    """유효한 내부 태그를 URL 마커로 바꾸고 표시 순서의 이미지 목록을 만든다."""
+    images_by_name = {image.name: image for image in character_images}
+    displayed: list[dict] = []
+
+    def replace(match: "re.Match[str]") -> str:
+        raw_tag = match.group(0)
+        image = _character_image_for_tag(raw_tag, images_by_name)
+        if image is None:
+            return raw_tag
+        displayed.append({"name": image.name, "image_url": image.image_url})
+        return f"[[{image.name}:{image.image_url}]]"
+
+    return _CHARACTER_TAG_RE.sub(replace, text), displayed
+
+
+class _CharacterTagStreamParser:
+    """LLM 델타에 나뉘어진 인물 태그를 실시간 이미지 이벤트로 바꾼다."""
+
+    def __init__(self, character_images: list[CharacterImageMapping]) -> None:
+        self._images = {image.name: image for image in character_images}
+        self._buffer = ""
+
+    def feed(self, text: str) -> list[dict]:
+        """델타 하나를 처리한다. 일반 글은 token, 유효한 태그는 character_image다."""
+        events: list[dict] = []
+        visible: list[str] = []
+
+        def emit_visible() -> None:
+            if visible:
+                events.append({"event": EVENT_TOKEN, "text": "".join(visible)})
+                visible.clear()
+
+        for char in text:
+            if not self._buffer:
+                if char == "[":
+                    self._buffer = char
+                else:
+                    visible.append(char)
+                continue
+
+            if char == "[":
+                visible.append(self._buffer)
+                self._buffer = char
+                continue
+
+            self._buffer += char
+            if char == "]":
+                raw_tag = self._buffer
+                self._buffer = ""
+                image = _character_image_for_tag(raw_tag, self._images)
+                if image is None:
+                    visible.append(raw_tag)
+                    continue
+
+                emit_visible()
+                events.append(
+                    {
+                        "event": EVENT_CHARACTER_IMAGE,
+                        "name": image.name,
+                        "image_url": image.image_url,
+                    }
+                )
+            elif len(self._buffer) - 1 >= _TAG_BUFFER_MAX_CHARS:
+                visible.append(self._buffer)
+                self._buffer = ""
+
+        emit_visible()
+        return events
+
+    def flush(self) -> list[dict]:
+        """정상 종료나 오류 직전에 닫히지 않은 `[` 버퍼를 원문으로 내보낸다."""
+        if not self._buffer:
+            return []
+        text = self._buffer
+        self._buffer = ""
+        return [{"event": EVENT_TOKEN, "text": text}]
+
+
+async def stream_chat_turn(
+    messages: list[dict], *, character_images: list[CharacterImageMapping] | None = None
+) -> AsyncIterator[dict]:
+    """messages를 LLM에 스트리밍 호출하고 token·character_image→completed(또는 error)를 낸다.
+
+    인물 이미지 매핑이 있으면 유효한 `[character:이름]` 태그를 이미지 이벤트로
+    바꾸고 token에서 숨긴다. 매핑에 없거나 깨진 태그는 본문에 그대로 남긴다.
+    완료 시 줄머리 볼드 화자 라벨을 정리하고 유효 태그를 URL 저장 마커로 바꿔
+    `ai_output`과 표시 순서의 `character_images`를 낸다. 선택지는 여기서 만들지 않으며,
+    엔드포인트가 본문 종료 후 별도 호출로 받아 completed에 합친다.
     """
     full = ""                              # 전체 누적 — 완료 시 ai_output
     model: str | None = None               # 응답이 돌려준 실제 모델(로깅 메타)
     input_tokens: int | None = None        # 종료 이벤트에서 취득(없으면 None)
     output_tokens: int | None = None
+    tag_parser = (
+        _CharacterTagStreamParser(character_images) if character_images else None
+    )
     # 이 호출이 어느 공급자로 갈지는 부르기 전에 정해진다 — 스트림이 오류로 끝나면 종료
     # 이벤트가 아예 없어서, 결과에서 읽는 방식으로는 실패 태그를 채울 수 없다(KNK-674).
     provider = llm.provider_of(settings.chat_model)
@@ -95,19 +209,31 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
             async for event in events:
                 if isinstance(event, TextDelta):
                     full += event.text
-                    yield {"event": EVENT_TOKEN, "text": event.text}
+                    if tag_parser is None:
+                        yield {"event": EVENT_TOKEN, "text": event.text}
+                    else:
+                        for parsed in tag_parser.feed(event.text):
+                            yield parsed
                 else:  # StreamCompleted — 정상 종료일 때만 온다
                     model = event.model
                     input_tokens = event.usage.input_tokens
                     output_tokens = event.usage.output_tokens
 
-        ai_output = _strip_speaker_bold(full.strip())  # 화자 라벨의 볼드 제거(저장·표시값)
+        if tag_parser is not None:
+            for parsed in tag_parser.flush():
+                yield parsed
+
+        normalized = _strip_speaker_bold(full.strip())  # 마커 치환 전에 화자 볼드부터 제거
+        ai_output, completed_images = _replace_character_tags_for_storage(
+            normalized, character_images or []
+        )
         # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가 판정 호출 메타를 합산하고
         # prompt_versions·provider를 더해 completed의 meta로 조립한다(KNK-243).
         # 선택지 몫 메타는 KNK-625로 /chat/choices 응답 meta에 분리됐다.
         yield {
             "event": EVENT_COMPLETED,
             "ai_output": ai_output,
+            "character_images": completed_images,
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -119,6 +245,10 @@ async def stream_chat_turn(messages: list[dict]) -> AsyncIterator[dict]:
         # SSE는 HTTP 200이라 미들웨어가 못 잡는다 — 여기서 직접 Sentry로 보고한다(AN-4).
         # logger.exception보다 먼저 보낸다. Sentry는 같은 예외의 두 번째 이벤트를 중복으로
         # 버리므로 로그가 먼저면 feature·provider·error_code가 없는 자동 캡처만 남는다.
+        if tag_parser is not None:
+            for parsed in tag_parser.flush():
+                yield parsed
+
         capture_ai_exception(
             e,
             feature=FEATURE_CHAT_RESPONSE,

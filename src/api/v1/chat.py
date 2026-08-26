@@ -9,10 +9,10 @@
 `POST /api/v1/chat/choices`: 분리된 선택지 생성(동기 REST). 백엔드가 completed 이후
 같은 재료 + 방금 본문(ai_output)으로 호출한다. 항상 200 + 정확히 3개(폴백 흡수).
 
-AI가 발행하는 SSE 이벤트는 token·completed·error·ping 4개다(명세 B). ping은 판정을 기다리는
+AI가 발행하는 SSE 이벤트는 token·character_image·completed·error·ping 5개다. ping은 판정을 기다리는
 동안만 나가는 신호로, 백엔드의 이벤트 간 상한 시계를 되돌린다(KNK-750 — `EVENT_PING` 주석).
-started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed의 ai_output·meta는 와이어 계약 키(aiOutput·
-camelCase)로 직렬화한다(by_alias=True). completed의 choices는 하위호환 빈 배열 고정 —
+started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed의 ai_output·character_images·meta는
+와이어 계약 키(aiOutput·characterImages·camelCase)로 직렬화한다(by_alias=True). completed의 choices는 하위호환 빈 배열 고정 —
 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3)이라 선행 배포에 안전하다.
 판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 재료 없는 요청에서
 null이고, 서버 DTO가 ignoreUnknown이라 역시 선행 배포에 안전하다.
@@ -31,10 +31,12 @@ from src.core.langfuse import observe_request
 from src.core.request_context import ConnectionMetadata, select_connection_metadata
 from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
 from src.schemas.chat_turn import (
+    EVENT_CHARACTER_IMAGE,
     EVENT_COMPLETED,
     EVENT_ERROR,
     EVENT_PING,
     EVENT_TOKEN,
+    CharacterImageData,
     ChatTurnRequest,
     CompletedData,
     ErrorData,
@@ -118,10 +120,17 @@ async def _event_stream(
         # 이 턴에 쓴 시간을 잰다 — 판정에 얼마를 줄 수 있는지가 여기서 나온다(아래 참조).
         turn_started = time.monotonic()
         messages = assemble(req)
-        async for ev in stream_chat_turn(messages):
+        async for ev in stream_chat_turn(
+            messages, character_images=req.character_images
+        ):
             name = ev["event"]
             if name == EVENT_TOKEN:
                 yield _sse(name, TokenData(text=ev["text"]).model_dump())
+            elif name == EVENT_CHARACTER_IMAGE:
+                payload = CharacterImageData(
+                    name=ev["name"], image_url=ev["image_url"]
+                ).model_dump(by_alias=True)
+                yield _sse(name, payload)
             elif name == EVENT_COMPLETED:
                 ai_output = ev["ai_output"]
                 # 본문이 끝난 뒤 판정만 실행한다 — 선택지는 전용 엔드포인트(/chat/choices)로
@@ -195,6 +204,7 @@ async def _event_stream(
                     # 하위호환 빈 배열 — 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3).
                     # 프론트·백엔드 전환 완료 후 필드 제거를 검토한다.
                     choices=[],
+                    character_images=ev.get("character_images", []),
                     meta=meta,
                     target_main_event=judgement.target_main_event,
                     occurred_main_event_name=judgement.occurred_main_event_name,
