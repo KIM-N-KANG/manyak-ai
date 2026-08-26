@@ -94,9 +94,12 @@ async def generate(req: ImageRequest) -> ImageResult:
     # (generate_characters._generate_one)는 이 예외만 "해당 인물 실패"로 알아듣고,
     # 다른 예외는 병렬 생성 전체를 중단시켜 성공한 인물 이미지까지 버린다(PR #92 리뷰).
     data = response.data or []
-    b64_data = data[0].b64_json if data else None
+    first_image = data[0] if data else None
+    b64_data = getattr(first_image, "b64_json", None)
     if not b64_data:
         raise ImageGenerationError("이미지 응답에 데이터가 없습니다.")
+    if not isinstance(b64_data, str):
+        raise ImageGenerationError("이미지 응답의 base64가 문자열이 아닙니다.")
 
     try:
         # validate=True: base64가 아닌 글자가 섞이면 조용히 건너뛰지 않고 실패시킨다.

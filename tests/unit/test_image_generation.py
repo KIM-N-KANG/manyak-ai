@@ -143,6 +143,22 @@ async def test_openai_generate_missing_data_list(monkeypatch, data) -> None:
         await openai_api.generate(req)
 
 
+async def test_openai_generate_null_data_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """data 첫 항목이 null이어도 AttributeError가 아니라 ImageGenerationError."""
+    _mock_client(monkeypatch, response=_FakeResponse(data=[None]))
+    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    with pytest.raises(ImageGenerationError, match="데이터가 없습니다"):
+        await openai_api.generate(req)
+
+
+async def test_openai_generate_non_string_base64(monkeypatch: pytest.MonkeyPatch) -> None:
+    """b64_json이 문자열이 아니어도 TypeError가 아니라 ImageGenerationError."""
+    _mock_client(monkeypatch, response=_FakeResponse(data=[_FakeImageData(b64_json=123)]))
+    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    with pytest.raises(ImageGenerationError, match="문자열이 아닙니다"):
+        await openai_api.generate(req)
+
+
 async def test_openai_generate_malformed_base64(monkeypatch: pytest.MonkeyPatch) -> None:
     """base64가 깨져 있으면 binascii.Error가 아니라 ImageGenerationError."""
     _mock_client(monkeypatch, response=_FakeResponse(data=[_FakeImageData(b64_json="!!!not-base64!!!")]))
