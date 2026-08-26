@@ -130,15 +130,16 @@ def test_main_events_over_ten_rejected() -> None:
         ChatTurnRequest.model_validate(payload)
 
 
-def test_character_images_over_five_rejected() -> None:
+def test_character_images_over_five_accepted() -> None:
+    # 개수 상한 없음 — 인물당 표정별 다중 이미지가 오면 5개를 넘는다(KNK-943 백엔드 리뷰).
     image = {
         "name": "레이",
         "image_url": "https://cdn.example.com/characters/rei.webp",
     }
-    with pytest.raises(ValidationError):
-        ChatTurnRequest.model_validate(
-            {**_BASE_PAYLOAD, "character_images": [image] * 6}
-        )
+    req = ChatTurnRequest.model_validate(
+        {**_BASE_PAYLOAD, "character_images": [image] * 6}
+    )
+    assert len(req.character_images) == 6
 
 
 def test_ending_candidate_has_no_min_turns_field() -> None:

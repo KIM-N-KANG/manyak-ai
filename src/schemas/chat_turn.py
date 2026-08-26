@@ -158,9 +158,9 @@ class ChatTurnRequest(BaseModel):
     occurred_main_event_names: list[str] = Field(default_factory=list)
     endings: list[EndingCandidate] = Field(default_factory=list)
     # 이미지가 저장된 주변 인물만 전달한다. 없으면 기존 채팅과 동일하게 동작한다.
-    character_images: list[CharacterImageMapping] = Field(
-        default_factory=list, max_length=5
-    )
+    # 개수 상한을 두지 않는다 — 인물당 표정별 다중 이미지가 오면 5개를 넘고, 인물 수
+    # 상한은 백엔드가 관리한다(KNK-943 백엔드 리뷰 반영).
+    character_images: list[CharacterImageMapping] = Field(default_factory=list)
 
     @field_validator("user_source", mode="before")
     @classmethod
