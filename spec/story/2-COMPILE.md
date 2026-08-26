@@ -103,6 +103,8 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 
 같은 원칙으로 주인공 이름·성별도 덮어씁니다(KNK-838). 입력 `protagonist.name`이 있으면 `user_role_setting.name`에, `protagonist.gender`가 있으면 `user_role_setting.gender`에 한국어(`남성`·`여성`)로 씁니다. 비운 항목은 LLM이 지은 값을 그대로 둡니다. 주인공 프로필 블록이 통째로 없거나 객체가 아니면 주입을 건너뜁니다 — 그 블록은 부분 재호출이 채우고, 재호출 뒤 주입이 다시 실행됩니다.
 
+입력 주변 인물에는 `input-1`부터 시작하는 내부 표시 `input_character_id`를 붙입니다. LLM은 입력 인물 카드에 같은 표시를 돌려주고 직접 만든 인물에는 `null`을 씁니다. 서버는 이 표시로 입력 인물 카드를 찾아 사용자가 정한 이름을 덮어씁니다. 표시가 빠지거나 중복되면 `character_setting` 블록을 다시 받으며, 이름이 겹치면 표시가 없는 생성 인물의 이름만 다시 받습니다. 내부 표시는 검증 후 제거하므로 백엔드 응답에는 포함되지 않습니다.
+
 주입은 본호출과 각 재호출 직후에 적용합니다. 재호출이 블록을 통째로 갈아끼우므로, 그때 다시 덮어쓰지 않으면 재호출이 데려온 LLM 값이 입력값을 되덮습니다.
 
 ### 4-4. 빈 필드 검증과 부분 재호출
@@ -114,7 +116,7 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 - 블록 문제와 인물 필드 문제가 동시에 있으면 한 번의 재호출 응답에 모두 담아 고칩니다. 두 문제를 합쳐 **최대 2회**까지 재호출합니다.
 - `null`·빈 문자열·공백이나 개행만 있는 문자열을 모두 빈 필드로 판정합니다. 이름이 2회 후에도 비었거나 중복이면 502로 막습니다. 외형은 이미지 생성의 부가 입력이므로 2회 후에도 비어 있으면 컴파일은 성공시키고 해당 인물 이미지만 `appearance_missing`으로 처리합니다.
 - 검증에서 제외하는 예외 필드: `meta.genre`(서버가 입력 태그로 덮어씀), `user_role_setting.preference`(선택 입력이라 비어 있어도 됨). 주인공 `name`·`gender`는 검증 대상이되, 입력값이 있으면 주입이 먼저 채우므로 재호출로 이어지지 않습니다.
-- **입력 인물 카드 누락도 재호출 대상입니다**(KNK-833). 사용자가 이름을 지은 주변 인물이 인물 카드에 없으면 `character_setting` 블록을 부분 재호출로 다시 받습니다. 스토리라인처럼 전체를 다시 부르지 않는 이유는 컴파일이 가장 비싼 호출이라, 잘 나온 나머지 블록을 보존하는 쪽이 싸기 때문입니다. 카드 이름에 호칭이 붙을 수 있어(`서린 아씨`) 포함 여부로 판정하며, 이름을 비운 인물은 검증 대상이 아닙니다.
+- **입력 인물 카드 누락도 재호출 대상입니다**(KNK-833). 요청한 `input_character_id`가 카드에 없거나 중복되면 `character_setting` 블록을 부분 재호출로 다시 받습니다. 스토리라인처럼 전체를 다시 부르지 않는 이유는 컴파일이 가장 비싼 호출이라, 잘 나온 나머지 블록을 보존하는 쪽이 싸기 때문입니다.
 - 엔딩은 **soft 블록**입니다(KNK-465). 정상 3개를 목표로, 3개가 아니거나 항목 필드(name·achievement_condition·epilogue)가 비었거나 min_turns가 1 이상의 정수가 아니면(0·음수 포함) 다른 빈 블록과 동일하게 `endings` 블록을 부분 재호출로 채웁니다. 다만 재호출 2회 후에도 온전한 3개를 못 채우면 502가 아니라 **빈 배열(`[]`)로 폴백하고 200을 반환**합니다 — 스토리 본체·주요 사건은 살리고 부가물인 엔딩만 비웁니다(선택지 폴백과 같은 원칙). 엔딩은 성취 유형(해피·노말·배드)을 출력하지 않으며 `name`으로 식별합니다.
 
 필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 6개 필드(name·gender·personality·tone·motivation·attitude_to_user), user_role_setting의 preference 제외 5개 필드(name·gender·role·background·personality)), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음), `main_events`(3~5개이며 각 항목의 name·description·key_sentence가 비어 있지 않음), `endings`(정상 3개이며 각 항목의 name·achievement_condition·epilogue가 비어 있지 않고 min_turns가 1 이상의 정수 — 단 재호출로도 못 채우면 빈 배열로 폴백).
@@ -278,7 +280,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
     "tone_setting": "...",
     "length_ratio": "묘사 7 : 대사 3",
     "character_setting": [
-      { "name": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
+      { "input_character_id": "input-1", "name": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
     ],
     "user_role_setting": { "name": "...", "gender": "...", "role": "...", "background": "...", "personality": "...", "preference": "" }
   },
@@ -303,7 +305,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | | rule_setting | 전개 속도·긴장 곡선 등 연출 규칙 |
 | | tone_setting | 장면 전체의 서술 톤 |
 | | length_ratio | 묘사와 대사의 비중(`묘사 N : 대사 M`) |
-| | character_setting | 주변 인물 카드 1~5명. 각 카드는 name·gender·personality·tone·motivation·attitude_to_user + 외형 6필드(age·body·face·hair·outfit·visual_identity). 입력한 주변 인물은 전원 카드가 되고, 남는 자리만 LLM이 채움. 외형 필드는 이미지 생성 전용이며 통글에는 싣지 않음(KNK-937). 선택 필드라 비어 있어도 컴파일은 성공하고 해당 인물의 이미지만 안 만들어짐 |
+| | character_setting | 주변 인물 카드 1~5명. 각 카드는 내부용 input_character_id + name·gender·personality·tone·motivation·attitude_to_user + 외형 6필드(age·body·face·hair·outfit·visual_identity). 입력한 주변 인물은 전원 카드가 되고, 남는 자리만 LLM이 채움. input_character_id는 사용자 이름 주입 후 제거되어 외부 응답에는 실리지 않음. 외형 필드는 이미지 생성 전용이며 통글에는 싣지 않음(KNK-937). 선택 필드라 비어 있어도 컴파일은 성공하고 해당 인물의 이미지만 안 만들어짐 |
 | | user_role_setting | 주인공 프로필. name·gender·role·background·personality·preference(선택). name·gender는 입력값이 있으면 서버가 덮어씀 |
 | start | name·prologue·start_situation | 시작 설정 이름·도입 나레이션·첫 장면 |
 | suggested_inputs | string[] | 첫 입력 추천 문구 3개 |

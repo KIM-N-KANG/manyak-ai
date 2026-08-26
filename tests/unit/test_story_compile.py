@@ -456,12 +456,15 @@ def test_build_refill_prompt_contains_context() -> None:
 
 
 def test_build_refill_prompt_contains_character_field_targets() -> None:
-    _, user = build_refill_prompt(
+    system, user = build_refill_prompt(
         "원본",
         '{"prompt_settings": {"character_setting": []}}',
         ["start"],
         {0: ("hair",), 2: ("name", "outfit")},
     )
+    assert "부분 재호출" in system
+    assert '"character_updates"' in system
+    assert '"index": 0' in system
     assert "start" in user
     assert "index 0: hair" in user
     assert "index 2: name, outfit" in user

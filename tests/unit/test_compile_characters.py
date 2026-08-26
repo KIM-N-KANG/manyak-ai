@@ -52,8 +52,8 @@ def test_compile_prompt_renders_character_blocks() -> None:
     )
     assert "{{" not in user
     assert "이름: 카일 / 성별: 남성 / 특징: 신중한" in user
-    assert "1) 이름: 로한 / 성별: 남성 / 특징: 충직한" in user
-    assert "2) 이름: (미정) / 성별: (미정) / 특징: (미정)" in user
+    assert "[input_character_id: input-1] 이름: 로한 / 성별: 남성 / 특징: 충직한" in user
+    assert "[input_character_id: input-2] 이름: (미정) / 성별: (미정) / 특징: (미정)" in user
 
 
 # ── 인물 카드 누락 판정 ─────────────────────────────────────────────────────
@@ -85,12 +85,13 @@ def test_cards_malformed_prompt_settings_no_crash() -> None:
 
 
 # ── refill 배선 ─────────────────────────────────────────────────────────────
-async def test_compile_story_refills_when_named_character_missing(
+async def test_compile_story_refills_when_input_character_id_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """카드에 없는 이름(서린)을 요구하면 카드 블록 refill을 2회 시도한 뒤 502로 막는다."""
+    """사용자 인물 표시가 없으면 카드 블록 refill을 2회 시도한 뒤 502로 막는다."""
     calls: list[tuple[str, str]] = []
-    spec = _spec()  # 카드 이름: 레이·세린·칸 — "서린"은 없다("세린"과 다른 이름)
+    spec = _spec()
+    spec["prompt_settings"]["character_setting"][0].pop("input_character_id")
 
     async def fake_complete(system: str, user: str, **kwargs: object):
         calls.append((str(kwargs.get("label", "compile")), user))
@@ -102,23 +103,30 @@ async def test_compile_story_refills_when_named_character_missing(
 
     assert ei.value.status_code == 502
     assert [label for label, _ in calls] == ["compile", "refill#1", "refill#2"]
-    # refill 요청이 카드 블록을 다시 채우라고 지목한다(이름 원문은 경로에 없음 — AN-4-10).
+    # refill 요청이 카드 블록을 다시 채우라고 지목한다.
     assert "character_setting" in calls[1][1]
 
 
-async def test_compile_story_passes_when_named_character_present(
+async def test_compile_story_overwrites_changed_input_character_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """LLM이 사용자 인물 이름을 바꿔도 내부 표시로 찾아 입력 이름을 복원한다."""
     calls: list[str] = []
+    spec = _spec()
+    spec["prompt_settings"]["character_setting"][0]["name"] = "제니"
+    spec["prompt_settings"]["character_setting"][1]["name"] = "라온"
 
     async def fake_complete(system: str, user: str, **kwargs: object):
         calls.append(str(kwargs.get("label", "compile")))
-        return _spec(), story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+        return spec, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
-    res = await story_llm.compile_story(_request([{"name": "세린"}]))  # 카드에 있는 이름
+    res = await story_llm.compile_story(_request([{"name": "세린"}]))
     assert calls == ["compile"]  # refill 없이 한 번에 통과
     assert "세린" in res.story_settings.character_setting
+    assert "제니" not in res.story_settings.character_setting
+    assert res.character_appearances[0].name == "세린"
+    assert "input_character_id" not in spec["prompt_settings"]["character_setting"][0]
 
 
 async def test_compile_story_repairs_blocks_names_and_appearance_in_one_call(
@@ -257,7 +265,7 @@ async def test_compile_story_gemini_uses_gemini_system_and_version(
     import src.services.llm as llm_mod
     monkeypatch.setattr(llm_mod, "provider_of", lambda model: PROVIDER_GOOGLE)
 
-    res = await story_llm.compile_story(_request([{"name": "세린"}]))
+    res = await story_llm.compile_story(_request([{"name": "레이"}]))
 
     # 첫 호출에 Gemini system prompt가 갔는지
     assert captured_systems[0] == _COMPILE_GEMINI_SYSTEM
@@ -275,6 +283,7 @@ async def test_compile_story_gemini_refill_uses_gemini_system(
     captured_systems: list[str] = []
     captured_versions: list[dict] = []
     spec = _spec()
+    spec["prompt_settings"]["character_setting"][0].pop("input_character_id")
 
     async def fake_complete(system: str, user: str, **kwargs: object):
         captured_systems.append(system)
@@ -287,7 +296,7 @@ async def test_compile_story_gemini_refill_uses_gemini_system(
     import src.services.llm as llm_mod
     monkeypatch.setattr(llm_mod, "provider_of", lambda model: PROVIDER_GOOGLE)
 
-    # "서린"은 카드에 없으므로 refill이 돈다
+    # 사용자 인물 표시가 없으므로 refill이 돈다.
     with pytest.raises(HTTPException) as ei:
         await story_llm.compile_story(_request([{"name": "서린"}]))
 
@@ -364,6 +373,22 @@ def test_character_field_repairs_detects_blank_and_duplicate_names() -> None:
 
     assert repairs[0] == ("name",)
     assert repairs[2] == ("name",)
+
+
+def test_duplicate_name_repairs_generated_card_not_input_card() -> None:
+    """생성 인물이 사용자 인물 이름과 겹치면 생성 인물의 이름만 다시 받는다."""
+    spec = _spec()
+    cards = spec["prompt_settings"]["character_setting"]
+    cards[0].pop("input_character_id")
+    cards[0]["name"] = "세린"
+    cards[1]["input_character_id"] = "input-1"
+    cards[1]["name"] = "세린"
+
+    protected = story_llm._input_character_indexes(spec, input_count=1)
+    repairs = story_llm._find_character_field_repairs(spec, protected)
+
+    assert protected == {1}
+    assert repairs == {0: ("name",)}
 
 
 def test_character_field_repairs_treats_whitespace_appearance_as_empty() -> None:

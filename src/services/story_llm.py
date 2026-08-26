@@ -670,6 +670,7 @@ def _endings_incomplete(data: dict) -> bool:
 
 
 _CHARACTER_CARDS_PATH = "prompt_settings.character_setting"
+_INPUT_CHARACTER_ID_FIELD = "input_character_id"
 _CHARACTER_APPEARANCE_FIELDS = (
     "age",
     "body",
@@ -678,6 +679,76 @@ _CHARACTER_APPEARANCE_FIELDS = (
     "outfit",
     "visual_identity",
 )
+
+
+def _input_character_id(index: int) -> str:
+    """요청의 주변 인물 순번을 LLM 중간 JSON에서 식별할 안정적인 값으로 바꾼다."""
+    return f"input-{index + 1}"
+
+
+def _input_character_ids_incomplete(data: dict, input_count: int) -> bool:
+    """입력 인물 표시가 각각 정확히 한 카드에 있는지 확인한다."""
+    if input_count == 0:
+        return False
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(cards, list):
+        return True
+
+    expected = {_input_character_id(index) for index in range(input_count)}
+    counts = {value: 0 for value in expected}
+    for raw in cards:
+        if not isinstance(raw, dict):
+            continue
+        value = raw.get(_INPUT_CHARACTER_ID_FIELD)
+        if value is None:
+            continue
+        if not isinstance(value, str) or value not in expected:
+            return True
+        counts[value] += 1
+    return any(count != 1 for count in counts.values())
+
+
+def _inject_supporting_character_names(
+    data: dict,
+    supporting_characters: list[CharacterInput],
+) -> None:
+    """내부 표시로 사용자 입력 카드를 찾아, 사용자가 정한 이름을 최종값으로 덮어쓴다."""
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(cards, list):
+        return
+    by_id = {
+        _input_character_id(index): character
+        for index, character in enumerate(supporting_characters)
+    }
+    for raw in cards:
+        if not isinstance(raw, dict):
+            continue
+        source = by_id.get(raw.get(_INPUT_CHARACTER_ID_FIELD))
+        if source is not None and source.name:
+            raw["name"] = source.name
+
+
+def _input_character_indexes(data: dict, input_count: int) -> set[int]:
+    """중복 이름을 고칠 때 보호할 사용자 입력 카드의 배열 위치를 반환한다."""
+    expected = {_input_character_id(index) for index in range(input_count)}
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(cards, list):
+        return set()
+    return {
+        index
+        for index, raw in enumerate(cards)
+        if isinstance(raw, dict) and raw.get(_INPUT_CHARACTER_ID_FIELD) in expected
+    }
+
+
+def _remove_input_character_ids(data: dict) -> None:
+    """내부 식별자는 검증이 끝난 뒤 제거해 백엔드 계약으로 새지 않게 한다."""
+    cards = _as_dict(data.get("prompt_settings")).get("character_setting")
+    if not isinstance(cards, list):
+        return
+    for raw in cards:
+        if isinstance(raw, dict):
+            raw.pop(_INPUT_CHARACTER_ID_FIELD, None)
 
 
 def _missing_required_characters(data: dict, required_names: tuple[str, ...]) -> bool:
@@ -704,7 +775,10 @@ def _missing_required_characters(data: dict, required_names: tuple[str, ...]) ->
     return any(n not in card_names for n in required_names)
 
 
-def _find_character_field_repairs(data: dict) -> dict[int, tuple[str, ...]]:
+def _find_character_field_repairs(
+    data: dict,
+    protected_name_indexes: set[int] | None = None,
+) -> dict[int, tuple[str, ...]]:
     """인물 카드 전체를 갈아끼우지 않고 고칠 이름·외형 필드를 찾는다.
 
     이름은 빈값·공백·비문자열과 앞 카드에 이미 나온 중복을 잡는다. 외형은 이미지
@@ -714,8 +788,8 @@ def _find_character_field_repairs(data: dict) -> dict[int, tuple[str, ...]]:
     if not isinstance(cards, list):
         return {}
 
-    repairs: dict[int, tuple[str, ...]] = {}
-    seen_names: set[str] = set()
+    fields_by_index: dict[int, list[str]] = {}
+    name_groups: dict[str, list[int]] = {}
     for index, raw in enumerate(cards):
         if not isinstance(raw, dict):
             continue  # 잘못된 카드 객체는 기존 character_setting 블록 재호출이 맡는다
@@ -726,10 +800,7 @@ def _find_character_field_repairs(data: dict) -> dict[int, tuple[str, ...]]:
             fields.append("name")
         else:
             normalized = unicodedata.normalize("NFC", name.strip()).casefold()
-            if normalized in seen_names:
-                fields.append("name")
-            else:
-                seen_names.add(normalized)
+            name_groups.setdefault(normalized, []).append(index)
 
         for field_name in _CHARACTER_APPEARANCE_FIELDS:
             value = raw.get(field_name)
@@ -737,8 +808,22 @@ def _find_character_field_repairs(data: dict) -> dict[int, tuple[str, ...]]:
                 fields.append(field_name)
 
         if fields:
-            repairs[index] = tuple(fields)
-    return repairs
+            fields_by_index[index] = fields
+
+    protected = protected_name_indexes or set()
+    for indexes in name_groups.values():
+        if len(indexes) < 2:
+            continue
+        protected_duplicates = [index for index in indexes if index in protected]
+        keep = protected_duplicates[0] if protected_duplicates else indexes[0]
+        for index in indexes:
+            if index == keep:
+                continue
+            fields = fields_by_index.setdefault(index, [])
+            if "name" not in fields:
+                fields.insert(0, "name")
+
+    return {index: tuple(fields) for index, fields in fields_by_index.items()}
 
 
 def _merge_character_field_repairs(
@@ -870,6 +955,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     )
     _inject_genre(data, request.genre_tags)
     _inject_protagonist(data, request.protagonist)
+    _inject_supporting_character_names(data, request.supporting_characters)
 
     # 토큰은 본호출+재호출을 합산하고, model은 본호출 응답값을 쓴다(로깅 메타).
     input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
@@ -879,9 +965,15 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
 
     def _current_issues() -> tuple[list[str], dict[int, tuple[str, ...]]]:
         found = _find_missing_keys(data)
+        if (
+            _input_character_ids_incomplete(data, len(request.supporting_characters))
+            and _CHARACTER_CARDS_PATH not in found
+        ):
+            found.append(_CHARACTER_CARDS_PATH)
         if _missing_required_characters(data, required_names) and _CHARACTER_CARDS_PATH not in found:
             found.append(_CHARACTER_CARDS_PATH)
-        character_fields = _find_character_field_repairs(data)
+        protected_indexes = _input_character_indexes(data, len(request.supporting_characters))
+        character_fields = _find_character_field_repairs(data, protected_indexes)
         # 카드 블록을 통째로 다시 받는 차수에는 기존 index가 무효가 되므로 필드 수정을 함께 요청하지 않는다.
         if "character_setting" in {_block_of(path) for path in found}:
             character_fields = {}
@@ -925,6 +1017,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         _merge_character_field_repairs(data, refill, character_fields)
         _inject_genre(data, request.genre_tags)
         _inject_protagonist(data, request.protagonist)
+        _inject_supporting_character_names(data, request.supporting_characters)
         missing, character_fields = _current_issues()
     logger.info(
         "compile 완료: LLM 호출 %d회(첫 1 + 재호출 %d), 최종 블록=%s, 최종 인물필드=%s",
@@ -969,6 +1062,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         ) from exc
 
     _clear_unresolved_appearance_fields(data, character_fields)
+    _remove_input_character_ids(data)
 
     try:
         spec = StorySpec(**data)

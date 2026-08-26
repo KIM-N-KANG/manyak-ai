@@ -63,6 +63,16 @@ def _format_supporting_characters(characters: list[CharacterInput]) -> str:
     return "\n".join(f"{i}) {_format_character(c)}" for i, c in enumerate(characters, 1))
 
 
+def _format_compile_supporting_characters(characters: list[CharacterInput]) -> str:
+    """컴파일 입력 인물에 중간 JSON에서 되돌려 받을 내부 식별자를 붙인다."""
+    if not characters:
+        return "(미정 — 이야기에 어울리는 주변 인물을 직접 구성하라)"
+    return "\n".join(
+        f"[input_character_id: input-{i}] {_format_character(c)}"
+        for i, c in enumerate(characters, 1)
+    )
+
+
 def build_storylines_prompt(
     genre_tags: list[str],
     protagonist: CharacterInput,
@@ -140,7 +150,7 @@ def build_compile_prompt(
             "추가정보": additional_info or "(없음)",
             "장르_태그": ", ".join(genre_tags),
             "주인공": _format_character(protagonist),
-            "주변_인물": _format_supporting_characters(supporting_characters),
+            "주변_인물": _format_compile_supporting_characters(supporting_characters),
             "로어북": _format_lorebooks(lorebooks or []),
         },
     )

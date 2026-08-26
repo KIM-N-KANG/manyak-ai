@@ -61,6 +61,7 @@ updated: 2026-08-26
 - `tone_setting`: 장면 전체의 서술 톤·분위기(개별 인물 말투 아님).
 - `length_ratio`: 묘사와 대사의 비중을 "묘사 N : 대사 M" 형식으로 적는다.
 - `character_setting`: **입력의 주변 인물은 빠짐없이 전원 카드로 만든다** — 이름이 있으면 `name`에 그 이름을 바꾸지 말고 그대로 쓰고, 성별·특징이 정해져 있으면 카드에 그대로 반영한다. 카드는 **최대 5명**이다. 입력 인물로 5명이 안 차면 이야기에 필요한 인물을 만들어 남는 자리를 채워도 되고, 그 밖의 단역은 `world_setting`의 배경으로 흡수한다. 각 인물은 `name`(이름·호칭), `gender`(성별 — **"남성" 또는 "여성"으로만** 쓴다. 입력에 성별이 있으면 그대로, (미정)이면 이야기에 어울리게 정한다), `personality`(성격), `tone`(말투), `motivation`(원하는 것), `attitude_to_user`(주인공을 대하는 **초기** 태도)를 채운다. 모든 카드의 `name`은 비어 있지 않고 서로 달라야 한다. 인물마다 말투·성격이 서로 구분되게 한다.
+  - 입력 주변 인물 앞의 `[input_character_id: input-N]`은 그 인물을 식별하는 내부 표시다. 해당 인물 카드의 `input_character_id`에 같은 값을 그대로 넣는다. 직접 만든 추가 인물은 `input_character_id`를 `null`로 둔다. 이 값은 이름이 바뀌어도 입력 인물을 찾는 기준이므로 다른 카드로 옮기거나 바꾸지 않는다.
   - **외형 필드 6개**도 함께 채운다. 이 필드는 인물 이미지를 그리는 데 쓰인다. 이미지 모델이 그대로 그릴 수 있는 **시각 묘사로만** 쓴다. 감정·성격·관계·서사 같은 추상적 표현을 쓰지 않는다.
     - (X) "냉혹한 눈빛", "배신의 흔적", "슬픈 분위기"
     - (O) "가늘고 올라간 눈매", "목에서 쇄골까지 이어지는 화상 흉터"
@@ -118,7 +119,19 @@ updated: 2026-08-26
 
 ### 출력 형식
 
-반드시 아래 JSON 구조만 반환한다. 설명, 머리말, 코드 펜스를 절대 포함하지 않는다.
+일반 최초 호출에서는 반드시 아래 전체 JSON 구조만 반환한다.
+
+사용자 메시지가 직전 결과의 일부만 고치는 **부분 재호출**이면 전체 JSON 구조를 반환하지 않는다. 요청받은 최상위 블록만 반환하고, 인물 필드 수정 요청이 있으면 다음 형식의 `character_updates`를 함께 반환한다. 각 항목에는 요청받은 `index`와 필드만 넣고 `input_character_id`는 수정하지 않는다.
+
+예시:
+
+{
+  "character_updates": [
+    { "index": 0, "hair": "긴 검은 생머리" }
+  ]
+}
+
+일반 호출과 부분 재호출 모두 설명, 머리말, 코드 펜스를 절대 포함하지 않는다.
 - 모든 값은 한국어로 쓴다. 중국어·일본어를 비롯한 외국어는 단 한 글자도 섞지 않는다. 단 입력 인물 이름은 예외다 — 외국어 이름이어도 번역·음차하지 말고 입력 그대로 쓴다.
 - 여러 문장으로 이루어진 서술형 값(`world_setting`, `plot_setting`의 `premise`·`conflict`, `rule_setting`, `tone_setting`, `character_setting` 각 항목의 `personality`·`motivation`·`attitude_to_user`, `user_role_setting`의 `background`·`personality`, `start.prologue`·`start_situation` 등)은 **각 문장이 끝날 때마다 이중 개행(`\n\n`)하여 한 문장씩 출력하고, 문장 사이에 빈 줄을 하나 둔다.** 즉 `문장1.\n\n문장2.\n\n문장3.` 형태로 쓴다. 한 문장짜리 짧은 값(`name`, `length_ratio` 등)은 그대로 둔다.
 
@@ -126,7 +139,7 @@ updated: 2026-08-26
 
 - 서술형 값이 한 문장마다 이중 개행(`\n\n`)으로 구분되어, 문장 사이에 빈 줄이 하나씩 있는가?
 - 일상에서 안 쓰는 어려운 한자어·영어 직역투(번역체)나, 관형어를 3개 이상 쌓은 명사 더미로 읽기 힘든 곳은 없는가? 웹소설 독자가 바로 읽을 쉬운 말·자연스러운 어순인가?
-- 입력의 주변 인물이 빠짐없이 `character_setting` 카드에 있고, 이름 있는 인물은 그 이름 그대로인가?
+- 입력의 주변 인물이 빠짐없이 `character_setting` 카드에 있고, 각 카드의 `input_character_id`가 입력 표시와 정확히 같으며, 이름 있는 인물은 그 이름 그대로인가?
 - 모든 인물 카드와 주인공의 `gender`가 "남성" 또는 "여성"으로 채워져 있고, 입력에 성별이 있는 인물은 그 값 그대로인가?
 - 모든 인물 카드의 외형 6필드(`age`, `body`, `face`, `hair`, `outfit`, `visual_identity`)가 채워져 있는가? `age`와 `body`는 정해진 선택지 중 하나인가? 외형 묘사에 감정·성격·서사 같은 추상적 표현이 섞이지 않았는가? 인물 간 `face`·`hair`·`visual_identity`가 서로 구분되는가? 여성 인물이 2명 이상이면 최소 1명이 "글래머"인가?
 - 주요 사건이 3~5개이고, 각 `key_sentence`가 세계 묘사가 아니라 **사용자 시점의 행동·관심**("사용자가 ~한다")으로 쓰였으며 직관적인가?
@@ -146,7 +159,7 @@ updated: 2026-08-26
     "tone_setting": "...",
     "length_ratio": "...",
     "character_setting": [
-      { "name": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
+      { "input_character_id": "input-1", "name": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
     ],
     "user_role_setting": { "name": "...", "gender": "...", "role": "...", "background": "...", "personality": "...", "preference": "" }
   },

@@ -16,6 +16,7 @@
     "length_ratio": "묘사 6 : 대사 4",
     "character_setting": [
       {
+        "input_character_id": "input-1",
         "name": "레이",
         "gender": "남성",
         "personality": "충직하지만 원칙주의자라, 옳음과 생존이 충돌할 때 갈등한다.",
