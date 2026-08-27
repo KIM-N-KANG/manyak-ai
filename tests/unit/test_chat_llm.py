@@ -284,17 +284,20 @@ async def test_excess_inner_whitespace_is_not_a_label_on_either_side(mock_stream
     assert _strip_speaker_bold("**  세린  **  : 응") == "세린: 응"
 
 
-async def test_indented_label_keeps_indent_before_marker(mock_stream) -> None:
-    mock_stream(["  세린: 들어와."])
+async def test_indented_label_is_detected_and_indent_stays_on_dialogue_line(mock_stream) -> None:
+    # 들여쓴 라벨도 감지한다. 마커는 대사 줄 위 별도 줄에 오고, 들여쓰기는 대사 줄에 남는다.
+    # 첫 줄만은 완료 본문이 strip되므로 앞 공백이 사라진다(둘째 줄부터는 남는다).
+    mock_stream(["*문이 열린다.*\n  세린: 들어와."])
     events = [
         event
         async for event in stream_chat_turn([], character_images=_character_images())
     ]
     completed = next(event for event in events if event["event"] == "completed")
     assert _image_names(events) == ["세린"]
-    assert _visible(events) == "  세린: 들어와."
-    # 완료 본문은 strip되므로 앞 공백이 사라지고 마커가 라벨 바로 앞에 온다.
-    assert completed["ai_output"] == "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 들어와."
+    assert _visible(events) == "*문이 열린다.*\n  세린: 들어와."
+    assert completed["ai_output"] == (
+        "*문이 열린다.*\n[[세린:https://cdn.example.com/serin.webp]]\n\n  세린: 들어와."
+    )
 
 
 async def test_empty_mapping_name_never_matches(mock_stream) -> None:
@@ -308,8 +311,6 @@ async def test_empty_mapping_name_never_matches(mock_stream) -> None:
 def test_line_head_is_released_without_waiting_for_a_colon() -> None:
     # 줄머리를 붙잡는 시간은 짧다. 등록된 이름의 앞글자와 다른 줄은 그 글자에서, 지문은
     # 둘째 글자에서, 볼드 후보는 상한에서 원문으로 나간다. 콜론까지 기다리지 않는다.
-    parser = chat_llm._SpeakerLabelStreamParser(_character_images())
-
     def first_release(line: str) -> int:
         """한 글자씩 먹였을 때 몇 글자째에 처음 token이 나가는지."""
         p = chat_llm._SpeakerLabelStreamParser(_character_images())
@@ -323,7 +324,6 @@ def test_line_head_is_released_without_waiting_for_a_colon() -> None:
     assert first_release("세린은 말이 없었다.") == 3  # '세린'까지 붙잡다 '은'에서 풀림
     limit = chat_llm._LABEL_BUFFER_MAX_CHARS
     assert first_release("**" + "강" * 45) == limit + 1
-    assert parser.flush() == []
 
 
 async def test_stream_flushes_pending_line_head_before_error_and_keeps_sent_image(

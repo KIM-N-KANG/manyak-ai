@@ -235,7 +235,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 >
 > **통글 슬롯 = 통째 삽입 (확정).** 매 턴 런타임 조립(B)은 각 통글 필드를 대응 슬롯에 **통째로 삽입**한다 — 하위 키 분해·재분석·LLM이 필요 없다. 컴파일(A-1)에서 세분 JSON의 필수 키를 검증한 뒤 `story_compile_render`가 이미 레이어별 통글로 조립해 두므로(세계관+전제+갈등→`world_setting`, 전개규칙+문체톤+분량배분→`rule_setting`, 인물 카드 반복→`character_setting`, 주인공→`user_role_setting`), 조립 시 슬롯 채움은 순수 치환이다. 이로써 "슬롯 치환 = LLM 없는 결정적 치환" 원칙이 **통글 단위**로 성립한다.
 >
-> **`story_settings` 밖의 재료.** `{{장르}}`는 `stories.genre`, `{{start_setting}}`은 `story_start_settings`에서 온다. 사건·엔딩 슬롯은 매 턴 요청의 진행 재료에서 오며, `{{character_image_names}}`는 요청 `character_images[]`에서 URL을 버리고 이름만 꺼내 만든다.
+> **`story_settings` 밖의 재료.** `{{장르}}`는 `stories.genre`, `{{start_setting}}`은 `story_start_settings`에서 온다. 사건·엔딩 슬롯은 매 턴 요청의 진행 재료에서 온다. 요청 `character_images[]`는 슬롯 재료가 아니다(프롬프트에 넣지 않음, KNK-1002).
 >
 > **레이어 직교성은 통글 안에서 유지 (확정).** 전개 규칙·서술 톤·분량 배분은 1번 명세서의 스타일 직교 분리(원칙 0 — STORY 안에서도 서로 다른 하위 책임)에 따라 구분되지만, **저장·슬롯 단위로는 `rule_setting` 한 통글**로 합친다(`# 전개 규칙` / `# 문체 톤` / `# 분량 배분` 헤더로 통글 내부에서 구분). 세계관·전제·갈등도 `world_setting` 한 통글에 헤더로 구분해 담는다. 직교성은 별도 슬롯이 아니라 **통글 내부 섹션 헤더**로 보존된다. STORY 템플릿은 이 통글 2개(+장르) 슬롯으로 작성한다(8절).
 >
@@ -608,7 +608,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 5. 입력 스키마 정의 · 6. `PromptCompiler` 구현
 
 **Phase 3 — 런타임 조립기 + 채팅 API (시점 B)** (4절)
-7. `PromptAssembler`(받은 재료 → 슬롯 치환 + 6레이어 조립) · 8. PHI 내부 순서 보장 · 9. `ChatProvider` 연동(본문 `stream=True`) · 10. `CHOICES-TEMPLATE.md` + 선택지 생성기(별도 JSON 호출 → 코드가 정확히 3개 보장, 2.5) · 11. SSE 채팅 턴 엔드포인트(`token`·`character_image`·`completed`·`error`·`ping`) — 처음엔 completed에 선택지 3개를 합산 발행했고, 이후 KNK-625에서 선택지를 전용 엔드포인트 `/chat/choices`로 분리(completed의 choices는 하위호환 빈 배열). `character_image`는 KNK-991에서 추가했다. 유효한 내부 이미지 태그마다 인물 이름과 URL을 전달하며, 해당 태그는 `token`에 노출하지 않는다. `ping`은 KNK-750에서 추가했다 — 본문이 끝난 뒤 판정을 기다리는 구간에 프레임이 하나도 안 나가면 백엔드의 이벤트 간 상한(60초)이 정상 턴을 끊어서, 그 시계를 되돌리려고 주기적으로 내보내는 빈 신호다(백엔드는 모르는 이벤트를 무시하므로 백엔드 변경 없이 동작한다)
+7. `PromptAssembler`(받은 재료 → 슬롯 치환 + 6레이어 조립) · 8. PHI 내부 순서 보장 · 9. `ChatProvider` 연동(본문 `stream=True`) · 10. `CHOICES-TEMPLATE.md` + 선택지 생성기(별도 JSON 호출 → 코드가 정확히 3개 보장, 2.5) · 11. SSE 채팅 턴 엔드포인트(`token`·`character_image`·`completed`·`error`·`ping`) — 처음엔 completed에 선택지 3개를 합산 발행했고, 이후 KNK-625에서 선택지를 전용 엔드포인트 `/chat/choices`로 분리(completed의 choices는 하위호환 빈 배열). `character_image`는 KNK-991에서 추가했고(당시엔 LLM 태그 기준), KNK-1002에서 AI 서버가 `인물명:` 라벨을 직접 감지하는 방식으로 바꿨다 — 매핑에 있는 인물의 라벨마다 인물 이름과 URL을 전달하며, 라벨 글자는 `token`으로 그대로 나간다(3.4 흐름 8번). `ping`은 KNK-750에서 추가했다 — 본문이 끝난 뒤 판정을 기다리는 구간에 프레임이 하나도 안 나가면 백엔드의 이벤트 간 상한(60초)이 정상 턴을 끊어서, 그 시계를 되돌리려고 주기적으로 내보내는 빈 신호다(백엔드는 모르는 이벤트를 무시하므로 백엔드 변경 없이 동작한다)
 
 **Phase 4 — 메모리 요약 생성 (백엔드 주도, 별개 기능)** (5절)
 11. 백엔드가 History → `summary`로 요약·갱신해 다음 턴 request로 전달한다. AI는 받은 summary를 참조만 하므로 조립기 구조는 그대로 두고 Depth에 채워 넣기만 한다(참조와 생성 분리).
