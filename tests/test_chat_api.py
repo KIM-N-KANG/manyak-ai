@@ -132,6 +132,7 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
             {
                 "event": EVENT_CHARACTER_IMAGE,
                 "name": "세린",
+                "image_name": "세린_기본",
                 "image_url": "https://cdn.example.com/serin.webp",
             },
             {
@@ -142,6 +143,7 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
                 "character_images": [
                     {
                         "name": "세린",
+                        "image_name": "세린_기본",
                         "image_url": "https://cdn.example.com/serin.webp",
                     }
                 ],
@@ -152,14 +154,20 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
     )
     payload = _payload()
     payload["character_images"] = [
-        {"name": "세린", "image_url": "https://cdn.example.com/serin.webp"}
+        {
+            "name": "세린",
+            "image_name": "세린_기본",
+            "image_url": "https://cdn.example.com/serin.webp",
+        }
     ]
 
     response = await client.post("/api/v1/chat/turns", json=payload)
 
+    # 와이어 키는 camelCase — imageName·imageUrl(KNK-1026).
     assert response.status_code == 200
     assert _data_of(response.text, EVENT_CHARACTER_IMAGE) == {
         "name": "세린",
+        "imageName": "세린_기본",
         "imageUrl": "https://cdn.example.com/serin.webp",
     }
     completed = _data_of(response.text, "completed")
@@ -169,6 +177,7 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
     assert completed["characterImages"] == [
         {
             "name": "세린",
+            "imageName": "세린_기본",
             "imageUrl": "https://cdn.example.com/serin.webp",
         }
     ]

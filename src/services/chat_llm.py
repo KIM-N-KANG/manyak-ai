@@ -7,7 +7,7 @@
 
 이벤트(dict)를 async generator로 낸다. SSE 와이어 변환·선택지 합치기는 엔드포인트(chat.py)가 맡는다.
 - {"event": "token",     "text": ...}
-- {"event": "character_image", "name": ..., "image_url": ...}  — 이미지 보유 인물의 `인물명:` 줄 직전(KNK-1005)
+- {"event": "character_image", "name": ..., "image_name": ..., "image_url": ...}  — 이미지 보유 인물의 `인물명:` 줄 직전(KNK-1005·1026)
 - {"event": "completed", "ai_output": ..., "character_images": [...], "model": ..., "provider": ..., "input_tokens": ..., "output_tokens": ...}
 - {"event": "error",     "code": ..., "message": ...}
 """
@@ -97,6 +97,19 @@ def _images_by_name(
     return {image.name: image for image in character_images if image.name}
 
 
+def _image_payload(image: CharacterImageMapping) -> dict:
+    """이벤트와 완료 목록에 같은 모양으로 싣는 이미지 정보(KNK-1026).
+
+    실시간 이벤트와 저장 목록이 한 함수를 쓰므로 필드가 어긋나지 않는다. 이미지 이름은
+    요청에서 받은 값을 그대로 돌려주고, 비어 있으면 빈 값 그대로다.
+    """
+    return {
+        "name": image.name,
+        "image_name": image.image_name,
+        "image_url": image.image_url,
+    }
+
+
 def _speaker_label_re(names: "Iterable[str]") -> "re.Pattern[str]":
     """이미지 보유 인물의 평문 인물명 라벨(`이름:`)을 줄머리에서 찾는 정규식.
 
@@ -118,7 +131,7 @@ def _insert_storage_markers(
 
     def replace(match: "re.Match[str]") -> str:
         image = images[match.group(2)]
-        displayed.append({"name": image.name, "image_url": image.image_url})
+        displayed.append(_image_payload(image))
         # 마커는 대사 줄 위에 빈 줄을 두고 따로 둔다 — 프론트가 마커 줄을 통째로 이미지로
         # 바꾸기 쉽게(프론트 요청, KNK-1002). 원래 들여쓰기는 대사 줄에 그대로 남긴다.
         # 마커에는 URL만 담는다(KNK-1025) — 인물 이름은 URL 파일명과 completed의
@@ -173,13 +186,7 @@ class _SpeakerLabelStreamParser:
                 image = self._images.get(name)
                 if image is not None:
                     emit_visible()
-                    events.append(
-                        {
-                            "event": EVENT_CHARACTER_IMAGE,
-                            "name": image.name,
-                            "image_url": image.image_url,
-                        }
-                    )
+                    events.append({"event": EVENT_CHARACTER_IMAGE, **_image_payload(image)})
                 visible.append(label_text)
                 self._buffer = ""
                 self._collecting = False

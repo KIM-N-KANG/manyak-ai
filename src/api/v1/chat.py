@@ -128,7 +128,9 @@ async def _event_stream(
                 yield _sse(name, TokenData(text=ev["text"]).model_dump())
             elif name == EVENT_CHARACTER_IMAGE:
                 payload = CharacterImageData(
-                    name=ev["name"], image_url=ev["image_url"]
+                    name=ev["name"],
+                    image_name=ev["image_name"],
+                    image_url=ev["image_url"],
                 ).model_dump(by_alias=True)
                 yield _sse(name, payload)
             elif name == EVENT_COMPLETED:
