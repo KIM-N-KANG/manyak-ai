@@ -21,6 +21,13 @@ def test_strip_speaker_bold_keeps_emphasis() -> None:
     assert _strip_speaker_bold("그것은 **중요한** 단서다") == "그것은 **중요한** 단서다"
 
 
+def test_strip_speaker_bold_does_not_cross_lines() -> None:
+    # 볼드 라벨 뒤 줄바꿈 너머의 콜론을 같은 라벨로 묶지 않는다(KNK-1005 퍼징에서 발견 —
+    # 옛 정규식은 `\s*`로 줄을 건너 `세린:: 콜론시작`을 만들었고 스트리밍 파서와 어긋났다).
+    assert _strip_speaker_bold("**세린:**\n: 콜론시작") == "세린: \n: 콜론시작"
+    assert _strip_speaker_bold("**세린**\n: 다음 줄") == "**세린**\n: 다음 줄"
+
+
 def test_strip_speaker_bold_multiline() -> None:
     text = "*등불이 흔들린다.*\n**설하:** 늦었군요.\n**장천**: 거래합시다."
     expected = "*등불이 흔들린다.*\n설하: 늦었군요.\n장천: 거래합시다."
@@ -93,37 +100,17 @@ async def test_stream_strips_speaker_bold_in_completed(mock_stream) -> None:
     assert "설하: 늦었군요." in completed["ai_output"]
 
 
-async def test_stream_strips_speaker_bold_after_character_tag_in_completed(
-    mock_stream,
-) -> None:
-    mock_stream(
-        [
-            "*문이 열린다.*\n"
-            "[character:세린]**세린:** 기다렸어?\n"
-            "**레이:** 늦었네."
-        ]
-    )
-
-    events = [
-        event
-        async for event in stream_chat_turn([], character_images=_character_images())
-    ]
-    completed = next(event for event in events if event["event"] == "completed")
-
-    assert completed["ai_output"] == (
-        "*문이 열린다.*\n"
-        "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
-        "레이: 늦었네."
-    )
-    assert completed["character_images"] == [
-        {
-            "name": "세린",
-            "image_url": "https://cdn.example.com/serin.webp",
-        }
-    ]
+async def test_stream_strips_speaker_bold_in_tokens_too(mock_stream) -> None:
+    # 실시간 token에서도 볼드를 떼 저장 본문과 같은 글자가 화면에 나간다(KNK-1005).
+    mock_stream(["*등불이 흔들린다.*\n**설하:** 늦었군요.\n**장천**: 거래합시다."])
+    events = [e async for e in stream_chat_turn([])]
+    tokens = "".join(e["text"] for e in events if e["event"] == "token")
+    completed = next(e for e in events if e["event"] == "completed")
+    assert tokens == "*등불이 흔들린다.*\n설하: 늦었군요.\n장천: 거래합시다."
+    assert completed["ai_output"] == tokens
 
 
-# ── 인물 이미지 태그 스트림 변환(KNK-991) ─────────────────────────
+# ── 인물명 라벨 감지 → 이미지 이벤트·저장 마커(KNK-1005) ─────────────────────
 def _character_images() -> list[CharacterImageMapping]:
     return [
         CharacterImageMapping(name="세린", image_url="https://cdn.example.com/serin.webp"),
@@ -131,12 +118,24 @@ def _character_images() -> list[CharacterImageMapping]:
     ]
 
 
-async def test_stream_converts_every_valid_tag_across_chunk_boundaries(mock_stream) -> None:
+def _image_names(events: list[dict]) -> list[str]:
+    return [e["name"] for e in events if e["event"] == "character_image"]
+
+
+def _visible(events: list[dict]) -> str:
+    return "".join(e["text"] for e in events if e["event"] == "token")
+
+
+async def test_stream_emits_image_before_every_label_across_chunk_boundaries(
+    mock_stream,
+) -> None:
+    # 태그 없이 `인물명:` 줄만으로 이미지가 뜨고, 같은 인물이 다시 말하면 다시 뜬다.
+    # 라벨이 델타 경계에서 쪼개져도 잡는다.
     mock_stream(
         [
-            "*문이 열린다.*\n[char",
-            "acter: 세린 ]세린: 기다렸어?\n[character:레이]",
-            "레이: 들어가자.\n[character:세린]세린: 다시 확인할게.",
+            "*문이 열린다.*\n세",
+            "린: 기다렸어?\n레이",
+            ": 들어가자.\n세린: 다시 확인할게.",
         ]
     )
 
@@ -144,31 +143,12 @@ async def test_stream_converts_every_valid_tag_across_chunk_boundaries(mock_stre
         event
         async for event in stream_chat_turn([], character_images=_character_images())
     ]
-    visible = "".join(event["text"] for event in events if event["event"] == "token")
-    images = [event for event in events if event["event"] == "character_image"]
     completed = next(event for event in events if event["event"] == "completed")
 
-    assert visible == (
-        "*문이 열린다.*\n세린: 기다렸어?\n"
-        "레이: 들어가자.\n세린: 다시 확인할게."
+    assert _visible(events) == (
+        "*문이 열린다.*\n세린: 기다렸어?\n레이: 들어가자.\n세린: 다시 확인할게."
     )
-    assert images == [
-        {
-            "event": "character_image",
-            "name": "세린",
-            "image_url": "https://cdn.example.com/serin.webp",
-        },
-        {
-            "event": "character_image",
-            "name": "레이",
-            "image_url": "https://cdn.example.com/rei.webp",
-        },
-        {
-            "event": "character_image",
-            "name": "세린",
-            "image_url": "https://cdn.example.com/serin.webp",
-        },
-    ]
+    assert _image_names(events) == ["세린", "레이", "세린"]
     assert completed["ai_output"] == (
         "*문이 열린다.*\n"
         "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
@@ -176,120 +156,177 @@ async def test_stream_converts_every_valid_tag_across_chunk_boundaries(mock_stre
         "[[세린:https://cdn.example.com/serin.webp]]세린: 다시 확인할게."
     )
     assert completed["character_images"] == [
-        {
-            "name": "세린",
-            "image_url": "https://cdn.example.com/serin.webp",
-        },
-        {
-            "name": "레이",
-            "image_url": "https://cdn.example.com/rei.webp",
-        },
-        {
-            "name": "세린",
-            "image_url": "https://cdn.example.com/serin.webp",
-        },
+        {"name": "세린", "image_url": "https://cdn.example.com/serin.webp"},
+        {"name": "레이", "image_url": "https://cdn.example.com/rei.webp"},
+        {"name": "세린", "image_url": "https://cdn.example.com/serin.webp"},
     ]
 
 
-async def test_stream_exposes_unmapped_empty_and_unclosed_tags(mock_stream) -> None:
-    unclosed = "[character:세린" + "x" * 30
-    raw = f"[character:미라]미라: 안녕.\n[character:]빈 태그\n{unclosed} 끝"
-    mock_stream([raw[:18], raw[18:41], raw[41:]])
-
+async def test_stream_image_event_precedes_the_label_token(mock_stream) -> None:
+    # 이미지 이벤트는 라벨 글자가 담긴 token보다 먼저 나간다 — 프론트가 그 자리에 이미지를 그린다.
+    mock_stream(["*지문*\n세린: 왔어."])
     events = [
         event
         async for event in stream_chat_turn([], character_images=_character_images())
     ]
-    visible = "".join(event["text"] for event in events if event["event"] == "token")
+    kinds = [e["event"] for e in events]
+    assert kinds == ["token", "character_image", "token", "completed"]
+    assert events[0]["text"] == "*지문*\n"
+    assert events[2]["text"] == "세린: 왔어."
+
+
+async def test_bold_label_still_triggers_image_and_is_normalized(mock_stream) -> None:
+    # 모델이 이름을 볼드로 감싸도(두 형태 모두) 이미지가 뜨고 화면·저장 모두 평문이 된다.
+    mock_stream(["**세린:** 기다렸어?\n**레이**:   늦었네.\n**미라:** 안녕."])
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
     completed = next(event for event in events if event["event"] == "completed")
 
-    assert visible == raw
-    assert not any(event["event"] == "character_image" for event in events)
-    assert completed["ai_output"] == raw
-    assert completed["character_images"] == []
-
-
-async def test_stream_exposes_empty_tag_even_if_mapping_name_is_empty(mock_stream) -> None:
-    mock_stream(["[character:]빈 태그"])
-    images = [
-        CharacterImageMapping(name="", image_url="https://cdn.example.com/empty.webp")
-    ]
-
-    events = [
-        event async for event in stream_chat_turn([], character_images=images)
-    ]
-    visible = "".join(event["text"] for event in events if event["event"] == "token")
-
-    assert visible == "[character:]빈 태그"
-    assert not any(event["event"] == "character_image" for event in events)
-
-
-async def test_stream_restarts_tag_detection_at_nested_open_bracket(mock_stream) -> None:
-    mock_stream(["[여기 [char", "acter:세린]세린: 찾았어."])
-
-    events = [
-        event
-        async for event in stream_chat_turn([], character_images=_character_images())
-    ]
-    visible = "".join(event["text"] for event in events if event["event"] == "token")
-    images = [event for event in events if event["event"] == "character_image"]
-
-    assert visible == "[여기 세린: 찾았어."
-    assert [image["name"] for image in images] == ["세린"]
-
-
-async def test_completed_recovers_valid_tag_inside_broken_character_tag(
-    mock_stream,
-) -> None:
-    raw = "[character:잘못됨[character:세린]세린: 왔어."
-    mock_stream([raw])
-
-    events = [
-        event
-        async for event in stream_chat_turn([], character_images=_character_images())
-    ]
-    visible = "".join(event["text"] for event in events if event["event"] == "token")
-    images = [event for event in events if event["event"] == "character_image"]
-    completed = next(event for event in events if event["event"] == "completed")
-
-    assert visible == "[character:잘못됨세린: 왔어."
-    assert [image["name"] for image in images] == ["세린"]
+    assert _visible(events) == "세린: 기다렸어?\n레이: 늦었네.\n미라: 안녕."
+    assert _image_names(events) == ["세린", "레이"]
     assert completed["ai_output"] == (
-        "[character:잘못됨"
-        "[[세린:https://cdn.example.com/serin.webp]]세린: 왔어."
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 기다렸어?\n"
+        "[[레이:https://cdn.example.com/rei.webp]]레이: 늦었네.\n"
+        "미라: 안녕."
     )
-    assert completed["character_images"] == [
-        {
-            "name": "세린",
-            "image_url": "https://cdn.example.com/serin.webp",
-        }
-    ]
+    assert [i["name"] for i in completed["character_images"]] == ["세린", "레이"]
 
 
-async def test_stream_and_completed_both_reject_tag_over_buffer_limit(mock_stream) -> None:
-    long_name = "가" * 20
-    raw = f"[character:{long_name}]{long_name}: 늦었어."
-    mock_stream([raw])
-    images = [
-        CharacterImageMapping(
-            name=long_name,
-            image_url="https://cdn.example.com/long-name.webp",
-        )
-    ]
-
+async def test_label_must_match_a_registered_name_exactly(mock_stream) -> None:
+    # 이미지가 없는 인물, 지문 속 이름, 이름으로 시작하는 서술, 줄 중간의 `이름:`은 이미지가 아니다.
+    mock_stream(
+        [
+            "미라: 안녕.\n*세린이 웃는다.*\n세린은 말이 없다.\n"
+            "그때 세린: 이라고 적힌 쪽지가 보였다.\n세린아: 부르는 소리."
+        ]
+    )
     events = [
-        event async for event in stream_chat_turn([], character_images=images)
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
     ]
-    visible = "".join(event["text"] for event in events if event["event"] == "token")
     completed = next(event for event in events if event["event"] == "completed")
 
-    assert visible == raw
-    assert not any(event["event"] == "character_image" for event in events)
+    raw = (
+        "미라: 안녕.\n*세린이 웃는다.*\n세린은 말이 없다.\n"
+        "그때 세린: 이라고 적힌 쪽지가 보였다.\n세린아: 부르는 소리."
+    )
+    assert _visible(events) == raw
+    assert _image_names(events) == []
     assert completed["ai_output"] == raw
     assert completed["character_images"] == []
 
 
-async def test_stream_flushes_pending_tag_before_error_and_keeps_sent_image(
+async def test_longer_registered_name_wins_over_its_prefix(mock_stream) -> None:
+    images = [
+        CharacterImageMapping(name="세린", image_url="https://cdn.example.com/serin.webp"),
+        CharacterImageMapping(name="세린아", image_url="https://cdn.example.com/serina.webp"),
+    ]
+    mock_stream(["세린아: 여기야.\n세린: 응."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert _image_names(events) == ["세린아", "세린"]
+    assert completed["ai_output"] == (
+        "[[세린아:https://cdn.example.com/serina.webp]]세린아: 여기야.\n"
+        "[[세린:https://cdn.example.com/serin.webp]]세린: 응."
+    )
+
+
+async def test_thirty_char_name_is_recognized_plain_and_bold(mock_stream) -> None:
+    # 이름 상한(30자)까지 평문·볼드 모두 잡는다 — 옛 볼드 정규식의 20자 제한을 없앴다.
+    long_name = "가" * 30
+    images = [
+        CharacterImageMapping(name=long_name, image_url="https://cdn.example.com/long.webp")
+    ]
+    mock_stream([f"{long_name}: 늦었어.\n**{long_name}:** 다시."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert _visible(events) == f"{long_name}: 늦었어.\n{long_name}: 다시."
+    assert _image_names(events) == [long_name, long_name]
+    assert completed["ai_output"] == (
+        f"[[{long_name}:https://cdn.example.com/long.webp]]{long_name}: 늦었어.\n"
+        f"[[{long_name}:https://cdn.example.com/long.webp]]{long_name}: 다시."
+    )
+
+
+async def test_deep_indent_does_not_count_toward_the_buffer_limit(mock_stream) -> None:
+    # 리뷰 지적: 들여쓰기 11칸 + 30자 이름은 41자라 옛 상한(40)에서 실시간만 포기했다.
+    # 상한은 들여쓰기를 뺀 길이로 세므로 실시간·저장이 같은 줄을 잡는다.
+    long_name = "가" * 30
+    images = [CharacterImageMapping(name=long_name, image_url="https://cdn.example.com/long.webp")]
+    mock_stream([f"x\n{' ' * 11}{long_name}: 안녕."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert _image_names(events) == [long_name]
+    assert [i["name"] for i in completed["character_images"]] == [long_name]
+
+
+async def test_excess_inner_whitespace_is_not_a_label_on_either_side(mock_stream) -> None:
+    # 리뷰 지적: 옛 저장 정규식은 `**`와 이름 사이 공백에 제한이 없어 실시간(상한에서 포기)과
+    # 갈렸다. 라벨 안 공백은 양쪽 모두 최대 2칸이다.
+    raw = "**" + " " * 39 + "세린:**"
+    mock_stream([raw])
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert _visible(events) == raw
+    assert _image_names(events) == []
+    assert completed["ai_output"] == raw
+    assert completed["character_images"] == []
+    # 2칸까지는 양쪽 다 라벨이다.
+    assert _strip_speaker_bold("**  세린  **  : 응") == "세린: 응"
+
+
+async def test_indented_label_keeps_indent_before_marker(mock_stream) -> None:
+    mock_stream(["  세린: 들어와."])
+    events = [
+        event
+        async for event in stream_chat_turn([], character_images=_character_images())
+    ]
+    completed = next(event for event in events if event["event"] == "completed")
+    assert _image_names(events) == ["세린"]
+    assert _visible(events) == "  세린: 들어와."
+    # 완료 본문은 strip되므로 앞 공백이 사라지고 마커가 라벨 바로 앞에 온다.
+    assert completed["ai_output"] == "[[세린:https://cdn.example.com/serin.webp]]세린: 들어와."
+
+
+async def test_empty_mapping_name_never_matches(mock_stream) -> None:
+    images = [CharacterImageMapping(name="", image_url="https://cdn.example.com/empty.webp")]
+    mock_stream([": 콜론으로 시작하는 줄\n세린: 안녕."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    assert _image_names(events) == []
+    assert _visible(events) == ": 콜론으로 시작하는 줄\n세린: 안녕."
+
+
+def test_line_head_is_released_without_waiting_for_a_colon() -> None:
+    # 줄머리를 붙잡는 시간은 짧다. 등록된 이름의 앞글자와 다른 줄은 그 글자에서, 지문은
+    # 둘째 글자에서, 볼드 후보는 상한에서 원문으로 나간다. 콜론까지 기다리지 않는다.
+    parser = chat_llm._SpeakerLabelStreamParser(_character_images())
+
+    def first_release(line: str) -> int:
+        """한 글자씩 먹였을 때 몇 글자째에 처음 token이 나가는지."""
+        p = chat_llm._SpeakerLabelStreamParser(_character_images())
+        for i, ch in enumerate(line, start=1):
+            if p.feed(ch):
+                return i
+        return -1
+
+    assert first_release("문이 열린다.") == 1        # '문'은 어떤 이름의 앞글자도 아님
+    assert first_release("*지문이 길게 이어진다*") == 2
+    assert first_release("세린은 말이 없었다.") == 3  # '세린'까지 붙잡다 '은'에서 풀림
+    limit = chat_llm._LABEL_BUFFER_MAX_CHARS
+    assert first_release("**" + "강" * 45) == limit + 1
+    assert parser.flush() == []
+
+
+async def test_stream_flushes_pending_line_head_before_error_and_keeps_sent_image(
     monkeypatch, install_llm_sdk
 ) -> None:
     from openai import APIConnectionError
@@ -299,7 +336,7 @@ async def test_stream_flushes_pending_tag_before_error_and_keeps_sent_image(
 
     async def _create(**kwargs):
         return FakeStream(
-            [_FakeChunk("[character:세린]세린: 말한다.\n[character:미")],
+            [_FakeChunk("세린: 말한다.\n레")],
             error=APIConnectionError(request=request),
         )
 
@@ -317,7 +354,29 @@ async def test_stream_flushes_pending_tag_before_error_and_keeps_sent_image(
     ]
     assert events[0]["name"] == "세린"
     assert events[1]["text"] == "세린: 말한다.\n"
-    assert events[2]["text"] == "[character:미"
+    assert events[2]["text"] == "레"
+
+
+def test_stream_events_and_storage_markers_share_one_rule() -> None:
+    # 실시간 이벤트 목록과 완료 마커 목록은 같은 규칙에서 나오므로 어떤 본문에서도 개수·순서가 같다.
+    images = _character_images()
+    text = (
+        "*지문*\n**세린:** 하나.\n레이: 둘.\n미라: 셋.\n세린 : 넷.\n"
+        "  **레이**: 다섯.\n세린은 여섯.\n세린: 일곱."
+    )
+    parser = chat_llm._SpeakerLabelStreamParser(images)
+    streamed: list[dict] = []
+    for ch in text:  # 한 글자씩 — 가장 잘게 쪼개진 델타
+        streamed.extend(parser.feed(ch))
+    streamed.extend(parser.flush())
+
+    normalized = chat_llm._strip_speaker_bold(text)
+    stored, markers = chat_llm._insert_storage_markers(normalized, images)
+
+    assert _image_names(streamed) == [m["name"] for m in markers]
+    assert _image_names(streamed) == ["세린", "레이", "세린", "레이", "세린"]
+    assert _visible(streamed) == normalized
+    assert stored.count("[[") == len(markers)
 
 
 # ── 로깅 메타 재료 수집(KNK-243) — model·usage ───────────────────────────────
