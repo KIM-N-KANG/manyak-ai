@@ -263,13 +263,12 @@ def test_build_user_removes_character_image_syntax_from_history_and_output() -> 
             ]
         }
     )
-    ai_output = "[character:미라]미라: 나도 왔어."
+    ai_output = "미라: 나도 왔어."
 
     user = chat_choices._build_user(req, ai_output)
 
     assert "[[세린:" not in user
     assert "https://cdn.example.com/serin.webp" not in user
-    assert "[character:미라]" not in user
     assert "세린: 기다렸어?" in user
     assert "미라: 나도 왔어." in user
 

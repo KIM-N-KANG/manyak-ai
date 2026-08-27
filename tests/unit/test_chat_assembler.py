@@ -63,6 +63,7 @@ def test_message_order_and_roles() -> None:
 def test_history_removes_character_image_syntax_only_from_llm_copy() -> None:
     # 마커는 대사 줄 위에 빈 줄을 두고 따로 저장된다. 그 빈 줄까지 함께 지워야 LLM 입력이
     # 마커 없던 본문과 같아진다. 옛 모양(대사 옆에 붙은 마커)도 같이 지워진다.
+    # 옛 `[character:이름]` 태그는 더 지우지 않는다(KNK-1007) — 본문 글자로 그대로 남는다.
     stored = (
         "*문이 열린다.*\n\n"
         "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
@@ -73,7 +74,9 @@ def test_history_removes_character_image_syntax_only_from_llm_copy() -> None:
 
     messages = assemble(_request(history=history))
 
-    assert messages[1]["content"] == "*문이 열린다.*\n\n세린: 기다렸어?\n레이: 들어가자.\n미라: 나도 왔어."
+    assert messages[1]["content"] == (
+        "*문이 열린다.*\n\n세린: 기다렸어?\n레이: 들어가자.\n[character:미라]미라: 나도 왔어."
+    )
     assert history[0].content == stored
 
 
