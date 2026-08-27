@@ -241,7 +241,7 @@ class TargetMainEventOut(BaseModel):
 class CompletedData(BaseModel):
     """event: completed — 한 턴 응답 완료(본문 + 판정 메타).
 
-    - aiOutput: 본문(상황 묘사 + 인물 대사)과 `[[인물이름:URL]]` 저장 마커.
+    - aiOutput: 본문(상황 묘사 + 인물 대사)과 대사 줄 위 별도 줄의 `[[URL]]` 저장 마커.
       백엔드가 chatId·turnId를 더해 마커 포함 원문을 DB(history)에 저장한다.
     - characterImages: 저장 마커와 같은 순서의 인물 이미지 목록. 같은 인물이 다시
       말하면 같은 이미지도 다시 들어간다.

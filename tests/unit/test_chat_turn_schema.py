@@ -200,9 +200,9 @@ def test_character_images_serialize_in_display_order_with_duplicates() -> None:
     }
     completed = CompletedData(
         ai_output=(
-            "[[레이:https://cdn.example.com/characters/rei.webp]]레이: 들어가자.\n"
-            "[[세린:https://cdn.example.com/characters/serin.webp]]세린: 기다려.\n"
-            "[[레이:https://cdn.example.com/characters/rei.webp]]레이: 시간이 없어."
+            "[[https://cdn.example.com/characters/rei.webp]]\n\n레이: 들어가자.\n"
+            "[[https://cdn.example.com/characters/serin.webp]]\n\n세린: 기다려.\n"
+            "[[https://cdn.example.com/characters/rei.webp]]\n\n레이: 시간이 없어."
         ),
         character_images=[rei, serin, rei],
     ).model_dump(by_alias=True)

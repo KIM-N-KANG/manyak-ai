@@ -121,7 +121,9 @@ def _insert_storage_markers(
         displayed.append({"name": image.name, "image_url": image.image_url})
         # 마커는 대사 줄 위에 빈 줄을 두고 따로 둔다 — 프론트가 마커 줄을 통째로 이미지로
         # 바꾸기 쉽게(프론트 요청, KNK-1002). 원래 들여쓰기는 대사 줄에 그대로 남긴다.
-        return f"[[{image.name}:{image.image_url}]]\n\n{match.group(0)}"
+        # 마커에는 URL만 담는다(KNK-1025) — 인물 이름은 URL 파일명과 completed의
+        # character_images에 이미 있어 마커에 또 넣을 이유가 없다.
+        return f"[[{image.image_url}]]\n\n{match.group(0)}"
 
     return _speaker_label_re(images).sub(replace, text), displayed
 

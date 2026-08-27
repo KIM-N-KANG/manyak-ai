@@ -137,7 +137,7 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
             {
                 "event": "completed",
                 "ai_output": (
-                    "[[세린:https://cdn.example.com/serin.webp]]세린: 안녕."
+                    "[[https://cdn.example.com/serin.webp]]\n\n세린: 안녕."
                 ),
                 "character_images": [
                     {
@@ -164,7 +164,7 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
     }
     completed = _data_of(response.text, "completed")
     assert completed["aiOutput"] == (
-        "[[세린:https://cdn.example.com/serin.webp]]세린: 안녕."
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 안녕."
     )
     assert completed["characterImages"] == [
         {

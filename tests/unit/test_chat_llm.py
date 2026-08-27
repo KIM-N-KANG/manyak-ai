@@ -151,9 +151,9 @@ async def test_stream_emits_image_before_every_label_across_chunk_boundaries(
     assert _image_names(events) == ["세린", "레이", "세린"]
     assert completed["ai_output"] == (
         "*문이 열린다.*\n"
-        "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
-        "[[레이:https://cdn.example.com/rei.webp]]\n\n레이: 들어가자.\n"
-        "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 다시 확인할게."
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
+        "[[https://cdn.example.com/rei.webp]]\n\n레이: 들어가자.\n"
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 다시 확인할게."
     )
     assert completed["character_images"] == [
         {"name": "세린", "image_url": "https://cdn.example.com/serin.webp"},
@@ -187,8 +187,8 @@ async def test_bold_label_still_triggers_image_and_is_normalized(mock_stream) ->
     assert _visible(events) == "세린: 기다렸어?\n레이: 늦었네.\n미라: 안녕."
     assert _image_names(events) == ["세린", "레이"]
     assert completed["ai_output"] == (
-        "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
-        "[[레이:https://cdn.example.com/rei.webp]]\n\n레이: 늦었네.\n"
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
+        "[[https://cdn.example.com/rei.webp]]\n\n레이: 늦었네.\n"
         "미라: 안녕."
     )
     assert [i["name"] for i in completed["character_images"]] == ["세린", "레이"]
@@ -229,8 +229,8 @@ async def test_longer_registered_name_wins_over_its_prefix(mock_stream) -> None:
 
     assert _image_names(events) == ["세린아", "세린"]
     assert completed["ai_output"] == (
-        "[[세린아:https://cdn.example.com/serina.webp]]\n\n세린아: 여기야.\n"
-        "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 응."
+        "[[https://cdn.example.com/serina.webp]]\n\n세린아: 여기야.\n"
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 응."
     )
 
 
@@ -247,8 +247,8 @@ async def test_thirty_char_name_is_recognized_plain_and_bold(mock_stream) -> Non
     assert _visible(events) == f"{long_name}: 늦었어.\n{long_name}: 다시."
     assert _image_names(events) == [long_name, long_name]
     assert completed["ai_output"] == (
-        f"[[{long_name}:https://cdn.example.com/long.webp]]\n\n{long_name}: 늦었어.\n"
-        f"[[{long_name}:https://cdn.example.com/long.webp]]\n\n{long_name}: 다시."
+        f"[[https://cdn.example.com/long.webp]]\n\n{long_name}: 늦었어.\n"
+        f"[[https://cdn.example.com/long.webp]]\n\n{long_name}: 다시."
     )
 
 
@@ -296,7 +296,7 @@ async def test_indented_label_is_detected_and_indent_stays_on_dialogue_line(mock
     assert _image_names(events) == ["세린"]
     assert _visible(events) == "*문이 열린다.*\n  세린: 들어와."
     assert completed["ai_output"] == (
-        "*문이 열린다.*\n[[세린:https://cdn.example.com/serin.webp]]\n\n  세린: 들어와."
+        "*문이 열린다.*\n[[https://cdn.example.com/serin.webp]]\n\n  세린: 들어와."
     )
 
 
