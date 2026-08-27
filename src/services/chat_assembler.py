@@ -12,7 +12,6 @@ import re
 from pathlib import Path
 
 from src.schemas.chat_turn import (
-    CharacterImageMapping,
     ChatHistoryItem,
     ChatStartSettings,
     ChatTurnRequest,
@@ -100,17 +99,13 @@ def _format_endings(endings: list[EndingCandidate]) -> str:
     ) or "(없음)"
 
 
-def format_character_image_names(images: list[CharacterImageMapping]) -> str:
-    """이미지 보유 인물 목록 → CHARACTER 슬롯 텍스트(URL은 LLM에 전달하지 않음)."""
-    return "\n".join(f"- {image.name}" for image in images) or "(없음)"
-
-
 def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
     """ChatTurnRequest → 정적 레이어 슬롯 치환 맵(결정적, LLM 없음).
 
     장르는 `stories.genre`, start_setting은 `story_start_settings`에서 오는 예외 소스다
-    (나머지는 story_settings 통글 4필드, 명세 3.3). 사건·엔딩 슬롯 3종(KNK-485)과
-    이미지 보유 인물 목록(KNK-990)은 재료가 비면 "(없음)" 문구로 치환된다.
+    (나머지는 story_settings 통글 4필드, 명세 3.3). 사건·엔딩 슬롯 3종(KNK-485)은
+    재료가 비면 "(없음)" 문구로 치환된다. 요청의 `character_images`는 프롬프트에 넣지
+    않는다 — 이미지는 AI 서버가 출력의 `인물명:` 줄을 찾아 붙이므로 LLM이 알 필요가 없다(KNK-1006).
     """
     ss = req.story_settings
     return {
@@ -119,7 +114,6 @@ def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
         "{{start_setting}}": _start_setting_blob(req.start_settings),
         "{{rule_setting}}": ss.rule_setting,
         "{{character_setting}}": ss.character_setting,
-        "{{character_image_names}}": format_character_image_names(req.character_images),
         "{{user_role_setting}}": ss.user_role_setting,
         "{{main_events}}": format_main_events(req.main_events),
         "{{target_main_event}}": format_target_main_event(req.target_main_event),
