@@ -119,8 +119,9 @@ def _insert_storage_markers(
     def replace(match: "re.Match[str]") -> str:
         image = images[match.group(2)]
         displayed.append({"name": image.name, "image_url": image.image_url})
-        indent = match.group(1)
-        return f"{indent}[[{image.name}:{image.image_url}]]{match.group(0)[len(indent):]}"
+        # 마커는 대사 줄 위에 빈 줄을 두고 따로 둔다 — 프론트가 마커 줄을 통째로 이미지로
+        # 바꾸기 쉽게(프론트 요청, KNK-1002). 원래 들여쓰기는 대사 줄에 그대로 남긴다.
+        return f"[[{image.name}:{image.image_url}]]\n\n{match.group(0)}"
 
     return _speaker_label_re(images).sub(replace, text), displayed
 
