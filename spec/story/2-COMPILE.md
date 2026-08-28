@@ -1,6 +1,6 @@
 ---
-version: 11
-updated: 2026-08-26
+version: 12
+updated: 2026-08-28
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -234,8 +234,8 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
     }
   ],
   "character_images": [
-    { "name": "레이", "image_base64": "UklGR...", "content_type": "image/webp", "error": null },
-    { "name": "세린", "image_base64": null, "content_type": "image/webp", "error": "timeout" }
+    { "name": "레이", "image_name": "레이_기본", "image_base64": "UklGR...", "content_type": "image/webp", "error": null },
+    { "name": "세린", "image_name": "세린_기본", "image_base64": null, "content_type": "image/webp", "error": "timeout" }
   ],
   "meta": {
     "model": "gpt-5.6-terra",
@@ -258,7 +258,7 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
 | story_main_events | object[] | 주요 사건 3~5개(`story_main_events` 테이블). 각 항목 name·description·key_sentence. 배열 순서=명목 순서(비강제) |
 | story_endings | object[] | 엔딩(`story_endings` 테이블). 정상 3개(폴백 시 0개). 각 항목 name·min_turns(1 이상 정수)·achievement_condition·epilogue. 성취 유형은 미출력, name으로 식별 |
 | character_appearances | object[] | 인물별 외형 정보. 각 항목 name·gender·age·body·face·hair·outfit·visual_identity. 인물 전원이 포함되며, 백엔드가 저장해 이미지 재생성에 사용 |
-| character_images | object[] | 인물별 이미지(KNK-414). 각 항목 name·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 사유 코드, 성공 시 null). 인물별로 성공/실패가 독립. 빈 배열은 인물 0명이거나 이미지 로직 자체가 실패한 경우 |
+| character_images | object[] | 인물별 이미지(KNK-414). 각 항목 name(인물 이름 — 백엔드가 외형·인물과 연결하는 키)·image_name(이미지 한 장의 이름, 지금은 인물당 한 장이라 `인물이름_기본`. 백엔드가 uuid를 붙여 파일명으로 쓰고 `story_characters.image_name`에 저장, KNK-1027)·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 사유 코드, 성공 시 null). image_name은 성공·실패 항목 모두에 있음. 인물별로 성공/실패가 독립. 빈 배열은 인물 0명이거나 이미지 로직 자체가 실패한 경우 |
 | meta | object | 응답 로깅 메타(`ai_call_logs` 적재용, KNK-243) |
 | meta.retry_count | number | 부분 재호출 횟수(0~2) |
 
@@ -389,7 +389,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | 엔딩 개수 | endings가 0개(폴백) 또는 3개가 아니면(2·4개 등) StorySpec 파싱에서 거부되는지 확인 |
 | 응답 메타 | `meta`에 model·prompt_versions·provider·토큰 수·retry_count가 실리는지 확인 |
 | 에러 처리 | 호출 실패·파싱 실패·스키마 검증 실패 시 502 반환 |
-| 인물 이미지 | character_images가 인물 수만큼 반환되고, 성공한 인물은 image_base64와 content_type이 채워졌는지 확인 |
+| 인물 이미지 | character_images가 인물 수만큼 반환되고, 항목마다 name(인물 이름)과 image_name(`인물이름_기본`)이 있으며, 성공한 인물은 image_base64와 content_type이 채워졌는지 확인 |
 | 이미지 실패 격리 | 한 인물의 이미지 생성이 실패해도 나머지 인물과 컴파일 전체가 200으로 성공하는지 확인 |
 | 이미지 에러 코드 | 실패한 인물의 error에 공급자 원문이 아닌 분류된 코드(timeout·rejected 등)가 실리는지 확인 |
 | 외형 필드 부족 | 부분 재호출 2회 후에도 외형이 비어 있으면 컴파일은 성공하고 해당 인물 이미지만 건너뛰는지 확인 |

@@ -219,9 +219,14 @@ class CharacterImageOut(BaseModel):
 
     백엔드는 image_base64를 디코딩해 S3에 올리고, URL을 DB에 저장한다.
     content_type으로 이미지 형식을 판별해 S3 Content-Type을 설정한다.
+
+    name은 인물 이름 그대로다(백엔드가 외형·story_characters와 연결하는 키). image_name은
+    이미지 한 장을 구분하는 이름(KNK-1027)으로, 백엔드가 uuid를 붙여 파일명으로 쓰고
+    story_characters.image_name에 저장한다. 지금은 인물당 한 장이라 `인물이름_기본`이다.
     """
 
     name: str
+    image_name: str
     image_base64: str | None = None  # 이미지 바이너리의 base64 인코딩. 실패하면 None
     content_type: str = "image/webp"  # 이미지 MIME 타입. 백엔드가 S3 업로드 시 사용
     error: str | None = None  # 실패 사유. 성공이면 None
