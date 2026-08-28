@@ -238,7 +238,7 @@ class CharacterImageData(BaseModel):
     """character_image 이벤트 한 건과 completed 목록 한 항목의 이미지 정보.
 
     와이어는 camelCase(`imageName`·`imageUrl`). imageName은 요청 `image_name`을 그대로
-    돌려주며, 요청이 비어 있으면 인물 이름이 들어간다(KNK-1026).
+    돌려주며, 요청이 비어 있거나 null이면 빈 문자열 그대로다(KNK-1026).
     """
 
     name: str
