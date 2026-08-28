@@ -57,7 +57,8 @@ async def test_images_safe_returns_base64(monkeypatch: pytest.MonkeyPatch) -> No
     result = await _generate_character_images_safe(chars, _GENRE)
 
     assert len(result) == 2
-    assert result[0].name == "레이"
+    assert result[0].name == "레이"  # 인물 이름은 그대로 — 백엔드가 인물과 연결하는 키
+    assert result[0].image_name == "레이_기본"  # 이미지 이름은 지금 한 장이라 고정 꼴(KNK-1027)
     assert result[0].image_base64 is not None
     assert result[0].error is None
     # base64 디코딩하면 원본과 같다
@@ -86,6 +87,7 @@ async def test_images_safe_partial_failure(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(successes) == 2
     assert len(failures) == 1
     assert failures[0].name == "세린"
+    assert failures[0].image_name == "세린_기본"  # 실패 항목에도 이미지 이름은 있다(KNK-1027)
     assert failures[0].error == "timeout"  # 공급자 원문이 아닌 분류된 코드
 
 
@@ -175,23 +177,32 @@ def test_classify_image_error_does_not_mistake_words_containing_rate(error: str)
 
 def test_character_image_out_success() -> None:
     """성공 케이스: image_base64가 있고 error가 None."""
-    out = CharacterImageOut(name="레이", image_base64="abc123")
+    out = CharacterImageOut(name="레이", image_name="레이_기본", image_base64="abc123")
     assert out.name == "레이"
+    assert out.image_name == "레이_기본"
     assert out.image_base64 == "abc123"
     assert out.error is None
 
 
 def test_character_image_out_failure() -> None:
     """실패 케이스: image_base64가 None이고 error가 있다."""
-    out = CharacterImageOut(name="세린", error="시간 초과")
+    out = CharacterImageOut(name="세린", image_name="세린_기본", error="시간 초과")
     assert out.image_base64 is None
     assert out.error == "시간 초과"
 
 
 def test_character_image_out_has_content_type() -> None:
     """content_type이 기본값 image/webp로 설정된다."""
-    out = CharacterImageOut(name="레이", image_base64="abc123")
+    out = CharacterImageOut(name="레이", image_name="레이_기본", image_base64="abc123")
     assert out.content_type == "image/webp"
+
+
+def test_character_image_out_requires_image_name() -> None:
+    """image_name은 필수다 — 빠지면 응답 계약 위반이라 스키마가 막는다(KNK-1027)."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        CharacterImageOut(name="레이", image_base64="abc123")
 
 
 async def test_images_safe_empty_characters() -> None:
@@ -255,6 +266,7 @@ async def test_compile_story_includes_character_images(monkeypatch: pytest.Monke
     # 이미지가 응답에 실렸다 (fixture 인물 3명)
     assert len(response.character_images) == 3
     for img in response.character_images:
+        assert img.image_name == f"{img.name}_기본"  # 응답 단계까지 이미지 이름이 실린다(KNK-1027)
         assert img.image_base64 is not None
         assert img.content_type == "image/webp"
         assert img.error is None

@@ -870,6 +870,15 @@ def _clear_unresolved_appearance_fields(
                 cards[index][field_name] = ""
 
 
+def _default_image_name(character_name: str) -> str:
+    """인물 이미지 한 장의 이름(KNK-1027). 지금은 인물당 한 장이라 `인물이름_기본`으로 고정한다.
+
+    이름은 AI가 완성해서 주는 문자열이다 — 백엔드가 `name`·표정 같은 칸을 조립하지 않게 해,
+    구분 기준이 늘어도 백엔드가 바뀌지 않게 한다(5-ai-server §5-3-4 변경 계획 ③).
+    """
+    return f"{character_name}_기본"
+
+
 async def _generate_character_images_safe(
     characters: list,
     genre_tags: list[str],
@@ -889,6 +898,7 @@ async def _generate_character_images_safe(
             if r.image is not None:
                 images.append(CharacterImageOut(
                     name=r.name,
+                    image_name=_default_image_name(r.name),
                     image_base64=base64.b64encode(r.image.image_bytes).decode("ascii"),
                 ))
             else:
@@ -896,6 +906,7 @@ async def _generate_character_images_safe(
                 logger.info("인물 이미지 실패: %s — %s", r.name, r.error)
                 images.append(CharacterImageOut(
                     name=r.name,
+                    image_name=_default_image_name(r.name),
                     error=_classify_image_error(r.error),
                 ))
         return images

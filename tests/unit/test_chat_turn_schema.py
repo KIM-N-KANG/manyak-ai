@@ -91,6 +91,41 @@ def test_request_with_character_images_parses() -> None:
 
     assert req.character_images[0].name == "레이"
     assert req.character_images[0].image_url.endswith("/rei.webp")
+    # image_name은 백엔드가 아직 안 보내도 통과하고, 그때는 빈 값 그대로다(KNK-1026).
+    assert req.character_images[0].image_name == ""
+
+
+def test_request_character_image_name_is_kept_when_sent() -> None:
+    req = ChatTurnRequest.model_validate(
+        {
+            **_BASE_PAYLOAD,
+            "character_images": [
+                {
+                    "name": "레이",
+                    "image_name": "레이_기본",
+                    "image_url": "https://cdn.example.com/characters/rei.webp",
+                }
+            ],
+        }
+    )
+    assert req.character_images[0].image_name == "레이_기본"
+
+
+def test_request_character_image_name_null_is_treated_as_empty() -> None:
+    # 백엔드가 컬럼을 새로 만들면 기존 행은 null로 올 수 있다 — 거부(422)하지 않고 빈 문자열로 정리한다.
+    req = ChatTurnRequest.model_validate(
+        {
+            **_BASE_PAYLOAD,
+            "character_images": [
+                {
+                    "name": "레이",
+                    "image_name": None,
+                    "image_url": "https://cdn.example.com/characters/rei.webp",
+                }
+            ],
+        }
+    )
+    assert req.character_images[0].image_name == ""
 
 
 @pytest.mark.parametrize("user_source", ["choice", "edited_choice", "typed"])
@@ -186,34 +221,47 @@ def test_completed_judgement_meta_serializes_camel_case() -> None:
 def test_character_images_serialize_in_display_order_with_duplicates() -> None:
     rei = CharacterImageData(
         name="레이",
+        image_name="레이_기본",
         image_url="https://cdn.example.com/characters/rei.webp",
     )
     serin = CharacterImageData(
         name="세린",
+        image_name="세린_기본",
         image_url="https://cdn.example.com/characters/serin.webp",
     )
 
     assert EVENT_CHARACTER_IMAGE == "character_image"
+    # 와이어는 camelCase — imageName·imageUrl(KNK-1026).
     assert rei.model_dump(by_alias=True) == {
         "name": "레이",
+        "imageName": "레이_기본",
         "imageUrl": "https://cdn.example.com/characters/rei.webp",
     }
     completed = CompletedData(
         ai_output=(
-            "[[레이:https://cdn.example.com/characters/rei.webp]]레이: 들어가자.\n"
-            "[[세린:https://cdn.example.com/characters/serin.webp]]세린: 기다려.\n"
-            "[[레이:https://cdn.example.com/characters/rei.webp]]레이: 시간이 없어."
+            "[[https://cdn.example.com/characters/rei.webp]]\n\n레이: 들어가자.\n"
+            "[[https://cdn.example.com/characters/serin.webp]]\n\n세린: 기다려.\n"
+            "[[https://cdn.example.com/characters/rei.webp]]\n\n레이: 시간이 없어."
         ),
         character_images=[rei, serin, rei],
     ).model_dump(by_alias=True)
     assert "characterImage" not in completed
     assert completed["characterImages"] == [
-        {"name": "레이", "imageUrl": "https://cdn.example.com/characters/rei.webp"},
+        {
+            "name": "레이",
+            "imageName": "레이_기본",
+            "imageUrl": "https://cdn.example.com/characters/rei.webp",
+        },
         {
             "name": "세린",
+            "imageName": "세린_기본",
             "imageUrl": "https://cdn.example.com/characters/serin.webp",
         },
-        {"name": "레이", "imageUrl": "https://cdn.example.com/characters/rei.webp"},
+        {
+            "name": "레이",
+            "imageName": "레이_기본",
+            "imageUrl": "https://cdn.example.com/characters/rei.webp",
+        },
     ]
 
 

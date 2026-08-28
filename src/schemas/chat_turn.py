@@ -117,10 +117,24 @@ class EndingCandidate(BaseModel):
 
 
 class CharacterImageMapping(BaseModel):
-    """백엔드가 매 턴 전달하는 인물 이름과 저장 이미지 URL의 매핑."""
+    """백엔드가 매 턴 전달하는 인물 이름·이미지 이름·저장 이미지 URL의 매핑.
+
+    name은 출력의 `인물명:` 라벨과 글자 그대로 대조하는 키라 반드시 인물 이름이다.
+    image_name은 이미지 한 장을 구분하는 이름(예: `세린_기본`, KNK-1026)이며 지금은
+    고르는 데 쓰지 않고 받은 값을 그대로 돌려준다. 백엔드가 아직 보내지 않으면(칸 없음·빈
+    문자열·null 모두) 빈 문자열로 정리해 내보낸다 — 없는 값을 인물 이름으로 채워 있는 척하지
+    않는다. null을 받는 이유는 백엔드가 컬럼을 새로 만들 때 기존 스토리 행이 null로 실려 와
+    턴 전체가 422로 튕기는 것을 막기 위해서다.
+    """
 
     name: str
+    image_name: str = ""
     image_url: str
+
+    @field_validator("image_name", mode="before")
+    @classmethod
+    def _null_image_name_is_empty(cls, value: object) -> object:
+        return "" if value is None else value
 
 
 class ChatTurnRequest(BaseModel):
@@ -221,9 +235,14 @@ class TokenData(BaseModel):
 
 
 class CharacterImageData(BaseModel):
-    """character_image 이벤트 한 건과 completed 목록 한 항목의 이미지 정보."""
+    """character_image 이벤트 한 건과 completed 목록 한 항목의 이미지 정보.
+
+    와이어는 camelCase(`imageName`·`imageUrl`). imageName은 요청 `image_name`을 그대로
+    돌려주며, 요청이 비어 있거나 null이면 빈 문자열 그대로다(KNK-1026).
+    """
 
     name: str
+    image_name: str = Field(serialization_alias="imageName")
     image_url: str = Field(serialization_alias="imageUrl")
 
 
@@ -241,10 +260,10 @@ class TargetMainEventOut(BaseModel):
 class CompletedData(BaseModel):
     """event: completed — 한 턴 응답 완료(본문 + 판정 메타).
 
-    - aiOutput: 본문(상황 묘사 + 인물 대사)과 `[[인물이름:URL]]` 저장 마커.
+    - aiOutput: 본문(상황 묘사 + 인물 대사)과 대사 줄 위 별도 줄의 `[[URL]]` 저장 마커.
       백엔드가 chatId·turnId를 더해 마커 포함 원문을 DB(history)에 저장한다.
-    - characterImages: 저장 마커와 같은 순서의 인물 이미지 목록. 같은 인물이 다시
-      말하면 같은 이미지도 다시 들어간다.
+    - characterImages: 저장 마커와 같은 순서의 인물 이미지 목록(`{name, imageName, imageUrl}`).
+      같은 인물이 다시 말하면 같은 이미지도 다시 들어간다.
     - choices: **하위호환 빈 배열 고정**(KNK-625). 선택지 생성은 전용 엔드포인트
       `/chat/choices`로 분리됐다 — completed가 선택지를 기다리지 않아 본문 확정이
       밀리지 않는다. 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3)이라

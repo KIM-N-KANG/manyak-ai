@@ -151,14 +151,33 @@ async def test_stream_emits_image_before_every_label_across_chunk_boundaries(
     assert _image_names(events) == ["세린", "레이", "세린"]
     assert completed["ai_output"] == (
         "*문이 열린다.*\n"
-        "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
-        "[[레이:https://cdn.example.com/rei.webp]]\n\n레이: 들어가자.\n"
-        "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 다시 확인할게."
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
+        "[[https://cdn.example.com/rei.webp]]\n\n레이: 들어가자.\n"
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 다시 확인할게."
     )
+    # 요청에 image_name이 없으면 빈 값 그대로 내보낸다 — 인물 이름으로 채워 있는 척하지 않는다(KNK-1026).
     assert completed["character_images"] == [
-        {"name": "세린", "image_url": "https://cdn.example.com/serin.webp"},
-        {"name": "레이", "image_url": "https://cdn.example.com/rei.webp"},
-        {"name": "세린", "image_url": "https://cdn.example.com/serin.webp"},
+        {"name": "세린", "image_name": "", "image_url": "https://cdn.example.com/serin.webp"},
+        {"name": "레이", "image_name": "", "image_url": "https://cdn.example.com/rei.webp"},
+        {"name": "세린", "image_name": "", "image_url": "https://cdn.example.com/serin.webp"},
+    ]
+
+
+async def test_image_name_from_request_is_carried_in_event_and_completed(mock_stream) -> None:
+    # 백엔드가 image_name을 보내면 이벤트와 완료 목록 둘 다 그 값을 그대로 싣는다(KNK-1026).
+    images = [
+        CharacterImageMapping(
+            name="세린", image_name="세린_기본", image_url="https://cdn.example.com/serin.webp"
+        )
+    ]
+    mock_stream(["세린: 왔어."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    image_event = next(event for event in events if event["event"] == "character_image")
+    assert image_event["image_name"] == "세린_기본"
+    assert completed["character_images"] == [
+        {"name": "세린", "image_name": "세린_기본", "image_url": "https://cdn.example.com/serin.webp"}
     ]
 
 
@@ -187,8 +206,8 @@ async def test_bold_label_still_triggers_image_and_is_normalized(mock_stream) ->
     assert _visible(events) == "세린: 기다렸어?\n레이: 늦었네.\n미라: 안녕."
     assert _image_names(events) == ["세린", "레이"]
     assert completed["ai_output"] == (
-        "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
-        "[[레이:https://cdn.example.com/rei.webp]]\n\n레이: 늦었네.\n"
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
+        "[[https://cdn.example.com/rei.webp]]\n\n레이: 늦었네.\n"
         "미라: 안녕."
     )
     assert [i["name"] for i in completed["character_images"]] == ["세린", "레이"]
@@ -229,8 +248,8 @@ async def test_longer_registered_name_wins_over_its_prefix(mock_stream) -> None:
 
     assert _image_names(events) == ["세린아", "세린"]
     assert completed["ai_output"] == (
-        "[[세린아:https://cdn.example.com/serina.webp]]\n\n세린아: 여기야.\n"
-        "[[세린:https://cdn.example.com/serin.webp]]\n\n세린: 응."
+        "[[https://cdn.example.com/serina.webp]]\n\n세린아: 여기야.\n"
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 응."
     )
 
 
@@ -247,8 +266,8 @@ async def test_thirty_char_name_is_recognized_plain_and_bold(mock_stream) -> Non
     assert _visible(events) == f"{long_name}: 늦었어.\n{long_name}: 다시."
     assert _image_names(events) == [long_name, long_name]
     assert completed["ai_output"] == (
-        f"[[{long_name}:https://cdn.example.com/long.webp]]\n\n{long_name}: 늦었어.\n"
-        f"[[{long_name}:https://cdn.example.com/long.webp]]\n\n{long_name}: 다시."
+        f"[[https://cdn.example.com/long.webp]]\n\n{long_name}: 늦었어.\n"
+        f"[[https://cdn.example.com/long.webp]]\n\n{long_name}: 다시."
     )
 
 
@@ -296,7 +315,7 @@ async def test_indented_label_is_detected_and_indent_stays_on_dialogue_line(mock
     assert _image_names(events) == ["세린"]
     assert _visible(events) == "*문이 열린다.*\n  세린: 들어와."
     assert completed["ai_output"] == (
-        "*문이 열린다.*\n[[세린:https://cdn.example.com/serin.webp]]\n\n  세린: 들어와."
+        "*문이 열린다.*\n[[https://cdn.example.com/serin.webp]]\n\n  세린: 들어와."
     )
 
 
