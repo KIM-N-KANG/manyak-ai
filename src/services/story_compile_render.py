@@ -16,6 +16,7 @@ from src.schemas.story_compile import (
     StorySettingsOut,
     StorySpec,
     StoryStartSettingsOut,
+    ThumbnailImageOut,
     UserRoleSetting,
 )
 
@@ -90,8 +91,12 @@ def _render_character_appearances(
     ]
 
 
-def spec_to_response(spec: StorySpec) -> StoryCompileResponse:
-    """세분 StorySpec을 ERD 4테이블 nested 계약(StoryCompileResponse)으로 변환한다."""
+def spec_to_response(spec: StorySpec, *, thumbnail_image: ThumbnailImageOut) -> StoryCompileResponse:
+    """세분 StorySpec을 ERD 4테이블 nested 계약(StoryCompileResponse)으로 변환한다.
+
+    thumbnail_image는 필수 응답 필드라 호출부가 실제 결과를 넘긴다 — 임시값을 여기서 만들면
+    그 값이 응답으로 새어 나갈 수 있다(KNK-1047).
+    """
     ps = spec.prompt_settings
     return StoryCompileResponse(
         stories=StoriesOut(
@@ -129,4 +134,5 @@ def spec_to_response(spec: StorySpec) -> StoryCompileResponse:
             for e in spec.endings
         ],
         character_appearances=_render_character_appearances(ps.character_setting),
+        thumbnail_image=thumbnail_image,
     )

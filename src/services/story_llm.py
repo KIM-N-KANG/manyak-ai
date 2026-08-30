@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -20,21 +21,26 @@ from src.core.sentry import (
     FEATURE_CHARACTER_IMAGE,
     FEATURE_STORY_COMPLETION,
     FEATURE_STORYLINE_GENERATION,
+    FEATURE_THUMBNAIL_IMAGE,
     capture_ai_exception,
     classify_error_code,
 )
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import CharacterInput, StoryItem
 from src.schemas.story_compile import (
+    THUMBNAIL_ERROR_CODES,
+    THUMBNAIL_IMAGE_NAME,
     CharacterImageOut,
+    CharacterSetting,
     Ending,
     StoryCompileRequest,
     StoryCompileResponse,
     StorySpec,
+    ThumbnailImageOut,
 )
 from src.services import llm
 from src.services.image.base import PROVIDER_OPENAI
-from src.services.image.prompt import CHARACTER_IMAGE_VERSION
+from src.services.image.prompt import CHARACTER_IMAGE_VERSION, THUMBNAIL_IMAGE_VERSION
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt import (
     COMPILE_GEMINI_VERSION,
@@ -925,6 +931,48 @@ async def _generate_character_images_safe(
         return []
 
 
+async def _generate_thumbnail_image_safe(
+    characters: list[CharacterSetting],
+    genre_tags: list[str],
+) -> ThumbnailImageOut:
+    """썸네일 한 장을 생성해 base64로 변환한다. 취소(CancelledError)를 빼면 예외를 던지지 않는다(KNK-1047).
+
+    실패 표현은 한 가지 — 항상 객체를 돌려주고 image_base64=None + error 코드. 공급자
+    실패(시간 초과·429·거부)는 generate_thumbnail_image가 Sentry에 보고했으므로 코드만 분류하고,
+    그 그물을 벗어난 예외는 여기서 unexpected_error로 따로 보고한 뒤 generation_failed로 접는다.
+    """
+    from src.services.image.generate_thumbnail import generate_thumbnail_image
+
+    start = time.monotonic()
+    try:
+        result = await generate_thumbnail_image(characters, genre_tags)
+        if result.image is not None:
+            return ThumbnailImageOut(
+                image_name=THUMBNAIL_IMAGE_NAME,
+                image_base64=base64.b64encode(result.image.image_bytes).decode("ascii"),
+            )
+        # 공급자 원문은 로그에만 남기고, 응답에는 안정적인 에러 코드만 내려보낸다.
+        logger.info("썸네일 실패 — %s", result.error)
+        code = _classify_image_error(result.error)
+        # 썸네일은 인물 코드(appearance_missing)를 쓰지 않는다 — 계약 밖 코드는 일반 실패로 접는다.
+        if code not in THUMBNAIL_ERROR_CODES:
+            code = "generation_failed"
+        return ThumbnailImageOut(image_name=THUMBNAIL_IMAGE_NAME, error=code)
+    except Exception as exc:
+        capture_ai_exception(
+            exc,
+            feature=FEATURE_THUMBNAIL_IMAGE,
+            provider=PROVIDER_OPENAI,
+            error_code=ERROR_UNEXPECTED,
+            model=settings.image_model,
+            prompt_versions={"THUMBNAIL_IMAGE": THUMBNAIL_IMAGE_VERSION},
+            retry_count=0,
+            latency_ms=int((time.monotonic() - start) * 1000),
+        )
+        logger.exception("썸네일 생성 중 예상치 못한 오류 — 실패 객체로 반환")
+        return ThumbnailImageOut(image_name=THUMBNAIL_IMAGE_NAME, error="generation_failed")
+
+
 def _classify_image_error(error: str | None) -> str:
     """이미지 생성 실패 사유를 안정적인 코드로 분류한다.
 
@@ -1105,24 +1153,30 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             detail="컴파일 결과가 스토리 명세 형식과 맞지 않습니다.",
         ) from e
 
-    response = spec_to_response(spec)
+    # 인물별 이미지(KNK-940)와 썸네일(KNK-1047)을 동시에 생성한다. 컴파일 성공 후에 실행하며,
+    # 이미지 실패가 컴파일 전체를 502로 만들지 않는다 — 이미지는 부가물이라 실패한 것만 빈다.
+    # 동시에 돌리므로 대기 시간은 둘 중 오래 걸리는 쪽만큼이다.
+    # 전제: 두 함수 모두 예외를 삼키고 결과 객체로 돌려준다(취소는 예외). 한쪽이 이 전제를
+    # 어기고 예외를 던지면 gather가 끊기고 다른 쪽 호출은 아무도 안 기다리는 채로 끝까지 돈다.
+    character_images, thumbnail_image = await asyncio.gather(
+        _generate_character_images_safe(spec.prompt_settings.character_setting, request.genre_tags),
+        _generate_thumbnail_image_safe(spec.prompt_settings.character_setting, request.genre_tags),
+    )
+
+    # 썸네일은 필수 응답 필드라 응답을 만들 때 실제 결과를 넘긴다(임시값 없음).
+    response = spec_to_response(spec, thumbnail_image=thumbnail_image)
+    response.character_images = character_images
     response.meta = StoryResponseMeta(
         model=usage.model,
         prompt_versions={
             version_key: prompt_version,
             "CHARACTER_IMAGE": CHARACTER_IMAGE_VERSION,
+            "THUMBNAIL_IMAGE": THUMBNAIL_IMAGE_VERSION,
         },
         provider=usage.provider,
         input_token_count=input_tokens,
         output_token_count=output_tokens,
         retry_count=attempts,  # 부분 재호출 횟수(0~_MAX_REFILL)
-    )
-
-    # 인물별 이미지 병렬 생성(KNK-940). 컴파일 성공 후에 실행하며, 이미지 실패가
-    # 컴파일 전체를 502로 만들지 않는다 — 이미지는 부가물이라 실패한 인물만 빈다.
-    response.character_images = await _generate_character_images_safe(
-        spec.prompt_settings.character_setting,
-        request.genre_tags,
     )
 
     return response

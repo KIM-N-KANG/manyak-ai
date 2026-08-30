@@ -11,6 +11,7 @@ from src.schemas.story_compile import (
     StoryCompileRequest,
     StoryCompileResponse,
     StorySpec,
+    ThumbnailImageOut,
 )
 from src.services import story_llm
 from src.services.prompt import build_compile_prompt, build_refill_prompt
@@ -242,7 +243,7 @@ def test_block_of_maps_paths() -> None:
 # ── 통글 변환 ───────────────────────────────────────────────────────────────
 def test_spec_to_response_renders_nested_markdown() -> None:
     spec = StorySpec(**_load("spec_valid.json"))
-    res = spec_to_response(spec)
+    res = spec_to_response(spec, thumbnail_image=ThumbnailImageOut(error="generation_failed"))
 
     assert isinstance(res, StoryCompileResponse)
     # stories: 값 그대로 + genre 제외
@@ -275,7 +276,7 @@ def test_spec_to_response_render_equality() -> None:
     # 동타입 필드가 뒤바뀌어도(prologue↔start_situation·description↔key_sentence) truthy
     # 단언은 통과하므로, 픽스처 실값과 '정확히 일치'로 못박아 필드 뒤바뀜·렌더 형식 회귀를 잡는다.
     data = _load("spec_valid.json")
-    res = spec_to_response(StorySpec(**data))
+    res = spec_to_response(StorySpec(**data), thumbnail_image=ThumbnailImageOut(error="generation_failed"))
     ps = data["prompt_settings"]
 
     # pass-through 필드 — 원본과 정확히 일치
@@ -327,9 +328,10 @@ async def test_compile_story_returns_nested_response(monkeypatch: pytest.MonkeyP
     assert res.meta.model == "deepseek-test"
     # 주입한 값이 그대로 meta까지 온다 — 상수로 되돌리면 여기서 깨진다(KNK-674 리뷰 H1).
     assert res.meta.provider == "not-deepseek"
-    assert list(res.meta.prompt_versions) == ["COMPILE", "CHARACTER_IMAGE"]
+    assert list(res.meta.prompt_versions) == ["COMPILE", "CHARACTER_IMAGE", "THUMBNAIL_IMAGE"]
     assert res.meta.prompt_versions["COMPILE"] >= 1
     assert res.meta.prompt_versions["CHARACTER_IMAGE"] >= 1
+    assert res.meta.prompt_versions["THUMBNAIL_IMAGE"] >= 1
     assert res.meta.input_token_count == 100
     assert res.meta.output_token_count == 200
     assert res.meta.retry_count == 0
@@ -543,7 +545,7 @@ async def test_compile_story_schema_failure_captures(monkeypatch: pytest.MonkeyP
 def test_spec_to_response_passes_events_and_endings() -> None:
     # 엔딩·사건이 응답에 항목별 이산 필드로 실려야 한다(회귀 방지).
     spec = StorySpec(**_load("spec_valid.json"))
-    res = spec_to_response(spec)
+    res = spec_to_response(spec, thumbnail_image=ThumbnailImageOut(error="generation_failed"))
     assert 3 <= len(res.story_main_events) <= 5
     ev = res.story_main_events[0]
     assert ev.name and ev.description and ev.key_sentence
@@ -569,7 +571,7 @@ def test_zero_endings_allowed() -> None:
     data["endings"] = []
     spec = StorySpec(**data)
     assert spec.endings == []
-    assert spec_to_response(spec).story_endings == []
+    assert spec_to_response(spec, thumbnail_image=ThumbnailImageOut(error="generation_failed")).story_endings == []
 
 
 def test_min_turns_lower_bound_rejected() -> None:
