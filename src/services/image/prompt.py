@@ -19,25 +19,26 @@ _TEMPLATE_PATH = Path(__file__).parent.parent.parent.parent / "prompt" / "image"
 CHARACTER_IMAGE_VERSION = read_version(_TEMPLATE_PATH)
 
 
-def _load_template() -> str:
+def _load_template(path: Path) -> str:
     """프롬프트 템플릿 파일에서 XML 본문을 꺼낸다.
 
     frontmatter와 제목·설명 줄을 건너뛰고 <image_prompt>부터 끝까지 가져온다.
+    같은 꼴의 다른 템플릿(썸네일 등)도 읽을 수 있게 경로를 인자로 받는다.
     """
     try:
-        raw = _TEMPLATE_PATH.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError as e:
-        raise RuntimeError(f"이미지 프롬프트 템플릿을 찾을 수 없습니다: {_TEMPLATE_PATH}") from e
+        raise RuntimeError(f"이미지 프롬프트 템플릿을 찾을 수 없습니다: {path}") from e
 
     # <image_prompt> 태그부터 끝까지 추출
     match = re.search(r"(<image_prompt>.*</image_prompt>)", raw, re.DOTALL)
     if not match:
-        raise RuntimeError(f"이미지 프롬프트 템플릿에 <image_prompt> 블록이 없습니다: {_TEMPLATE_PATH}")
+        raise RuntimeError(f"이미지 프롬프트 템플릿에 <image_prompt> 블록이 없습니다: {path}")
     return match.group(1)
 
 
 # 모듈 로드 시 한 번 읽는다(컴파일 프롬프트와 같은 패턴).
-_TEMPLATE = _load_template()
+_TEMPLATE = _load_template(_TEMPLATE_PATH)
 
 
 def build_image_prompt(character: CharacterSetting, genre_tags: list[str]) -> str | None:
