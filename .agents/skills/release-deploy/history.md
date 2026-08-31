@@ -8,7 +8,7 @@
 ## 다음 배포 때 볼 것
 
 - 흐름은 늘 같다: `dev → release/vX.Y.Z → main`(Merge Commit) → 자동 배포 → 태그 → 역류(Merge Commit) → 브랜치 삭제.
-- **운영 배포는 ECS 경로다(KNK-963, v0.2.6부터).** deploy 잡의 안정화 대기는 10분(60×10초)이라 **잡 실패 ≠ 배포 실패** — dev에서 태스크 시작 실패 반복으로 54분 뒤 완료된 전례(8/23)가 있다. 잡이 실패하면 롤백 전에 ECS 서비스 상태부터 확인한다. EC2·SSM 경로는 수동 롤백용으로 남아 있다.
+- **운영 배포는 ECS 경로다(KNK-963, v0.2.6부터).** deploy 잡의 안정화 대기는 10분(60×10초)이라 **잡 실패 ≠ 배포 실패** — dev에서 태스크 시작 실패 반복으로 54분 뒤 완료된 전례(8/23)가 있다. 잡이 실패하면 롤백 전에 ECS 서비스 상태부터 확인한다. **EC2는 회수됐고 EC2 롤백 잡도 제거됐다(KNK-971, v0.3.0)** — `prod-health.sh`·`infra-check.sh`의 EC2·SSM 점검이 실패하니 ECS(태스크 imageDigest·HEALTHY)로 검증한다. 스크립트의 ECS 전환은 후속 사안.
 - **Langfuse 활성화(KNK-654)는 릴리스가 아니다.** 코드는 이미 나가 있고 키만 없어 no-op이다. 순서:
   1. `manyak-terraform` apply — **EC2 교체**가 일어난다(다운타임 + 이미지 핀이 `:latest`로 리셋되는 것 주의).
   2. 백엔드 KNK-621 배포 — 커스텀 장르 400 차단. 안 하면 사용자 자유입력이 트레이스 태그로 유입된다.
@@ -18,6 +18,19 @@
   5. 기동 로그에서 `Langfuse 활성 — host=… env=prod` 확인 + server 컨테이너에 `AI_LANGFUSE_*`가 없는지 확인.
 
 ---
+
+## v0.3.0 — 2026-09-01 배포 완료
+
+- 범위: v0.2.6 이후 dev 누적 = 인물 이미지 기능 묶음(KNK-414 컴파일 인물별 이미지 생성·base64 응답, KNK-982 채팅 턴 인물 이미지 출력, KNK-1002 인물명 라벨 감지 강제 부착, KNK-1014 마커 형식·이미지 이름 계약 변경, KNK-1047 표지 썸네일 생성, KNK-1062 이름 불일치 수정) + KNK-971(EC2 롤백 잡 제거) + 버전 올림(KNK-1086).
+  - **외부 계약은 전부 추가형 — AI 선행 배포·단독 롤백 안전.** 컴파일 응답에 `character_appearances`·`character_images`·`thumbnail_image` 추가, 채팅에 요청 `character_images`(선택)·SSE `character_image` 이벤트·completed `characterImages` 추가. 기능 활성화는 백엔드 대응 배포 후.
+  - 이미지 생성 통로(`src/services/image/`) 신설 — `IMAGE_MODEL` 기본 `gpt-image-2-2026-04-21`, 키는 기존 `OPENAI_API_KEY` 재사용, 새 필수 env 없음. 이미지 실패는 인물 단위 흡수(컴파일은 성공), Sentry 태그 `character_image_generation`·`thumbnail_image_generation`으로 관측.
+  - 비용·시간: 컴파일 1회당 이미지 호출이 인물 수+1(썸네일)만큼 증가(인물 이미지 병렬, 장당 60초 제한).
+- PR #100 `[KNK-1086] Release: v0.3.0 배포` → main 머지 `3b807dc`(Merge Commit, 사용자 직접 실행) → 운영 워크플로 전 잡 success. 태그 `v0.3.0` → `3b807dc`.
+- **검증: `prod-health.sh`·`infra-check.sh`의 EC2 경로가 이번부터 실패한다(EC2 회수됨).** ECS로 대체 검증 — 실행 중 ai 컨테이너의 imageDigest가 ECR `3b807dc` 태그와 일치, 태스크 HEALTHY 확인.
+- QA: `qa.sh` 유닛·API 791 passed·8 skipped, 라이브 `tests/integration` 10 passed(180.61초), 종료코드 0. `infra-check.sh` 종료코드 1(실패 2건 전부 EC2·SSM 옛 경로 점검 — 예상된 실패).
+- 배포 전 적대적 리뷰 3관점(계약·환경변수/기동·런타임) — 차단 요인 없음. 스토리라인 인물 이름 중복 검사가 대소문자 무시로 엄격해진 것은 의도된 변경.
+- **release 브랜치가 PR #100 머지 때 자동 삭제됐다**(레포의 head 브랜치 자동 삭제 설정). 역류를 위해 로컬 브랜치를 재push해 PR을 만들었다 — 다음부터는 역류 PR을 main 머지 전에 미리 만들어 두면 재push가 필요 없다.
+- 역류: `release/v0.3.0 → dev` Merge Commit(PR #101).
 
 ## v0.2.6 — 2026-08-25 배포 완료
 
