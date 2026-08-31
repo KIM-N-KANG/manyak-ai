@@ -90,11 +90,43 @@ def _split_bold_label(m: "re.Match[str]") -> tuple[str, str]:
     return m.group(3), m.group(4).strip()
 
 
+# 공백 없는 한글 세 글자 이름 — 성을 뗀 두 글자를 별칭으로 삼는 대상(KNK-1062).
+_HANGUL_THREE_RE = re.compile(r"^[가-힣]{3}$")
+
+
+def _alias_candidates(name: str) -> set[str]:
+    """정식 이름에서 본문 라벨에 쓰일 법한 줄임 이름을 뽑는다(KNK-1062).
+
+    LLM은 대사 라벨에 정식 이름 대신 성을 뗀 이름(`지한결`→`한결`)이나 풀네임의 한
+    조각(`카시안 발데르크`→`카시안`)을 쓴다 — 실측 46 대 4로 프롬프트로는 못 막는다.
+    한 글자 조각은 일반 글자와 겹치기 쉬워 별칭으로 삼지 않는다.
+    """
+    parts = name.split()
+    if len(parts) > 1:
+        return {part for part in parts if len(part) >= 2}
+    if _HANGUL_THREE_RE.match(name):
+        return {name[1:]}
+    return set()
+
+
 def _images_by_name(
     character_images: list[CharacterImageMapping],
 ) -> dict[str, CharacterImageMapping]:
-    """이름-URL 표. 빈 이름은 어떤 줄과도 맞을 수 없으므로 뺀다(A19)."""
-    return {image.name: image for image in character_images if image.name}
+    """이름-URL 표. 빈 이름은 어떤 줄과도 맞을 수 없으므로 뺀다(A19).
+
+    정식 이름에 더해 줄임 이름(별칭)도 같은 이미지를 가리킨다(KNK-1062). 정식 이름이
+    항상 이기고, 두 인물이 같은 별칭을 만들면 누구인지 모호하므로 그 별칭은 버린다.
+    스트리밍 파서·저장 마커·라벨 정규식이 전부 이 표를 쓰므로 세 곳이 같이 넓어진다.
+    """
+    table = {image.name: image for image in character_images if image.name}
+    owners: dict[str, set[str]] = {}
+    for name in table:
+        for alias in _alias_candidates(name):
+            owners.setdefault(alias, set()).add(name)
+    for alias, names in owners.items():
+        if alias not in table and len(names) == 1:
+            table[alias] = table[next(iter(names))]
+    return table
 
 
 def _image_payload(image: CharacterImageMapping) -> dict:
@@ -113,8 +145,8 @@ def _image_payload(image: CharacterImageMapping) -> dict:
 def _speaker_label_re(names: "Iterable[str]") -> "re.Pattern[str]":
     """이미지 보유 인물의 평문 인물명 라벨(`이름:`)을 줄머리에서 찾는 정규식.
 
-    이름은 등록된 것과 정확히 같아야 한다. 긴 이름을 먼저 두어 한 이름이 다른 이름의
-    앞부분일 때(`세린`·`세린아`) 긴 쪽이 이긴다.
+    이름은 표에 등록된 것(정식 이름 또는 별칭, KNK-1062)과 글자가 같아야 한다. 긴 이름을
+    먼저 두어 한 이름이 다른 이름의 앞부분일 때(`세린`·`세린아`) 긴 쪽이 이긴다.
     """
     alternation = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
     return re.compile(rf"^([ \t]*)({alternation})[ \t]*:", re.M)

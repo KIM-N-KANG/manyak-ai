@@ -253,6 +253,94 @@ async def test_longer_registered_name_wins_over_its_prefix(mock_stream) -> None:
     )
 
 
+# ── 줄임 이름(별칭) 라벨 감지(KNK-1062) ──────────────────────────────────────
+def test_alias_candidates_rules() -> None:
+    # 공백 조각(한 글자 제외), 한글 세 글자의 성 뗀 두 글자만 별칭이다.
+    assert chat_llm._alias_candidates("카시안 발데르크") == {"카시안", "발데르크"}
+    assert chat_llm._alias_candidates("지한결") == {"한결"}
+    assert chat_llm._alias_candidates("세린") == set()          # 두 글자는 그대로가 호칭
+    assert chat_llm._alias_candidates("Rei") == set()           # 한글 아님
+    assert chat_llm._alias_candidates("로엔 D 하르트") == {"로엔", "하르트"}  # 한 글자 조각 제외
+
+
+async def test_surname_stripped_alias_triggers_image(mock_stream) -> None:
+    # 등록 `지한결`, 본문 `한결:` — 이벤트·마커가 붙고 이벤트의 name은 정식 이름이다.
+    images = [CharacterImageMapping(name="지한결", image_url="https://cdn.example.com/jhg.webp")]
+    mock_stream(["한결: 왜 이제 와?\n지한결: 늦었네."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert _image_names(events) == ["지한결", "지한결"]
+    assert completed["ai_output"] == (
+        "[[https://cdn.example.com/jhg.webp]]\n\n한결: 왜 이제 와?\n"
+        "[[https://cdn.example.com/jhg.webp]]\n\n지한결: 늦었네."
+    )
+
+
+async def test_full_name_pieces_trigger_image(mock_stream) -> None:
+    # 등록 `카시안 발데르크` — 어느 조각으로 불러도 같은 이미지가 붙는다.
+    images = [
+        CharacterImageMapping(name="카시안 발데르크", image_url="https://cdn.example.com/kasian.webp")
+    ]
+    mock_stream(["카시안: 물러서.\n발데르크: 명령이다."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert _image_names(events) == ["카시안 발데르크", "카시안 발데르크"]
+    assert completed["ai_output"] == (
+        "[[https://cdn.example.com/kasian.webp]]\n\n카시안: 물러서.\n"
+        "[[https://cdn.example.com/kasian.webp]]\n\n발데르크: 명령이다."
+    )
+
+
+async def test_shared_alias_is_dropped_but_full_names_still_work(mock_stream) -> None:
+    # 두 인물이 같은 별칭(`한결`)을 만들면 그 별칭은 버리고, 정식 이름은 그대로 붙는다.
+    images = [
+        CharacterImageMapping(name="지한결", image_url="https://cdn.example.com/jhg.webp"),
+        CharacterImageMapping(name="오한결", image_url="https://cdn.example.com/ohg.webp"),
+    ]
+    mock_stream(["한결: 누구게.\n지한결: 나야.\n오한결: 나도."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert _image_names(events) == ["지한결", "오한결"]
+    assert completed["ai_output"] == (
+        "한결: 누구게.\n"
+        "[[https://cdn.example.com/jhg.webp]]\n\n지한결: 나야.\n"
+        "[[https://cdn.example.com/ohg.webp]]\n\n오한결: 나도."
+    )
+
+
+async def test_registered_name_beats_another_characters_alias(mock_stream) -> None:
+    # 별칭이 다른 인물의 정식 이름과 같으면 정식 이름 주인이 이긴다.
+    images = [
+        CharacterImageMapping(name="한결", image_url="https://cdn.example.com/hg.webp"),
+        CharacterImageMapping(name="지한결", image_url="https://cdn.example.com/jhg.webp"),
+    ]
+    mock_stream(["한결: 나야."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert _image_names(events) == ["한결"]
+    assert completed["ai_output"] == "[[https://cdn.example.com/hg.webp]]\n\n한결: 나야."
+
+
+async def test_alias_label_split_across_deltas(mock_stream) -> None:
+    # 별칭 라벨이 델타 경계에서 쪼개져 와도 스트리밍 버퍼링이 잡는다.
+    images = [CharacterImageMapping(name="지한결", image_url="https://cdn.example.com/jhg.webp")]
+    mock_stream(["*지문*\n한", "결:", " 응."])
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+
+    # 이미지 이벤트는 라벨 글자(`한결:`)가 담긴 token보다 먼저 나간다.
+    image_at = next(i for i, e in enumerate(events) if e["event"] == "character_image")
+    label_at = next(
+        i for i, e in enumerate(events) if e["event"] == "token" and "한결:" in e["text"]
+    )
+    assert image_at < label_at
+    assert _visible(events) == "*지문*\n한결: 응."
+    assert _image_names(events) == ["지한결"]
+
+
 async def test_thirty_char_name_is_recognized_plain_and_bold(mock_stream) -> None:
     # 이름 상한(30자)까지 평문·볼드 모두 잡는다 — 옛 볼드 정규식의 20자 제한을 없앴다.
     long_name = "가" * 30
