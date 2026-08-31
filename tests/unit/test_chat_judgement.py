@@ -263,6 +263,20 @@ async def test_judgement_call_contract(install_llm_sdk) -> None:
     assert "stream" not in captured  # 판정은 비스트리밍 단발 호출
 
 
+def test_build_user_removes_character_image_syntax_from_output() -> None:
+    ai_output = (
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
+        "미라: 나도 왔어."
+    )
+
+    user = chat_judgement._build_user(_request(main_events=_EVENTS), ai_output)
+
+    assert "[[" not in user
+    assert "https://cdn.example.com/serin.webp" not in user
+    assert "세린: 기다렸어?" in user
+    assert "미라: 나도 왔어." in user
+
+
 # ── 비-dict 응답도 흡수한다 (KNK-673 리뷰) ───────────────────────────────────
 # 선택지에는 같은 검사가 있는데 판정에는 없어 "JSON 객체가 아님" 분기가 한 번도 실행되지
 # 않았다. 이 분기가 죽으면 배열 응답이 _sanitize로 흘러 들어가 턴을 깨뜨린다.

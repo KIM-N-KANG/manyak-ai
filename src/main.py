@@ -9,6 +9,7 @@ from src.core.json_logging import configure_json_logging
 from src.core.langfuse import init_langfuse, shutdown_langfuse
 from src.core.middleware import RequestContextMiddleware
 from src.core.sentry import init_sentry
+from src.services.image import validate_startup as validate_image_startup
 from src.services.llm import validate_startup
 
 # 컨테이너(uvicorn)는 루트 로거에 핸들러를 달지 않아 앱 INFO 로그가 통째로 버려진다
@@ -29,6 +30,7 @@ init_langfuse()  # Langfuse도 앱 생성 전에 켠다(키 미설정·JP·prod 
 # manyak-terraform의 `docker compose up -d --wait ai`). 그래도 이쪽이 낫다: 잘못된 설정으로
 # 뜬 서버는 요청마다 500·502를 내면서도 살아 있는 것처럼 보여 원인을 훨씬 늦게 알게 된다.
 validate_startup()
+validate_image_startup()
 
 
 @asynccontextmanager

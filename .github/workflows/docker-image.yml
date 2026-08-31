@@ -149,9 +149,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # main 푸시 → 배포용 ECR (OIDC, 장기 키 미보관)
-      # main 에서의 수동 실행(workflow_dispatch)도 포함한다. 롤백 경로인 EC2 배포 잡이 그 이벤트로만
-      # 도는데, 여기서 인증을 건너뛰면 태그가 ECR 이 아닌 GHCR 로 잡히고 push 도 되지 않아
-      # 롤백 실행이 "ECR 에 그 SHA 가 이미 있어야만" 성립하는 반쪽 경로가 된다(KNK-963).
+      # main 에서의 수동 실행(workflow_dispatch)도 포함한다. 인증을 건너뛰면 Resolve image tags 의
+      # main 분기가 빈 registry 로 잘못된 태그를 만들어 빌드가 실패한다(KNK-963). 수동 실행은
+      # 테스트·빌드와 ECR :short-sha 재push 까지만 하고, 배포(deploy-prod)는 push 이벤트 전용이다.
       - name: Configure AWS credentials
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: aws-actions/configure-aws-credentials@v4
@@ -569,91 +569,3 @@ jobs:
           else
             echo "::warning::복구용 재배포 트리거에 실패했습니다 — :latest 는 되돌렸지만 실행 중 태스크는 실패 이미지입니다. 수동 조치 필요"
           fi
-  # [롤백 경로] 전용 SSM 문서(manyak-prod-ai-deploy)로 EC2에 AI 배포
-  # (문서가 내부에서 deploy.sh + `up -d --wait ai` 로 health 게이트까지 수행)
-  # 이 잡은 manyak-terraform 에서 ALB 트래픽을 EC2 로 전환(ecs_traffic_weight = 0)한 뒤 실행하는
-  # 전제다. 배포 검증은 도메인 스모크가 아니라 전용 SSM 문서 안의 `docker compose up -d --wait ai`
-  # 헬스 게이트가 담당하므로(이 잡에는 도메인 스모크 스텝이 없다), 트래픽 전환 전에 실행해도
-  # EC2 배포 성패 자체는 판별된다. 다만 그 상태에서 api.manyak.app 은 여전히 ECS 를 가리키므로,
-  # 롤백이 실제로 사용자에게 반영됐는지는 트래픽을 전환해야 확인된다.
-  # 운영 트래픽은 ECS 로 넘어갔고(KNK-856) 배포도 위 deploy-prod 가 담당한다. 이 잡은 ECS 배포가
-  # 문제일 때 EC2 로 되돌리기 위한 수동 수단으로만 남긴다 — main 푸시가 아니라 workflow_dispatch 로만 돈다
-  # (이미 ECR 에 있는 :short-sha 를 배포하므로 이 실행에서 이미지를 새로 빌드하지 않아도 된다).
-  # EC2 를 회수하면 이 잡을 통째로 제거한다(KNK-963).
-  deploy:
-    name: Deploy AI to EC2 (prod, 롤백 경로 · 수동 실행)
-    needs: docker
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    # 배포 잡(manyak-prod-deploy)과 그룹을 분리한다. GitHub 는 그룹당 pending 을 1개만 두고
-    # 새 잡이 그 자리를 차지하므로, 같은 그룹이면 새 main push 의 deploy-prod 가 대기 중인
-    # 롤백을 취소해 버린다 — 사람이 의도한 유일한 롤백 실행을 배포가 밀어내면 안 된다.
-    # 롤백은 EC2 를, 배포는 ECS 를 치므로 자원도 겹치지 않는다.
-    # cancel-in-progress=false: SSM send-command 로 이미 dispatch 된 원격 배포는 잡을 취소해도
-    # 되돌릴 수 없어서, 취소보다 큐잉이 안전하다.
-    concurrency:
-      group: manyak-prod-rollback
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    steps:
-      # 최신 main SHA 게이트를 두지 않는다. 이 잡은 사람이 의도해서 돌리는 유일한 롤백 실행이라,
-      # 롤백 도중 main 이 전진했다는 이유로 skip 하면 롤백 자체가 사라진다.
-      # 배포 대상은 이 실행이 체크아웃한 커밋의 이미지다.
-      - name: 배포 대상 알림
-        run: |
-          echo "::notice::수동 롤백 실행 — 이 실행의 커밋 ${GITHUB_SHA::7} 이미지를 EC2 에 배포합니다"
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Resolve target EC2 instance
-        id: ec2
-        run: |
-          INSTANCE_ID=$(aws ec2 describe-instances \
-            --filters "Name=tag:Project,Values=manyak" "Name=tag:Name,Values=manyak-prod-app" "Name=instance-state-name,Values=running" \
-            --query "Reservations[].Instances[].InstanceId | [0]" --output text)
-          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "::error::running 상태의 manyak-prod-app EC2를 찾지 못했습니다 (terraform apply 선행 필요)"; exit 1
-          fi
-          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
-          echo "대상 인스턴스: $INSTANCE_ID"
-
-      - name: Deploy via SSM (전용 문서 manyak-prod-ai-deploy)
-        run: |
-          # 이 워크플로가 빌드·푸시한 정확한 이미지(short-sha)를 배포 — :latest 의 동시 push 모호성·추적성 문제 회피
-          IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA::7}"
-          echo "배포 이미지: $IMAGE"
-          # 전용 SSM 문서(manyak-prod-ai-deploy)가 내부에서 AI_IMAGE_OVERRIDE 로 deploy.sh 를 실행하고
-          # `docker compose up -d --wait ai` 로 ai healthcheck(/api/v1/health status==ok) 통과까지 대기한다.
-          # 따라서 send-command 성공 = 배포 + ai healthy. (전용 역할이라 임의 셸 불가 → 별도 헬스 스모크 스텝 없음)
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "${{ steps.ec2.outputs.instance_id }}" \
-            --document-name "manyak-prod-ai-deploy" \
-            --comment "manyak-ai deploy ${GITHUB_SHA::7}" \
-            --parameters ImageUri="$IMAGE" \
-            --query "Command.CommandId" --output text)
-          echo "SSM CommandId: $CMD_ID"
-          # terminal 상태까지 폴링 (기본 `wait command-executed` 의 100s 한계로 InProgress 를 실패로 오판하지 않도록)
-          STATUS="Pending"
-          for i in $(seq 1 60); do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$CMD_ID" --instance-id "${{ steps.ec2.outputs.instance_id }}" \
-              --query "Status" --output text 2>/dev/null || echo "Pending")
-            case "$STATUS" in
-              Success) echo "✅ SSM Success (배포 + ai healthcheck 통과)"; break ;;
-              Failed|Cancelled|TimedOut|Undeliverable|Terminated)
-                echo "::error::SSM $STATUS — 배포 또는 ai health 실패"
-                aws ssm get-command-invocation --command-id "$CMD_ID" \
-                  --instance-id "${{ steps.ec2.outputs.instance_id }}" \
-                  --query "StandardErrorContent" --output text || true
-                exit 1 ;;
-              *) echo "SSM $STATUS — 대기 $i/60 (10s)"; sleep 10 ;;
-            esac
-          done
-          [ "$STATUS" = "Success" ]

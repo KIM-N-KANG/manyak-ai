@@ -16,12 +16,19 @@
     "length_ratio": "묘사 6 : 대사 4",
     "character_setting": [
       {
+        "input_character_id": "input-1",
         "name": "레이",
         "gender": "남성",
         "personality": "충직한 원칙주의자.",
         "tone": "직설적인 말투.",
         "motivation": "진실 규명.",
-        "attitude_to_user": "신뢰하는 전우."
+        "attitude_to_user": "신뢰하는 전우.",
+        "age": "20대 후반",
+        "body": "건장한",
+        "face": "각진 턱선, 굳은 표정",
+        "hair": "짧은 단발",
+        "outfit": "은색 판금 흉갑",
+        "visual_identity": "왼쪽 관자놀이의 칼자국"
       },
       {
         "name": "세린",
@@ -29,7 +36,13 @@
         "personality": "냉철하고 계산적.",
         "tone": "에두르는 화법.",
         "motivation": "마법 금기령 철폐.",
-        "attitude_to_user": "유용한 패로 본다."
+        "attitude_to_user": "유용한 패로 본다.",
+        "age": "20대 초반",
+        "body": "글래머",
+        "face": "가늘고 올라간 눈매",
+        "hair": "허리까지 내려오는 생머리",
+        "outfit": "진보라 벨벳 로브",
+        "visual_identity": "오른손 손등의 마법진 흉터"
       },
       {
         "name": "칸",
@@ -37,7 +50,13 @@
         "personality": "거칠고 카리스마 있다.",
         "tone": "도발적인 말투.",
         "motivation": "왕조 전복.",
-        "attitude_to_user": "포섭 대상으로 본다."
+        "attitude_to_user": "포섭 대상으로 본다.",
+        "age": "30대",
+        "body": "근육질",
+        "face": "넓은 이마, 깊은 눈",
+        "hair": "민머리",
+        "outfit": "낡은 가죽 갑옷",
+        "visual_identity": "목에서 뒤통수까지 붉은 문신"
       },
       {
         "name": "에단",
@@ -45,7 +64,13 @@
         "personality": "소심한 시종.",
         "tone": "조심스러운 말투.",
         "motivation": "생존.",
-        "attitude_to_user": "두려워한다."
+        "attitude_to_user": "두려워한다.",
+        "age": "10대 후반",
+        "body": "슬림한",
+        "face": "둥근 볼, 큰 눈",
+        "hair": "짧은 단발",
+        "outfit": "하얀 시종 제복",
+        "visual_identity": "왼쪽 손목의 낡은 가죽 팔찌"
       },
       {
         "name": "미라",
@@ -53,7 +78,13 @@
         "personality": "냉소적인 정보상.",
         "tone": "빈정대는 말투.",
         "motivation": "이문.",
-        "attitude_to_user": "흥정 상대로 본다."
+        "attitude_to_user": "흥정 상대로 본다.",
+        "age": "40대",
+        "body": "왜소한",
+        "face": "가느다란 눈, 얇은 입술",
+        "hair": "뒤로 넘긴 짧은 머리",
+        "outfit": "낡은 갈색 외투",
+        "visual_identity": "오른쪽 눈 위 세로 흉터"
       },
       {
         "name": "보른",
@@ -61,7 +92,13 @@
         "personality": "과묵한 노병.",
         "tone": "무뚝뚝한 말투.",
         "motivation": "옛 맹세 이행.",
-        "attitude_to_user": "지켜본다."
+        "attitude_to_user": "지켜본다.",
+        "age": "50대 이상",
+        "body": "근육질",
+        "face": "주름진 눈가, 다문 입",
+        "hair": "은백색 짧은 머리",
+        "outfit": "검은 철갑옷",
+        "visual_identity": "등에 새겨진 십자 화상 자국"
       }
     ],
     "user_role_setting": {

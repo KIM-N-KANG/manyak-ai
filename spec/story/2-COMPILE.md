@@ -1,6 +1,6 @@
 ---
-version: 9
-updated: 2026-08-22
+version: 13
+updated: 2026-08-31
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -19,7 +19,7 @@ updated: 2026-08-22
 
 ## 2. 시스템 구성 요소
 
-스토리라인 생성과 동일하게 클라이언트(백엔드) ↔ AI 서버(FastAPI) ↔ LLM API로 구성됩니다. 차이는 입력이 장르·인물뿐이 아니라 **선택한 스토리라인 1편 + 추가정보 + 원본 장르 태그·인물 설정**이고, 출력이 이야기 3편이 아니라 **스토리 명세 1건**이라는 점입니다.
+스토리라인 생성과 동일하게 클라이언트(백엔드) ↔ AI 서버(FastAPI) ↔ LLM API로 구성됩니다. 차이는 입력이 장르·인물뿐이 아니라 **선택한 스토리라인 1편 + 추가정보 + 원본 장르 태그·인물 설정**이고, 출력이 이야기 3편이 아니라 **스토리 명세 1건**(+ 인물 외형·인물 이미지·표지 썸네일·로깅 메타)이라는 점입니다.
 
 컴파일은 스토리라인보다 출력이 길고 구조가 복잡해(인물 카드 최대 5명 등) 더 큰 모델을 쓰고, 빈 칸을 채우기 위한 부분 재호출이 추가됩니다.
 
@@ -28,9 +28,9 @@ updated: 2026-08-22
 | 항목 | 스토리라인 생성 | 컴파일 |
 |---|---|---|
 | 입력 | 장르 태그 + 인물 설정 | 선택 스토리라인 + 추가정보 + 장르 태그 + 인물 설정 |
-| 출력 | 이야기 3편 + 추천정보 | 스토리 명세 1건(4테이블 + 주요 사건·엔딩) |
+| 출력 | 이야기 3편 + 추천정보 | 스토리 명세 1건(4테이블 + 주요 사건·엔딩) + 인물 외형·인물 이미지·표지 썸네일 + 로깅 메타 |
 | 모델 | `deepseek-v4-flash` | `gpt-5.6-terra` 또는 Gemini Flash(`STORY_COMPILE_MODEL` env) |
-| 호출 | 단일 호출 | 본호출 + 빈 블록 부분 재호출(최대 2회) |
+| 호출 | 단일 호출 | 본호출 + 문제 블록·인물 필드 부분 재호출(최대 2회) |
 
 프롬프트 템플릿은 모델 공급자에 따라 나뉩니다(KNK-958).
 
@@ -46,24 +46,29 @@ updated: 2026-08-22
 ## 3. 시스템 흐름과 각 단계의 이유
 
 ```
-[1] 백엔드   →  선택 스토리라인+추가정보+장르·인물 (POST /api/v1/story/compile)  →  AI 서버
-[2] AI 서버  →  자리표시자 치환으로 완성된 프롬프트 생성
-[3] AI 서버  →  LLM 호출  →  세분 JSON(StorySpec 구조) 수신
-[4] AI 서버  →  meta.genre를 입력 태그로, 주인공 이름·성별을 입력값으로 덮어쓰기
-[5] AI 서버  →  빈 필수 필드·입력 인물 카드 누락 탐지
-[6] AI 서버  →  (빈 필드가 있으면) 그 블록만 부분 재호출 — 최대 2회
-[7] AI 서버  →  StorySpec(Pydantic) 파싱
-[8] AI 서버  →  세분 명세를 ERD 4테이블 통글 마크다운으로 변환
-[9] AI 서버  →  스토리 명세 + 로깅 메타 반환  →  백엔드
+[1]  백엔드   →  선택 스토리라인+추가정보+장르·인물 (POST /api/v1/story/compile)  →  AI 서버
+[2]  AI 서버  →  자리표시자 치환으로 완성된 프롬프트 생성
+[3]  AI 서버  →  LLM 호출  →  세분 JSON(StorySpec 구조) 수신
+[4]  AI 서버  →  meta.genre를 입력 태그로, 주인공 이름·성별을 입력값으로 덮어쓰기
+[5]  AI 서버  →  빈 필수 필드·입력 인물 카드 누락·인물 이름 중복·외형 누락 탐지
+[6]  AI 서버  →  문제 블록과 인물 이름·외형 필드를 한 번에 부분 재호출 — 최대 2회
+[7]  AI 서버  →  StorySpec(Pydantic) 파싱
+[8]  AI 서버  →  인물 카드의 외형 필드로 인물별 이미지 병렬 생성 + 표지 썸네일 1장 동시 생성(실패해도 계속)
+[9]  AI 서버  →  세분 명세를 ERD 4테이블 통글 마크다운으로 변환하고 이미지·썸네일·로깅 메타와 함께 응답 조립
+[10] AI 서버  →  스토리 명세 + 인물별 이미지(base64) + 썸네일(base64) + 로깅 메타 반환  →  백엔드
 ```
 
 **[3] 세분 JSON으로 받는 이유**: LLM에게 최종 형태(통글 마크다운)로 바로 답하게 하면, 어느 부분이 비었는지 탐지하거나 그 부분만 다시 채우기가 어렵습니다. 그래서 LLM은 필드가 잘게 나뉜 세분 JSON으로 답하고, 서버가 그 결과를 검증·보정한 뒤 최종 형태로 재구성합니다.
 
 **[4] genre·주인공을 덮어쓰는 이유**: 사용자가 정한 값은 LLM 출력에 맡기지 않고 코드가 담보합니다. LLM이 임의로 바꾸거나 누락할 수 있기 때문입니다. 장르는 입력 태그가 정본이라 `meta.genre`를 덮어쓰고, 같은 원칙으로 주인공 이름·성별도 입력값이 있으면 `user_role_setting`에 덮어씁니다(KNK-838). 비운 항목은 LLM이 지은 값을 그대로 둡니다.
 
-**[5]~[6] 빈 필드 검증·부분 재호출이 필요한 이유**: 스토리 명세는 채팅 플레이에 그대로 쓰이므로 필수 슬롯이 비면 안 됩니다. 그런데 Pydantic 검증은 빈 문자열(`""`)을 통과시키고, 파싱이 먼저 실패하면 다시 채울 기회가 사라집니다. 따라서 파싱 전 dict 단계에서 빈 필수 필드를 직접 찾아, 비어 있는 블록만 다시 채우는 부분 재호출로 메웁니다.
+**[5]~[6] 빈 필드 검증·부분 재호출이 필요한 이유**: 스토리 명세는 채팅 플레이에 그대로 쓰이므로 필수 슬롯이 비면 안 됩니다. 그런데 Pydantic 검증은 빈 문자열(`""`)을 통과시키고, 파싱이 먼저 실패하면 다시 채울 기회가 사라집니다. 따라서 파싱 전 dict 단계에서 빈 필수 필드를 직접 찾습니다. 성격·사건처럼 서로 연결된 내용은 해당 블록을 통째로 다시 받고, 인물 이름과 이미지용 외형은 잘 나온 카드 내용을 보존하도록 문제 필드만 다시 받습니다. 같은 차수에 두 종류의 문제가 있으면 한 번의 재호출로 함께 고칩니다.
 
-**[8] 통글 마크다운으로 변환하는 이유**: 백엔드의 ERD 4테이블 중 `story_settings`는 사람이 읽기 좋고 채팅 AI가 바로 슬롯에 끼울 수 있는 통글 마크다운으로 저장합니다. 검증에 유리한 세분 구조와 저장·활용에 유리한 통글 구조가 다르므로, 서버가 마지막에 세분 명세를 통글로 재조립합니다.
+**[8] 인물별 이미지 생성(KNK-414)**: 컴파일이 성공하면 인물 카드의 외형 필드(age·body·face·hair·outfit·visual_identity)로 이미지 프롬프트를 조립하고, 인물별 이미지를 병렬 생성합니다. 이미지 생성은 컴파일의 부가물이라, 한 인물이 실패해도 나머지 인물과 스토리 명세에 영향을 주지 않습니다. 채팅 플레이에서 인물이 말할 때 해당 인물의 이미지를 보여주기 위해 컴파일 시점에 한 번 만들어 둡니다. 이미지를 S3에 직접 올리지 않고 base64로 응답에 실어 보내는 이유는, AI 서버가 저장소를 모르는 stateless 구조를 유지하기 위해서입니다.
+
+**[8] 표지 썸네일 생성(KNK-1047)**: 같은 시점에 스토리 표지 1장도 만듭니다. 재료는 컴파일 요청의 장르 태그와 [6]까지 채워진 인물 카드의 외형이라 백엔드가 새로 보낼 것이 없고, 별도 엔드포인트 없이 컴파일 응답에 함께 실어 보냅니다(팀 협의 2026-08-30). 인물 이미지와 동시에 돌리므로 컴파일 대기 시간은 둘 중 오래 걸리는 쪽만큼만 늘어납니다. 표지가 실패해도 컴파일은 성공합니다. 백엔드가 성공 시 S3에 올려 표지로 쓰고 실패 시 기존 프리셋을 유지하는 것은 백엔드 계획입니다(`4-backend.md §4-3-9` AI 썸네일 전환).
+
+**[9] 통글 마크다운으로 변환하는 이유**: 백엔드의 ERD 4테이블 중 `story_settings`는 사람이 읽기 좋고 채팅 AI가 바로 슬롯에 끼울 수 있는 통글 마크다운으로 저장합니다. 검증에 유리한 세분 구조와 저장·활용에 유리한 통글 구조가 다르므로, 서버가 마지막에 세분 명세를 통글로 재조립합니다.
 
 **엔딩·주요 사건(KNK-417, KNK-465 이름 기반 재작업)**: 컴파일은 세계관·인물과 함께 주요 사건 3~5개와 엔딩 3개를 **한 번의 호출로** 생성합니다. 사건은 이야기의 갈림길이고, 엔딩은 그 사건들의 조합·해결 방식에 뿌리내려 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 결말 상태를 빈틈없이 덮습니다(상호배타+총망라). 성취 유형(해피·노말·배드)은 생성용 **내부 기준일 뿐 출력하지 않고**, 엔딩은 `name`으로 식별합니다. 엔딩은 정상 3개이되 재호출로도 못 채우면 빈 배열로 폴백합니다(→ 4-4). 이 둘은 `story_settings`처럼 통글로 뭉치지 않고 항목별 이산 필드 그대로 백엔드에 전달됩니다(→ 5-1).
 
@@ -100,6 +105,8 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 
 같은 원칙으로 주인공 이름·성별도 덮어씁니다(KNK-838). 입력 `protagonist.name`이 있으면 `user_role_setting.name`에, `protagonist.gender`가 있으면 `user_role_setting.gender`에 한국어(`남성`·`여성`)로 씁니다. 비운 항목은 LLM이 지은 값을 그대로 둡니다. 주인공 프로필 블록이 통째로 없거나 객체가 아니면 주입을 건너뜁니다 — 그 블록은 부분 재호출이 채우고, 재호출 뒤 주입이 다시 실행됩니다.
 
+입력 주변 인물에는 `input-1`부터 시작하는 내부 표시 `input_character_id`를 붙입니다. LLM은 입력 인물 카드에 같은 표시를 돌려주고 직접 만든 인물에는 `null`을 씁니다. 서버는 이 표시로 입력 인물 카드를 찾아 사용자가 정한 이름을 덮어씁니다. 표시가 빠지거나 중복되면 `character_setting` 블록을 다시 받으며, 이름이 겹치면 표시가 없는 생성 인물의 이름만 다시 받습니다. 내부 표시는 검증 후 제거하므로 백엔드 응답에는 포함되지 않습니다.
+
 주입은 본호출과 각 재호출 직후에 적용합니다. 재호출이 블록을 통째로 갈아끼우므로, 그때 다시 덮어쓰지 않으면 재호출이 데려온 LLM 값이 입력값을 되덮습니다.
 
 ### 4-4. 빈 필드 검증과 부분 재호출
@@ -107,9 +114,11 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 파싱 전 dict 단계에서 빈 필수 필드를 직접 탐지합니다(빈 문자열·빈 배열·null·공백만을 빈 값으로 간주).
 
 - 비어 있는 필드가 있으면, 그 필드가 속한 **블록만** 다시 채우도록 부분 재호출합니다. 재호출 프롬프트에는 직전 생성 결과를 맥락으로 주고, 빈 블록만 채워 그 블록만 최상위 키로 갖는 JSON을 돌려받습니다. 잘 나온 다른 블록은 보존하기 위해 응답에 포함하지 않게 합니다.
-- 재호출은 **최대 2회**까지 반복합니다. 2회 후에도 빈 필수 필드가 남으면 502로 막습니다(→ 4-6).
+- 인물 카드 목록이 정상이라면 빈 이름·공백 이름·중복 이름과 빈 외형 6필드(age·body·face·hair·outfit·visual_identity)는 카드 전체가 아니라 해당 필드만 `character_updates`로 다시 받습니다. 서버는 요청한 인물 index와 필드만 병합하며, LLM이 함께 보낸 다른 필드는 무시합니다. 인물 카드 블록 자체를 다시 받는 차수에는 기존 index가 무효가 되므로 `character_updates`를 함께 요청하지 않습니다.
+- 블록 문제와 인물 필드 문제가 동시에 있으면 한 번의 재호출 응답에 모두 담아 고칩니다. 두 문제를 합쳐 **최대 2회**까지 재호출합니다.
+- `null`·빈 문자열·공백이나 개행만 있는 문자열을 모두 빈 필드로 판정합니다. 이름이 2회 후에도 비었거나 중복이면 502로 막습니다. 외형은 이미지 생성의 부가 입력이므로 2회 후에도 비어 있으면 컴파일은 성공시키고 `character_images`에서 해당 인물만 `appearance_missing`으로 처리합니다(표지 썸네일에는 그 인물이 첫 인물로 들어갈 수 있음, → 4-7).
 - 검증에서 제외하는 예외 필드: `meta.genre`(서버가 입력 태그로 덮어씀), `user_role_setting.preference`(선택 입력이라 비어 있어도 됨). 주인공 `name`·`gender`는 검증 대상이되, 입력값이 있으면 주입이 먼저 채우므로 재호출로 이어지지 않습니다.
-- **입력 인물 카드 누락도 재호출 대상입니다**(KNK-833). 사용자가 이름을 지은 주변 인물이 인물 카드에 없으면 `character_setting` 블록을 부분 재호출로 다시 받습니다. 스토리라인처럼 전체를 다시 부르지 않는 이유는 컴파일이 가장 비싼 호출이라, 잘 나온 나머지 블록을 보존하는 쪽이 싸기 때문입니다. 카드 이름에 호칭이 붙을 수 있어(`서린 아씨`) 포함 여부로 판정하며, 이름을 비운 인물은 검증 대상이 아닙니다.
+- **입력 인물 카드 누락도 재호출 대상입니다**(KNK-833). 요청한 `input_character_id`가 카드에 없거나 중복되면 `character_setting` 블록을 부분 재호출로 다시 받습니다. 스토리라인처럼 전체를 다시 부르지 않는 이유는 컴파일이 가장 비싼 호출이라, 잘 나온 나머지 블록을 보존하는 쪽이 싸기 때문입니다.
 - 엔딩은 **soft 블록**입니다(KNK-465). 정상 3개를 목표로, 3개가 아니거나 항목 필드(name·achievement_condition·epilogue)가 비었거나 min_turns가 1 이상의 정수가 아니면(0·음수 포함) 다른 빈 블록과 동일하게 `endings` 블록을 부분 재호출로 채웁니다. 다만 재호출 2회 후에도 온전한 3개를 못 채우면 502가 아니라 **빈 배열(`[]`)로 폴백하고 200을 반환**합니다 — 스토리 본체·주요 사건은 살리고 부가물인 엔딩만 비웁니다(선택지 폴백과 같은 원칙). 엔딩은 성취 유형(해피·노말·배드)을 출력하지 않으며 `name`으로 식별합니다.
 
 필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 6개 필드(name·gender·personality·tone·motivation·attitude_to_user), user_role_setting의 preference 제외 5개 필드(name·gender·role·background·personality)), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음), `main_events`(3~5개이며 각 항목의 name·description·key_sentence가 비어 있지 않음), `endings`(정상 3개이며 각 항목의 name·achievement_condition·epilogue가 비어 있지 않고 min_turns가 1 이상의 정수 — 단 재호출로도 못 채우면 빈 배열로 폴백).
@@ -124,13 +133,39 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 |---|---|
 | LLM API 호출 실패(타임아웃·rate limit·요청 거부·연동 오류) | 게이트웨이 오류(502) 반환 |
 | 빈 응답이거나 유효하지 않은 JSON | 파싱 실패로 간주하고 502 반환 |
-| 재호출 2회 후에도 필수 필드가 비거나 입력 인물 카드가 누락됨(엔딩 제외) | 502 반환 |
+| 재호출 2회 후에도 필수 필드가 비거나 입력 인물 카드가 누락되거나 인물 이름이 비었거나 중복됨(엔딩 제외) | 502 반환 |
+| 재호출 2회 후에도 인물 외형 필드가 비어 있음 | 컴파일은 200 반환, `character_images`의 해당 인물은 `appearance_missing`(표지 썸네일은 별도 규칙, → 4-7) |
+| 표지 썸네일 생성 실패(시간 초과·rate limit·거부·기타) | 컴파일은 200 반환, `thumbnail_image`는 `image_base64: null` + 사유 코드(`timeout`·`rate_limited`·`rejected`·`generation_failed`) |
+| 표지 썸네일 로직 자체의 예상치 못한 예외 | 컴파일은 200 반환, `thumbnail_image.error`는 `generation_failed`, Sentry에 `unexpected_error`로 보고 |
 | 재호출 2회 후에도 엔딩이 온전한 3개가 아님 | 빈 배열로 폴백하고 200 반환(502 아님) |
 | 세분 명세가 `StorySpec` 스키마와 맞지 않음 | 스키마 검증 실패로 502 반환 |
 
 502 응답 본문에는 사용자에게 보일 안내 메시지만 담고, 공급자 원문 오류는 Sentry로만 보냅니다(KNK-262).
 
-### 4-7. 프롬프트 캐싱
+### 4-7. 인물별 이미지·표지 썸네일 생성 (KNK-414·KNK-1047)
+
+컴파일 성공 후 인물 카드의 외형 6필드(age·body·face·hair·outfit·visual_identity)로 이미지 프롬프트를 조립하고 인물별 이미지를 병렬 생성합니다. 같은 시점에 표지 썸네일 1장을 동시에 생성합니다(`asyncio.gather`).
+
+- **이미지 모델**: `gpt-image-2-2026-04-21`(스냅샷 고정). 이미지 모델은 텍스트 LLM과 같은 3층 구조(호출부 → 모델 특성 → SDK 어댑터)를 따릅니다.
+- **출력 형식**: WebP(`output_format="webp"`). PNG 대비 파일 크기가 작아 base64 응답 전송에 유리합니다.
+- **크기**: 인물 이미지는 1024×768(가로 4:3, `IMAGE_SIZE` env). 표지 썸네일은 768×1024(세로 3:4, 코드 상수 `THUMBNAIL_IMAGE_SIZE`) — 기존 프리셋 썸네일과 같은 비율이라 프론트 수정이 없고, 환경변수를 늘리지 않습니다.
+- **화질**: low(`IMAGE_QUALITY` env). 나중에 변경할 수 있도록 config 설정으로 분리했습니다.
+- **동시 실행**: 인물 이미지는 최대 5명 동시(`asyncio.Semaphore(5)`). 표지 썸네일은 이 세마포어 밖에서 함께 돌므로 공급자 동시 호출은 최대 6입니다.
+- **실패 격리**: 한 인물의 이미지 생성 실패가 다른 인물이나 컴파일 전체를 중단하지 않습니다. 실패한 인물은 응답에 에러 코드만 실립니다.
+- **외형 필드 부족**: 컴파일 부분 재호출 2회 후에도 외형 6필드 중 하나라도 비어 있으면 해당 인물의 인물 이미지 프롬프트를 조립할 수 없어 인물 이미지는 건너뜁니다(표지 썸네일은 아래 규칙대로 그 인물을 쓸 수 있음).
+- **에러 코드**: 응답에는 공급자 원문 대신 분류된 코드만 내려보냅니다(`timeout`, `rate_limited`, `rejected`, `appearance_missing`, `generation_failed`). 원문은 로그에만 남깁니다.
+- **프롬프트 템플릿**: `prompt/image/CHARACTER-IMAGE-TEMPLATE.md`. 장르와 외형 필드를 XML 태그로 끼워 넣습니다. `visual_identity`를 `hair` 앞에 배치해 이미지 모델이 머리색을 먼저 인식하게 합니다.
+
+표지 썸네일(KNK-1047)은 위와 같은 통로를 쓰되 다음이 다릅니다.
+
+- **표지 인물**: 외형 6필드가 모두 채워진 인물 중 카드 순서 앞 1~2명. 그런 인물이 없으면 카드 첫 번째 인물을 넣어 표지에 인물이 최소 1명은 있게 하고, 빈 외형 칸은 프롬프트에서 빼고 보냅니다(채우라는 별도 지시는 없음). 인물 카드가 아예 없을 때만 장르 장면만으로 표지를 만듭니다. 주인공(`user_role_setting`)은 외형 필드가 없어 표지에 나오지 않습니다.
+- **프롬프트 템플릿**: `prompt/image/THUMBNAIL-IMAGE-TEMPLATE.md`. `<genre>`와 `<characters>`(인물 `<character>` 블록 0~2개, 이름 없음) 두 자리만 바뀌고 나머지는 고정입니다. 그림체·분위기는 인물 템플릿과 같은 화풍(현대 일본 애니메이션 게임 일러스트, 셀 셰이딩)을 지시해 표지와 인물 이미지가 한 작품처럼 보이게 합니다(문장은 중복 제거·지시문 위주로 정리돼 인물 템플릿과 같지 않음). 제목 글자는 넣지 않습니다(이미지 모델이 한국어를 잘 못 그리고, 제목은 화면 밖에서 붙임).
+- **실패 표현**: 한 가지뿐입니다. `thumbnail_image`는 항상 객체이며(null 없음, 필수 필드), 성공이면 `image_base64`가 문자열이고 `error`가 null, 실패면 `image_base64`가 null이고 `error`에 코드(`timeout`·`rate_limited`·`rejected`·`generation_failed`)가 실립니다. 썸네일 로직 자체의 예외도 `generation_failed`로 바꿉니다. 이름·형식·코드는 스키마가 계약값만 허용하고, 성공/실패 상호 배타도 스키마가 검증합니다.
+- **실패 격리**: 표지 실패가 인물 이미지나 컴파일에 영향을 주지 않고, 그 반대도 같습니다.
+- **관측**: Sentry 보고의 `feature` 값은 `thumbnail_image_generation`, `meta.prompt_versions`에 `THUMBNAIL_IMAGE` 버전.
+- **시간 제한**: 썸네일 전체에 별도 상한을 두지 않습니다. `IMAGE_TIMEOUT`(기본 60초)은 시도 한 번의 제한이고 SDK가 시간 초과·429·서버 오류에 2번 더 시도하므로, 최악은 3번 시도 약 180초 이상입니다. 이 상한은 시간 제한 후속(5-ai-server A18)에서 다룹니다.
+
+### 4-8. 프롬프트 캐싱
 
 Terra 호출에는 매번 동일한 `[SYSTEM]` 블록을 보내며 서버가 별도 캐시 옵션을 지정하지는 않습니다. OpenAI 응답의 `usage.prompt_tokens_details.cached_tokens`가 있으면 어댑터가 `cache_read_input_tokens`로 옮기고, 스토리 호출 진단 로그에 캐시 적중 토큰 수를 남깁니다.
 
@@ -170,7 +205,7 @@ POST /api/v1/story/compile
 
 #### 응답 (Response)
 
-ERD 4테이블에 1:1 대응하는 nested 구조입니다.
+ERD 4테이블에 1:1 대응하는 nested 구조에 인물 외형·인물 이미지·표지 썸네일·로깅 메타가 더해집니다.
 
 ```json
 {
@@ -199,9 +234,26 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
     { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." },
     { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." }
   ],
+  "character_appearances": [
+    {
+      "name": "레이",
+      "gender": "남성",
+      "age": "20대 후반",
+      "body": "건장한 체격",
+      "face": "각진 턱선",
+      "hair": "짧은 검은 머리",
+      "outfit": "은색 판금 흉갑",
+      "visual_identity": "왼쪽 관자놀이의 칼자국"
+    }
+  ],
+  "character_images": [
+    { "name": "레이", "image_name": "레이_기본", "image_base64": "UklGR...", "content_type": "image/webp", "error": null },
+    { "name": "세린", "image_name": "세린_기본", "image_base64": null, "content_type": "image/webp", "error": "timeout" }
+  ],
+  "thumbnail_image": { "image_name": "썸네일_기본", "image_base64": "UklGR...", "content_type": "image/webp", "error": null },
   "meta": {
     "model": "gpt-5.6-terra",
-    "prompt_versions": { "COMPILE": 8 },
+    "prompt_versions": { "COMPILE": 10, "CHARACTER_IMAGE": 1, "THUMBNAIL_IMAGE": 1 },
     "provider": "openai",
     "input_token_count": 3500,
     "output_token_count": 2200,
@@ -219,12 +271,15 @@ ERD 4테이블에 1:1 대응하는 nested 구조입니다.
 | story_suggested_inputs | string[] | 첫 입력 추천 문구. 정확히 3개 |
 | story_main_events | object[] | 주요 사건 3~5개(`story_main_events` 테이블). 각 항목 name·description·key_sentence. 배열 순서=명목 순서(비강제) |
 | story_endings | object[] | 엔딩(`story_endings` 테이블). 정상 3개(폴백 시 0개). 각 항목 name·min_turns(1 이상 정수)·achievement_condition·epilogue. 성취 유형은 미출력, name으로 식별 |
+| character_appearances | object[] | 인물별 외형 정보. 각 항목 name·gender·age·body·face·hair·outfit·visual_identity. 인물 전원이 포함되며, 백엔드가 저장해 이미지 재생성에 사용 |
+| character_images | object[] | 인물별 이미지(KNK-414). 각 항목 name(인물 이름 — 백엔드가 외형·인물과 연결하는 키)·image_name(이미지 한 장의 이름, 지금은 인물당 한 장이라 `인물이름_기본`. 백엔드가 uuid를 붙여 파일명으로 쓰고 `story_characters.image_name`에 저장, KNK-1027)·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 사유 코드, 성공 시 null). image_name은 성공·실패 항목 모두에 있음. 인물별로 성공/실패가 독립. 빈 배열은 인물 0명이거나 이미지 로직 자체가 실패한 경우 |
+| thumbnail_image | object | 스토리 표지 썸네일 1장(KNK-1047). 필수 필드(null 없음). image_name(`썸네일_기본` 고정)·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 `timeout`·`rate_limited`·`rejected`·`generation_failed` 중 하나, 성공 시 null). 인물 name이 없으므로 인물 매칭에 넣지 말 것. 백엔드 계획(`4-backend.md §4-3-9`): 성공이면 S3에 올려 스토리 표지로 쓰고, 실패면 기존 프리셋 유지 |
 | meta | object | 응답 로깅 메타(`ai_call_logs` 적재용, KNK-243) |
 | meta.retry_count | number | 부분 재호출 횟수(0~2) |
 
 **백엔드 저장 안내(KNK-465)**: `story_endings`는 엔딩 4필드(name·min_turns·achievement_condition·epilogue)를 담을 칸으로, `story_main_events`는 name·description·key_sentence + 배열 순서를 담을 순서 칸으로 저장합니다(상위 정본 `5-ai-server.md §5-3-3`과 일치). 엔딩은 정상 3개이되 폴백 시 0개가 올 수 있습니다. 두 목록은 통글로 뭉치지 않고 항목별 이산 필드 그대로 내려가므로 칸별로 저장하면 됩니다. 사건의 배열 순서는 명목 순서일 뿐 전개를 강제하지 않습니다(건너뛰기 허용).
 
-`meta`의 나머지 필드(model·prompt_versions·provider·input_token_count·output_token_count)는 스토리라인과 동일합니다. 토큰 수는 본호출과 재호출을 **합산**하며, model은 본호출 응답값을 씁니다.
+`meta`의 나머지 필드(model·prompt_versions·provider·input_token_count·output_token_count)는 스토리라인과 동일합니다. `prompt_versions`에는 컴파일 템플릿(`COMPILE` 또는 `COMPILE_GEMINI`)과 이미지 템플릿(`CHARACTER_IMAGE`·`THUMBNAIL_IMAGE`) 버전이 함께 들어갑니다. 토큰 수는 본호출과 재호출을 **합산**하며, model은 본호출 응답값을 씁니다.
 
 ### 5-2. 내부 세분 스키마 (StorySpec)
 
@@ -240,7 +295,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
     "tone_setting": "...",
     "length_ratio": "묘사 7 : 대사 3",
     "character_setting": [
-      { "name": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "..." }
+      { "input_character_id": "input-1", "name": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
     ],
     "user_role_setting": { "name": "...", "gender": "...", "role": "...", "background": "...", "personality": "...", "preference": "" }
   },
@@ -265,7 +320,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | | rule_setting | 전개 속도·긴장 곡선 등 연출 규칙 |
 | | tone_setting | 장면 전체의 서술 톤 |
 | | length_ratio | 묘사와 대사의 비중(`묘사 N : 대사 M`) |
-| | character_setting | 주변 인물 카드 1~5명. 각 카드는 name·gender·personality·tone·motivation·attitude_to_user. 입력한 주변 인물은 전원 카드가 되고, 남는 자리만 LLM이 채움 |
+| | character_setting | 주변 인물 카드 1~5명. 각 카드는 내부용 input_character_id + name·gender·personality·tone·motivation·attitude_to_user + 외형 6필드(age·body·face·hair·outfit·visual_identity). 입력한 주변 인물은 전원 카드가 되고, 남는 자리만 LLM이 채움. input_character_id는 사용자 이름 주입 후 제거되어 외부 응답에는 실리지 않음. 외형 필드는 이미지 생성 전용이며 통글에는 싣지 않음(KNK-937). 선택 필드라 비어 있어도 컴파일은 성공하고 `character_images`에서 해당 인물만 안 만들어짐(표지 썸네일 규칙은 4-7) |
 | | user_role_setting | 주인공 프로필. name·gender·role·background·personality·preference(선택). name·gender는 입력값이 있으면 서버가 덮어씀 |
 | start | name·prologue·start_situation | 시작 설정 이름·도입 나레이션·첫 장면 |
 | suggested_inputs | string[] | 첫 입력 추천 문구 3개 |
@@ -340,13 +395,25 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | genre 주입 | 노출 genre가 LLM 출력이 아니라 입력 태그로 채워졌는지 확인 |
 | 주인공 주입 | 입력한 주인공 이름·성별이 통글의 최종 값인지, 비운 항목은 LLM 값이 남는지, 재호출 뒤에도 유지되는지 확인 |
 | 통글 변환 | story_settings 4필드가 약속된 마크다운 헤더 구조로 조립됐는지 확인 |
-| 부분 재호출 | 빈 블록이 있을 때 그 블록만 다시 채우고, 2회 후에도 누락이면 502인지 확인 |
+| 부분 재호출 | 문제 블록과 인물 이름·외형 필드를 한 호출에 함께 요청하고, 요청한 값만 병합하는지 확인 |
+| 인물 이름 | 빈값·공백·중복 이름만 다시 받고, 2회 후에도 해결되지 않으면 502인지 확인 |
+| 외형 부분 재호출 | null·빈 문자열·공백뿐인 외형 필드만 다시 받고, 다른 카드 내용은 보존하는지 확인 |
 | 주요 사건 | story_main_events가 3~5개이고 각 항목 name·description·key_sentence가 채워졌는지 확인 |
 | 엔딩 | story_endings가 3개이고 각 항목 name·min_turns·achievement_condition·epilogue가 채워졌는지 확인 |
 | 엔딩 폴백 | 재호출 후에도 온전한 3개를 못 채우면 502가 아니라 빈 배열(`[]`)로 200을 반환하는지 확인 |
 | 엔딩 개수 | endings가 0개(폴백) 또는 3개가 아니면(2·4개 등) StorySpec 파싱에서 거부되는지 확인 |
 | 응답 메타 | `meta`에 model·prompt_versions·provider·토큰 수·retry_count가 실리는지 확인 |
 | 에러 처리 | 호출 실패·파싱 실패·스키마 검증 실패 시 502 반환 |
+| 인물 이미지 | character_images가 인물 수만큼 반환되고, 항목마다 name(인물 이름)과 image_name(`인물이름_기본`)이 있으며, 성공한 인물은 image_base64와 content_type이 채워졌는지 확인 |
+| 이미지 실패 격리 | 한 인물의 이미지 생성이 실패해도 나머지 인물과 컴파일 전체가 200으로 성공하는지 확인 |
+| 이미지 에러 코드 | 실패한 인물의 error에 공급자 원문이 아닌 분류된 코드(timeout·rejected 등)가 실리는지 확인 |
+| 외형 필드 부족 | 부분 재호출 2회 후에도 외형이 비어 있으면 컴파일은 성공하고 해당 인물 이미지만 건너뛰는지 확인 |
+| 썸네일 생성 | thumbnail_image가 항상 객체로 실리고, 성공 시 image_base64·content_type이 채워지며, 호출 크기가 768×1024인지 확인 |
+| 썸네일 인물 선정 | 외형 완비 인물 앞 1~2명을 고르고, 없으면 첫 인물을 넣으며(빈 외형 칸은 프롬프트에서 제외), 인물 이름은 프롬프트에 싣지 않는지 확인 |
+| 썸네일 실패 격리 | 썸네일이 실패해도 컴파일 200과 인물 이미지가 유지되고, 인물 이미지가 실패해도 썸네일이 유지되는지 확인 |
+| 썸네일 에러 코드 | 실패 코드가 4종(timeout·rate_limited·rejected·generation_failed) 중 하나이고, 로직 예외도 generation_failed로 바뀌며 Sentry에 unexpected_error로 보고되는지 확인 |
+| 썸네일 스키마 | thumbnail_image가 필수 필드(OpenAPI required)이고, 계약 밖 이름·형식·코드와 "성공+실패 동시" 값을 스키마가 거부하는지 확인 |
+| 동시 실행 | 인물 이미지와 썸네일이 순서대로가 아니라 동시에 도는지 확인 |
 
 ---
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from src.schemas.story_compile import StoryCompileRequest, StorySpec
+from src.schemas.story_compile import StoryCompileRequest, StorySpec, ThumbnailImageOut
 from src.services import story_llm
 from src.services.story_compile_render import spec_to_response
 
@@ -38,7 +38,7 @@ def _patch_llm(monkeypatch: pytest.MonkeyPatch, data: dict) -> None:
 
 # ── 통글 성별 칸 렌더링 ─────────────────────────────────────────────────────
 def test_gender_sections_rendered() -> None:
-    res = spec_to_response(StorySpec(**_spec()))
+    res = spec_to_response(StorySpec(**_spec()), thumbnail_image=ThumbnailImageOut(error="generation_failed"))
     # 인물 카드: 이름 바로 아래 ### 성별. fixture 첫 카드는 레이(남성).
     assert "## 레이\n### 성별\n남성\n### 성격" in res.story_settings.character_setting
     # 주인공 통글: 호칭 바로 아래 ## 성별.

@@ -1,6 +1,7 @@
 import re
 
 from src.schemas.chat_turn import (
+    CharacterImageMapping,
     ChatHistoryItem,
     ChatStartSettings,
     ChatStorySettings,
@@ -14,6 +15,7 @@ def _request(
     summary: str = "",
     history: list[ChatHistoryItem] | None = None,
     user_input: str = "*문을 연다*",
+    character_images: list[CharacterImageMapping] | None = None,
 ) -> ChatTurnRequest:
     return ChatTurnRequest(
         genre="판타지",
@@ -33,6 +35,7 @@ def _request(
         else [ChatHistoryItem(role="ASSISTANT", content="*레이가 들어선다.*")],
         user_input=user_input,
         summary=summary,
+        character_images=character_images or [],
     )
 
 
@@ -57,6 +60,27 @@ def test_message_order_and_roles() -> None:
     assert messages[-1]["role"] == "system"
 
 
+def test_history_removes_character_image_syntax_only_from_llm_copy() -> None:
+    # 마커는 `[[URL]]`을 대사 줄 위에 빈 줄을 두고 따로 저장한다(KNK-1025). 그 빈 줄까지 함께
+    # 지워야 LLM 입력이 마커 없던 본문과 같아진다. 옛 모양 `[[이름:URL]]`(개발 서버 기록, 대사 옆에
+    # 붙은 것 포함)도 같이 지워진다. 옛 `[character:이름]` 태그는 더 지우지 않는다(KNK-1007).
+    stored = (
+        "*문이 열린다.*\n\n"
+        "[[https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
+        "[[레이:https://cdn.example.com/rei.webp]]\n\n레이: 들어가자.\n"
+        "[[미라:https://cdn.example.com/mira.webp]]미라: 그만.\n"
+        "[character:미라]미라: 나도 왔어."
+    )
+    history = [ChatHistoryItem(role="ASSISTANT", content=stored)]
+
+    messages = assemble(_request(history=history))
+
+    assert messages[1]["content"] == (
+        "*문이 열린다.*\n\n세린: 기다렸어?\n레이: 들어가자.\n미라: 그만.\n[character:미라]미라: 나도 왔어."
+    )
+    assert history[0].content == stored
+
+
 # ── 슬롯 치환 ────────────────────────────────────────────────────────────────
 def test_no_unsubstituted_slots() -> None:
     messages = assemble(_request())
@@ -73,6 +97,26 @@ def test_system_front_contains_all_slot_materials() -> None:
     assert "촛불만 흔들리는 빈소에 레이가 들어선다." in front  # start_settings.start_situation
     assert "냉정하다." in front  # character_setting
     assert "카이" in front  # user_role_setting
+
+
+def test_character_images_are_not_sent_to_the_llm() -> None:
+    # 이미지 매핑은 AI 서버가 출력의 `인물명:` 줄에 붙일 때만 쓴다(KNK-1006). 이름 목록도
+    # URL도 프롬프트에 들어가지 않고, 옛 태그 문법도 어디에도 남지 않는다.
+    images = [
+        CharacterImageMapping(name="레이", image_url="https://cdn.example.com/rei.webp"),
+        CharacterImageMapping(name="세린", image_url="https://cdn.example.com/serin.webp"),
+    ]
+    with_images = assemble(_request(character_images=images))
+    without_images = assemble(_request(character_images=[]))
+    blob = "\n".join(message["content"] for message in with_images)
+
+    assert with_images == without_images
+    for phrase in ("이미지 대상", "이미지 보유", "인물 이미지", "이미지 태그"):
+        assert phrase not in blob
+    assert "[character:" not in blob
+    assert "{{character_image_names}}" not in blob
+    assert "https://cdn.example.com/rei.webp" not in blob
+    assert "https://cdn.example.com/serin.webp" not in blob
 
 
 def test_system_front_layer_order() -> None:
@@ -119,6 +163,36 @@ def test_phi_order() -> None:
         < phi.index("# CORE")
         < phi.index("# SAFETY")
     )
+
+
+def test_phi_keeps_dialogue_rules_without_tag_instructions() -> None:
+    phi = assemble(_request(character_images=[]))[-1]["content"]
+
+    assert "매 답변에 주변 인물이나 단역·배경 인물의 대사를 최소 한 줄" in phi
+    assert "출력은 `*지문*` + `인물명: 대사`로만 구성한다" in phi
+    assert "태그" not in phi
+    for phrase in ("이미지 대상", "이미지 보유", "인물 이미지"):
+        assert phrase not in phi
+
+
+def test_core_keeps_the_rules_the_speaker_label_parser_relies_on() -> None:
+    # 이미지는 AI 서버가 출력의 `인물명:` 줄을 찾아 붙인다(KNK-1005). 그 근거가 되는
+    # 표기 규칙이 프롬프트에서 조용히 사라지면 이미지가 안 뜨는데 다른 테스트는 통과하므로
+    # 여기서 문구를 고정한다(Codex 리뷰 지적, KNK-1006).
+    messages = assemble(_request())
+    front, phi = messages[0]["content"], messages[-1]["content"]
+
+    assert "대사는 반드시 `인물명: 대사` 형식으로 쓴다" in front
+    assert "이름은 CHARACTER 설정에 적힌 글자 그대로 쓰고" in front
+    assert "이름은 줄 맨 앞에서 콜론 직전까지 장식 없는 평문으로 적는다" in front
+    assert "`나레이터:` 같은 역할어 라벨을 쓰지 않는다" in front
+    assert "각 대사를 그 인물 이름으로 시작하는 **별도 줄**로 적는다" in front
+    assert "화자 이름은 줄 맨 앞 장식 없는 평문으로 매 줄 붙인다" in phi
+    # 표기 규약의 좋은 예·나쁜 예는 남기고, 응답 전체를 흉내 내는 예시 블록은 두지 않는다.
+    assert "\n  세린: 기다렸어?\n" in front
+    assert "서린: 기다렸어?" in front  # 이름 글자가 다른 나쁜 예
+    assert "복도 끝에서 인기척이 났습니다" not in front
+    assert "[character:" not in front
 
 
 # ── 헬퍼 ────────────────────────────────────────────────────────────────────

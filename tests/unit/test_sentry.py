@@ -7,6 +7,12 @@ import sentry_sdk
 
 from src.core import sentry
 from src.core.sentry import capture_ai_exception, classify_error_code, init_sentry
+from src.services.image.base import (
+    ImageBadRequest,
+    ImageGenerationError,
+    ImageRateLimited,
+    ImageTimeout,
+)
 from src.services.llm.base import (
     LlmBadRequest,
     LlmError,
@@ -312,3 +318,19 @@ def test_capture_rejects_positional_feature_and_provider() -> None:
     """
     with pytest.raises(TypeError):
         capture_ai_exception(ValueError("boom"), "chat_response", "deepseek")
+
+
+# ── 이미지 통로 중립 예외도 같은 코드로 접는다 (PR #92 리뷰) ─────────────────
+# 이미지 실패는 컴파일을 깨지 않고 인물만 비우므로, 여기서 분류가 빠지면 전부
+# unexpected_error로 뭉쳐 시간 초과·429·거부를 구분할 수 없다.
+@pytest.mark.parametrize(
+    ("exc_class", "expected"),
+    [
+        (ImageTimeout, "provider_timeout"),
+        (ImageRateLimited, "provider_rate_limited"),
+        (ImageBadRequest, "provider_bad_request"),
+        (ImageGenerationError, "provider_unavailable"),
+    ],
+)
+def test_classify_image_errors(exc_class: type[ImageGenerationError], expected: str) -> None:
+    assert classify_error_code(exc_class("실패")) == expected

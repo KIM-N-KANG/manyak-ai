@@ -1,9 +1,17 @@
+import json
 import os
+from pathlib import Path
 
 import pytest
 
+from src.core.config import settings
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
+from src.services import llm, story_llm
+from src.services.prompt import build_compile_prompt, build_refill_prompt
 from src.services.story_llm import compile_story
+
+
+_FIXTURES = Path(__file__).parent.parent / "unit" / "fixtures"
 
 
 @pytest.fixture(autouse=True)
@@ -56,3 +64,58 @@ async def test_compile_story_live() -> None:
     assert res.meta is not None
     assert res.meta.input_token_count and res.meta.input_token_count > 0
     assert res.meta.output_token_count and res.meta.output_token_count > 0
+
+
+async def test_compile_refill_repairs_mixed_issues_in_one_live_call() -> None:
+    """블록 누락·중복 이름·빈 외형을 실제 컴파일 모델이 한 응답에서 모두 고친다."""
+    request = StoryCompileRequest(
+        selected_storyline="무너진 왕국에서 선왕의 죽음을 추적하는 기사가 반란의 진실과 마주한다.",
+        additional_info="주인공은 복수보다 진실을 우선한다.",
+        genre_tags=["다크 판타지"],
+        protagonist={"name": "카일", "gender": "MALE", "features": ["신중한"]},
+        supporting_characters=[
+            {"name": "레이", "gender": "MALE", "features": ["충직한"]},
+            {"name": "세린", "gender": "FEMALE", "features": ["계산적인"]},
+        ],
+    )
+    provider = llm.provider_of(settings.story_compile_model)
+    _, original_user, _ = build_compile_prompt(
+        request.selected_storyline,
+        request.additional_info,
+        request.genre_tags,
+        request.protagonist,
+        request.supporting_characters,
+        request.lorebooks,
+        provider=provider,
+    )
+
+    data = json.loads((_FIXTURES / "spec_valid.json").read_text(encoding="utf-8"))
+    cards = data["prompt_settings"]["character_setting"]
+    original_personality = cards[0]["personality"]
+    data["start"]["prologue"] = ""
+    cards[0]["hair"] = "   "
+    cards[1]["name"] = cards[0]["name"]
+    cards[1]["outfit"] = None
+
+    missing = story_llm._find_missing_keys(data)
+    blocks = sorted({story_llm._block_of(path) for path in missing})
+    character_fields = story_llm._find_character_field_repairs(data)
+    assert blocks == ["start"]
+    assert character_fields == {0: ("hair",), 1: ("name", "outfit")}
+
+    system, user = build_refill_prompt(
+        original_user,
+        json.dumps(data, ensure_ascii=False),
+        blocks,
+        character_fields,
+        provider=provider,
+    )
+    refill, usage = await story_llm._complete_json(system, user, label="live-refill")
+    story_llm._merge_blocks(data, refill, blocks)
+    story_llm._merge_character_field_repairs(data, refill, character_fields)
+
+    assert story_llm._find_missing_keys(data) == []
+    assert story_llm._find_character_field_repairs(data) == {}
+    assert cards[0]["personality"] == original_personality
+    assert usage.input_tokens and usage.input_tokens > 0
+    assert usage.output_tokens and usage.output_tokens > 0

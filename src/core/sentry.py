@@ -35,6 +35,14 @@ from src.services.llm.base import (
     LlmRateLimited,
     LlmTimeout,
 )
+# 이미지 생성 통로의 중립 예외도 같은 코드로 접는다(PR #92 리뷰). image.base 역시 src 안의
+# 다른 것을 임포트하지 않는다.
+from src.services.image.base import (
+    ImageBadRequest,
+    ImageGenerationError,
+    ImageRateLimited,
+    ImageTimeout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +54,13 @@ FEATURE_CHAT_RESPONSE = "chat_response"
 # 분리 후 백엔드도 같은 값의 ai_call_logs 별도 행(choice_generation)으로 적재한다
 # (예약값 활성화). 값은 server AiCallFeature.CHOICE_GENERATION(KNK-365)과 맞춘다.
 FEATURE_CHOICE_GENERATION = "choice_generation"
+# 컴파일 인물 이미지 생성(KNK-939)의 AI측 오류 그룹용 태그. 이미지 실패는 컴파일을 깨지 않고
+# 해당 인물만 비우므로 로그로만 남으면 아무도 모른다 — 시간 초과·429·거부를 여기로 모은다.
+# 백엔드 AiCallFeature에는 대응값이 없다(AI 서버 전용 태그).
+FEATURE_CHARACTER_IMAGE = "character_image_generation"
+# 컴파일 스토리 썸네일(표지) 생성(KNK-1047)의 AI측 오류 그룹용 태그. 인물 이미지와 같은
+# 통로를 쓰지만 실패 원인(세로 크기 거부 등)을 따로 보려고 태그를 나눈다. AI 서버 전용 태그.
+FEATURE_THUMBNAIL_IMAGE = "thumbnail_image_generation"
 
 # AN-4-7 실패 코드.
 ERROR_PROVIDER_TIMEOUT = "provider_timeout"
@@ -75,6 +90,15 @@ def classify_error_code(exc: BaseException) -> str:
         return ERROR_PROVIDER_BAD_REQUEST
     if isinstance(exc, LlmError):
         # LlmUnavailable과, 혹시 늘어날 다른 중립 예외까지 일시 장애로 묶는다(코드를 적게 유지).
+        return ERROR_PROVIDER_UNAVAILABLE
+    # 이미지 통로 중립 예외 — 텍스트 LLM과 같은 분류 규칙을 적용한다.
+    if isinstance(exc, ImageTimeout):
+        return ERROR_PROVIDER_TIMEOUT
+    if isinstance(exc, ImageRateLimited):
+        return ERROR_PROVIDER_RATE_LIMITED
+    if isinstance(exc, ImageBadRequest):
+        return ERROR_PROVIDER_BAD_REQUEST
+    if isinstance(exc, ImageGenerationError):
         return ERROR_PROVIDER_UNAVAILABLE
     if isinstance(exc, APITimeoutError):
         return ERROR_PROVIDER_TIMEOUT

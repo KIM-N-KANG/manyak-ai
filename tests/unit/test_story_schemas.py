@@ -131,6 +131,20 @@ def test_compile_duplicate_names_rejected() -> None:
         )
 
 
+def test_compile_casefolded_duplicate_names_rejected() -> None:
+    # 컴파일 후 검사와 마찬가지로 외국어 이름의 대소문자 차이도 중복으로 본다.
+    with pytest.raises(ValidationError, match="중복"):
+        StoryCompileRequest(
+            selected_storyline="x",
+            genre_tags=["판타지"],
+            protagonist={},
+            supporting_characters=[
+                {"name": "Alice"},
+                {"name": "alice"},
+            ],
+        )
+
+
 def test_none_names_do_not_collide() -> None:
     # 이름을 비운 인물끼리는 중복이 아니다 — LLM이 각각 다른 이름을 짓는다.
     req = StorylinesRequest(

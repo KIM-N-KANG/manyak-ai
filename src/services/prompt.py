@@ -63,6 +63,16 @@ def _format_supporting_characters(characters: list[CharacterInput]) -> str:
     return "\n".join(f"{i}) {_format_character(c)}" for i, c in enumerate(characters, 1))
 
 
+def _format_compile_supporting_characters(characters: list[CharacterInput]) -> str:
+    """컴파일 입력 인물에 중간 JSON에서 되돌려 받을 내부 식별자를 붙인다."""
+    if not characters:
+        return "(미정 — 이야기에 어울리는 주변 인물을 직접 구성하라)"
+    return "\n".join(
+        f"[input_character_id: input-{i}] {_format_character(c)}"
+        for i, c in enumerate(characters, 1)
+    )
+
+
 def build_storylines_prompt(
     genre_tags: list[str],
     protagonist: CharacterInput,
@@ -140,7 +150,7 @@ def build_compile_prompt(
             "추가정보": additional_info or "(없음)",
             "장르_태그": ", ".join(genre_tags),
             "주인공": _format_character(protagonist),
-            "주변_인물": _format_supporting_characters(supporting_characters),
+            "주변_인물": _format_compile_supporting_characters(supporting_characters),
             "로어북": _format_lorebooks(lorebooks or []),
         },
     )
@@ -151,23 +161,47 @@ def build_refill_prompt(
     original_user_prompt: str,
     current_data_json: str,
     missing_blocks: list[str],
+    character_fields: dict[int, tuple[str, ...]] | None = None,
     *,
     provider: str | None = None,
 ) -> tuple[str, str]:
-    """누락·빈 블록만 다시 채우기 위한 부분 재호출 프롬프트를 만든다.
+    """누락 블록과 인물의 빈 필드·중복 이름을 한 번에 고치는 프롬프트를 만든다.
 
-    직전 결과를 맥락으로 주고, 비어 있는 블록만 채워 그 블록만 키로 갖는 JSON을
-    반환하도록 요청한다. 잘 나온 다른 블록은 보존하기 위해 응답에 포함하지 않게 한다.
+    블록은 기존처럼 통째로 다시 받고, 이름·외형만 문제가 있는 인물 카드는 해당 필드만
+    ``character_updates``로 받는다. 잘 나온 값은 서버가 보존한다.
     provider가 Google이면 Gemini용 system prompt를 쓴다(KNK-958).
     """
     system = _COMPILE_GEMINI_SYSTEM if provider == PROVIDER_GOOGLE else _COMPILE_SYSTEM
-    blocks_str = ", ".join(missing_blocks)
+    instructions: list[str] = []
+    if missing_blocks:
+        blocks_str = ", ".join(missing_blocks)
+        instructions.append(
+            f"다음 블록이 비어 있거나 누락됐다: {blocks_str}. 이 블록들은 작성 규칙과 "
+            f"스키마에 맞게 통째로 새로 채워서 같은 이름의 최상위 키로 반환하라."
+        )
+    if character_fields:
+        targets = "; ".join(
+            f"index {index}: {', '.join(fields)}"
+            for index, fields in sorted(character_fields.items())
+        )
+        instructions.append(
+            f"character_setting에서 다음 필드만 고쳐라(배열 index는 0부터 시작): {targets}. "
+            f"`character_updates` 배열에 각 대상의 `index`와 지정된 필드만 넣어 반환하라. "
+            f"name은 다른 모든 인물 이름과 겹치지 않는 이름으로 채워라."
+        )
+    requested = "\n".join(instructions)
+    if missing_blocks and character_fields:
+        output_keys = "요청한 블록과 `character_updates`만"
+    elif missing_blocks:
+        output_keys = "요청한 블록만"
+    else:
+        output_keys = "`character_updates`만"
     user_text = (
         f"{original_user_prompt}\n\n"
         f"--- 직전 생성 결과(JSON) ---\n{current_data_json}\n\n"
-        f"위 결과에서 다음 블록이 비어 있거나 누락됐다: {blocks_str}.\n"
-        f"이 블록들만 작성 규칙·스키마에 맞게 새로 채워서, **해당 블록만** 최상위 키로 "
-        f"갖는 JSON 객체를 반환하라. 다른 블록은 절대 포함하지 말 것. "
+        f"위 결과의 문제를 한 번의 응답에서 모두 고쳐라.\n{requested}\n"
+        f"{output_keys} 최상위 키로 갖는 JSON 객체를 반환하라. "
+        f"요청하지 않은 블록과 인물 필드는 절대 포함하지 말 것. "
         f"설명·머리말·코드 펜스 없이 JSON만 출력한다."
     )
     return system, user_text

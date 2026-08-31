@@ -10,7 +10,12 @@ import json
 import pytest
 from openai import OpenAIError
 
-from src.schemas.chat_turn import ChatStartSettings, ChatStorySettings, ChatTurnRequest
+from src.schemas.chat_turn import (
+    ChatHistoryItem,
+    ChatStartSettings,
+    ChatStorySettings,
+    ChatTurnRequest,
+)
 from src.services import chat_choices
 from src.services.chat_choices import _FALLBACK, generate_choices
 
@@ -243,6 +248,29 @@ def test_build_user_replaces_event_material_slots() -> None:
     if template_has_slots:
         assert "반란의 서막" in user and "- 선왕의 죽음" in user
     assert "{{main_events}}" not in user  # 미치환 슬롯이 남지 않는다
+
+
+def test_build_user_removes_character_image_syntax_from_history_and_output() -> None:
+    req = _request().model_copy(
+        update={
+            "history": [
+                ChatHistoryItem(
+                    role="ASSISTANT",
+                    content=(
+                        "[[https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?"
+                    ),
+                )
+            ]
+        }
+    )
+    ai_output = "미라: 나도 왔어."
+
+    user = chat_choices._build_user(req, ai_output)
+
+    assert "[[" not in user
+    assert "https://cdn.example.com/serin.webp" not in user
+    assert "세린: 기다렸어?" in user
+    assert "미라: 나도 왔어." in user
 
 
 # ── 토큰 누락은 0이 아니라 null (KNK-673 리뷰) ───────────────────────────────

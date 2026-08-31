@@ -6,6 +6,7 @@ LLM은 검증·재호출이 쉽도록 세분 JSON으로 답하고, 이 모듈이
 """
 
 from src.schemas.story_compile import (
+    CharacterAppearanceOut,
     CharacterSetting,
     PromptSettings,
     StoriesOut,
@@ -15,6 +16,7 @@ from src.schemas.story_compile import (
     StorySettingsOut,
     StorySpec,
     StoryStartSettingsOut,
+    ThumbnailImageOut,
     UserRoleSetting,
 )
 
@@ -66,8 +68,35 @@ def _render_rule_setting(ps: PromptSettings) -> str:
     )
 
 
-def spec_to_response(spec: StorySpec) -> StoryCompileResponse:
-    """세분 StorySpec을 ERD 4테이블 nested 계약(StoryCompileResponse)으로 변환한다."""
+def _render_character_appearances(
+    characters: list[CharacterSetting],
+) -> list[CharacterAppearanceOut]:
+    """인물별 외형 정보를 응답용 모델로 변환한다.
+
+    컴파일 LLM이 생성한 외형 필드를 백엔드가 DB에 저장할 수 있도록 별도 배열로 내려준다.
+    통글 마크다운(character_setting)에는 포함되지 않는 보조 데이터다.
+    """
+    return [
+        CharacterAppearanceOut(
+            name=c.name,
+            gender=c.gender,
+            age=c.age,
+            body=c.body,
+            face=c.face,
+            hair=c.hair,
+            outfit=c.outfit,
+            visual_identity=c.visual_identity,
+        )
+        for c in characters
+    ]
+
+
+def spec_to_response(spec: StorySpec, *, thumbnail_image: ThumbnailImageOut) -> StoryCompileResponse:
+    """세분 StorySpec을 ERD 4테이블 nested 계약(StoryCompileResponse)으로 변환한다.
+
+    thumbnail_image는 필수 응답 필드라 호출부가 실제 결과를 넘긴다 — 임시값을 여기서 만들면
+    그 값이 응답으로 새어 나갈 수 있다(KNK-1047).
+    """
     ps = spec.prompt_settings
     return StoryCompileResponse(
         stories=StoriesOut(
@@ -104,4 +133,6 @@ def spec_to_response(spec: StorySpec) -> StoryCompileResponse:
             )
             for e in spec.endings
         ],
+        character_appearances=_render_character_appearances(ps.character_setting),
+        thumbnail_image=thumbnail_image,
     )

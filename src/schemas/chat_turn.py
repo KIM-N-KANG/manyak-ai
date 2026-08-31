@@ -5,7 +5,7 @@ spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
 구조다. AI는 턴 사이에 아무것도 보관하지 않으며, 세션 식별자도 두지 않는다.
 
 - 입력: 백엔드 → AI (매 턴) — ChatTurnRequest
-- 출력: AI → 백엔드 (SSE 스트림). AI는 token·completed·error만 발행하고,
+- 출력: AI → 백엔드 (SSE 스트림). AI는 token·character_image·completed·error·ping 5개를 발행하고,
         started·chatId·turnId는 백엔드가 발행·부착한다(manyak-server 규격과 통일).
 """
 
@@ -116,6 +116,27 @@ class EndingCandidate(BaseModel):
     epilogue: str
 
 
+class CharacterImageMapping(BaseModel):
+    """백엔드가 매 턴 전달하는 인물 이름·이미지 이름·저장 이미지 URL의 매핑.
+
+    name은 출력의 `인물명:` 라벨과 글자 그대로 대조하는 키라 반드시 인물 이름이다.
+    image_name은 이미지 한 장을 구분하는 이름(예: `세린_기본`, KNK-1026)이며 지금은
+    고르는 데 쓰지 않고 받은 값을 그대로 돌려준다. 백엔드가 아직 보내지 않으면(칸 없음·빈
+    문자열·null 모두) 빈 문자열로 정리해 내보낸다 — 없는 값을 인물 이름으로 채워 있는 척하지
+    않는다. null을 받는 이유는 백엔드가 컬럼을 새로 만들 때 기존 스토리 행이 null로 실려 와
+    턴 전체가 422로 튕기는 것을 막기 위해서다.
+    """
+
+    name: str
+    image_name: str = ""
+    image_url: str
+
+    @field_validator("image_name", mode="before")
+    @classmethod
+    def _null_image_name_is_empty(cls, value: object) -> object:
+        return "" if value is None else value
+
+
 class ChatTurnRequest(BaseModel):
     """채팅 턴 API 입력 (매 턴, 완전 stateless).
 
@@ -150,6 +171,10 @@ class ChatTurnRequest(BaseModel):
     target_main_event: TargetMainEvent | None = None
     occurred_main_event_names: list[str] = Field(default_factory=list)
     endings: list[EndingCandidate] = Field(default_factory=list)
+    # 이미지가 저장된 주변 인물만 전달한다. 없으면 기존 채팅과 동일하게 동작한다.
+    # 개수 상한을 두지 않는다 — 인물당 표정별 다중 이미지가 오면 5개를 넘고, 인물 수
+    # 상한은 백엔드가 관리한다(KNK-943 백엔드 리뷰 반영).
+    character_images: list[CharacterImageMapping] = Field(default_factory=list)
 
     @field_validator("user_source", mode="before")
     @classmethod
@@ -169,11 +194,12 @@ class ChatTurnRequest(BaseModel):
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────
 # manyak-server의 SSE 규격(started→token→completed→error)과 통일한다.
-# AI(manyak-ai)가 발행하는 이벤트는 token·completed·error·ping 4개다.
+# AI(manyak-ai)가 발행하는 이벤트는 token·character_image·completed·error·ping 5개다.
 # started는 백엔드가 SSE 스트림을 열며 자체 발행한다(chatId 신호 — AI 미발행).
 # chatId·turnId도 백엔드가 부착하므로 AI 페이로드에는 넣지 않는다.
 
 EVENT_TOKEN = "token"
+EVENT_CHARACTER_IMAGE = "character_image"
 EVENT_COMPLETED = "completed"
 EVENT_ERROR = "error"
 
@@ -208,6 +234,18 @@ class TokenData(BaseModel):
     text: str
 
 
+class CharacterImageData(BaseModel):
+    """character_image 이벤트 한 건과 completed 목록 한 항목의 이미지 정보.
+
+    와이어는 camelCase(`imageName`·`imageUrl`). imageName은 요청 `image_name`을 그대로
+    돌려주며, 요청이 비어 있거나 null이면 빈 문자열 그대로다(KNK-1026).
+    """
+
+    name: str
+    image_name: str = Field(serialization_alias="imageName")
+    image_url: str = Field(serialization_alias="imageUrl")
+
+
 class TargetMainEventOut(BaseModel):
     """completed 판정 메타 — 이번 턴 판정 후 목표 사건 상태.
 
@@ -222,8 +260,10 @@ class TargetMainEventOut(BaseModel):
 class CompletedData(BaseModel):
     """event: completed — 한 턴 응답 완료(본문 + 판정 메타).
 
-    - aiOutput: 본문(상황 묘사 + 인물 대사)만. 백엔드가 chatId·turnId를 더해 이 값만
-      DB(history)에 저장한다.
+    - aiOutput: 본문(상황 묘사 + 인물 대사)과 대사 줄 위 별도 줄의 `[[URL]]` 저장 마커.
+      백엔드가 chatId·turnId를 더해 마커 포함 원문을 DB(history)에 저장한다.
+    - characterImages: 저장 마커와 같은 순서의 인물 이미지 목록(`{name, imageName, imageUrl}`).
+      같은 인물이 다시 말하면 같은 이미지도 다시 들어간다.
     - choices: **하위호환 빈 배열 고정**(KNK-625). 선택지 생성은 전용 엔드포인트
       `/chat/choices`로 분리됐다 — completed가 선택지를 기다리지 않아 본문 확정이
       밀리지 않는다. 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3)이라
@@ -236,6 +276,9 @@ class CompletedData(BaseModel):
     # 둔다. ⚠️ 직렬화 시 반드시 model_dump(by_alias=True)를 써야 와이어가 aiOutput이 된다(T3).
     ai_output: str = Field(serialization_alias="aiOutput")
     choices: list[str] = Field(default_factory=list, max_length=0)
+    character_images: list[CharacterImageData] = Field(
+        default_factory=list, serialization_alias="characterImages"
+    )
     # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
     meta: ChatResponseMeta | None = None
     # ── 주요 사건·엔딩 판정 메타 (KNK-483, §5-3-4·D11) ─────────────────────────
