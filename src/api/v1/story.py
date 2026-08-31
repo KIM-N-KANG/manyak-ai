@@ -7,7 +7,7 @@ from src.schemas.story import StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
 from src.core.config import settings
 from src.services import story_llm
-from src.services.image.prompt import CHARACTER_IMAGE_VERSION
+from src.services.image.prompt import CHARACTER_IMAGE_VERSION, THUMBNAIL_IMAGE_VERSION
 from src.services.llm import provider_of
 from src.services.llm.base import PROVIDER_GOOGLE
 from src.services.prompt import (
@@ -79,11 +79,13 @@ async def create_story_compile(request: StoryCompileRequest) -> StoryCompileResp
         _pv = {
             "COMPILE_GEMINI": COMPILE_GEMINI_VERSION,
             "CHARACTER_IMAGE": CHARACTER_IMAGE_VERSION,
+            "THUMBNAIL_IMAGE": THUMBNAIL_IMAGE_VERSION,
         }
     else:
         _pv = {
             "COMPILE": COMPILE_VERSION,
             "CHARACTER_IMAGE": CHARACTER_IMAGE_VERSION,
+            "THUMBNAIL_IMAGE": THUMBNAIL_IMAGE_VERSION,
         }
     with observe_request(
         "스토리 컴파일",

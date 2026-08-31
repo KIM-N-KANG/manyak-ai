@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.services.image import generate_image, validate_startup, ImageGenerationError
+from src.services.image import (
+    THUMBNAIL_IMAGE_SIZE,
+    generate_image,
+    validate_startup,
+    ImageGenerationError,
+)
 from src.services.image.base import (
     ImageBadRequest,
     ImageRateLimited,
@@ -179,6 +184,57 @@ async def test_generate_image_routes_to_openai(monkeypatch: pytest.MonkeyPatch) 
     result = await generate_image("test prompt")
     assert result.image_bytes == _FAKE_PNG
     assert result.provider == "openai"
+
+
+async def test_generate_image_uses_settings_size_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """size를 주지 않으면 IMAGE_SIZE가 어댑터까지 전달된다.
+
+    기본 설정값(1024x768)이 아닌 값을 넣어, 구현이 값을 박아 넣어도 통과하는 일을 막는다.
+    """
+    from src.core.config import settings
+    monkeypatch.setattr(settings, "image_model", "gpt-image-2-low")
+    monkeypatch.setattr(settings, "image_size", "512x512")
+    mock = _mock_client(monkeypatch)
+
+    await generate_image("test prompt")
+    assert mock.images.generate.call_args.kwargs["size"] == "512x512"
+
+
+async def test_generate_image_passes_explicit_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """size를 명시하면 IMAGE_SIZE 대신 그 값이 어댑터까지 전달된다(썸네일 세로 크기, KNK-1047).
+
+    썸네일 상수와도 설정값과도 다른 값을 넣어, 어느 쪽을 박아 넣어도 잡히게 한다.
+    """
+    from src.core.config import settings
+    monkeypatch.setattr(settings, "image_model", "gpt-image-2-low")
+    monkeypatch.setattr(settings, "image_size", "1024x768")
+    mock = _mock_client(monkeypatch)
+
+    await generate_image("test prompt", size="640x960")
+    assert mock.images.generate.call_args.kwargs["size"] == "640x960"
+
+
+@pytest.mark.parametrize("bad_size", ["", "wide", "1024", "0x768", "768x1024x1"])
+async def test_generate_image_rejects_invalid_explicit_size(monkeypatch, bad_size) -> None:
+    """잘못된 size를 명시하면 공급자를 부르기 전에 ImageGenerationError로 거부한다.
+
+    빈 문자열도 설정값으로 대체하지 않고 잘못된 입력으로 본다.
+    """
+    from src.core.config import settings
+    monkeypatch.setattr(settings, "image_model", "gpt-image-2-low")
+    mock = _mock_client(monkeypatch)
+
+    with pytest.raises(ImageGenerationError, match="가로x세로"):
+        await generate_image("test prompt", size=bad_size)
+    mock.images.generate.assert_not_called()
+
+
+def test_thumbnail_image_size_is_portrait_3_by_4() -> None:
+    """썸네일 크기 상수는 3:4 세로 768x1024이고 IMAGE_SIZE와 같은 형식 검사를 통과한다."""
+    from src.services.image import _SIZE_RE
+
+    assert THUMBNAIL_IMAGE_SIZE == "768x1024"
+    assert _SIZE_RE.fullmatch(THUMBNAIL_IMAGE_SIZE)
 
 
 async def test_generate_image_unknown_model(monkeypatch: pytest.MonkeyPatch) -> None:

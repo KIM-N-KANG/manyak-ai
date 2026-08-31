@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from src.schemas.story import CharacterInput
-from src.schemas.story_compile import StoryCompileRequest
+from src.schemas.story_compile import StoryCompileRequest, ThumbnailImageOut
 from src.services import story_llm
 from src.services.llm.base import PROVIDER_GOOGLE
 from src.services.prompt import (
@@ -342,7 +342,7 @@ def test_appearance_not_in_togul() -> None:
     from src.services.story_compile_render import spec_to_response
 
     spec = StorySpec(**_spec())
-    response = spec_to_response(spec)
+    response = spec_to_response(spec, thumbnail_image=ThumbnailImageOut(error="generation_failed"))
     togul = response.story_settings.character_setting
     for field in _APPEARANCE_FIELDS:
         # 통글 마크다운에 외형 필드명이 헤더(### age 등)로 등장하면 안 된다

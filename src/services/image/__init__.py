@@ -26,6 +26,7 @@ __all__ = [
     "ImageGenerationError",
     "ImageRequest",
     "ImageResult",
+    "THUMBNAIL_IMAGE_SIZE",
 ]
 
 # 모델 이름 → 어댑터 매핑. 모델이 늘면 여기에 추가한다.
@@ -37,6 +38,10 @@ _MODEL_ADAPTERS: dict[str, str] = {
 
 _QUALITIES = frozenset({"low", "medium", "high"})
 _SIZE_RE = re.compile(r"^[1-9]\d*x[1-9]\d*$")
+
+# 스토리 썸네일(표지) 크기. 기존 프리셋 썸네일과 같은 3:4 세로라 프론트 수정이 없다(KNK-1047).
+# 인물 이미지 크기(IMAGE_SIZE)를 뒤집어 쓰지 않고 상수로 고정한다 — 환경변수를 늘리지 않는다.
+THUMBNAIL_IMAGE_SIZE = "768x1024"
 
 
 def _adapter_for(model: str) -> str:
@@ -92,18 +97,26 @@ def validate_startup() -> None:
         raise ImageGenerationError("IMAGE_TIMEOUT은 0보다 큰 유한한 초 단위 숫자여야 합니다.")
 
 
-async def generate_image(prompt: str) -> ImageResult:
+async def generate_image(prompt: str, *, size: str | None = None) -> ImageResult:
     """이미지를 생성한다. 모델은 IMAGE_MODEL 환경변수로 결정된다.
 
     호출부는 이 함수만 부른다. 어떤 공급자를 쓰는지, SDK가 뭔지 모른다.
+    size를 주지 않으면 IMAGE_SIZE(인물 이미지 크기)를 쓴다. 썸네일처럼 다른 크기가
+    필요한 호출부만 명시한다. 명시한 값은 IMAGE_SIZE와 같은 형식 검사를 거친다 —
+    잘못된 값이 공급자까지 갔다가 "거부됨"으로 둔갑하면 코드 실수를 못 알아본다.
     """
     model = settings.image_model
     adapter = _adapter_for(model)
 
+    if size is None:
+        size = settings.image_size
+    elif not _SIZE_RE.fullmatch(size):
+        raise ImageGenerationError(f"이미지 크기 '{size}'는 '가로x세로' 형식의 양의 정수여야 합니다.")
+
     req = ImageRequest(
         model=model,
         prompt=prompt,
-        size=settings.image_size,
+        size=size,
         quality=settings.image_quality,
         timeout=settings.image_timeout,
     )

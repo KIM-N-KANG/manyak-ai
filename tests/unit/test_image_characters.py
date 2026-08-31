@@ -9,7 +9,7 @@ import pytest
 
 from src.schemas.story_compile import CharacterSetting
 from src.services.image.base import ImageGenerationError, ImageResult, ImageTimeout
-from src.services.image.prompt import build_image_prompt
+from src.services.image.prompt import _load_template, build_image_prompt
 from src.services.image.generate_characters import (
     CharacterImageResult,
     generate_character_images,
@@ -83,6 +83,36 @@ def test_build_image_prompt_has_fixed_blocks() -> None:
     assert "<visual_style>" in prompt
     assert "<quality_requirements>" in prompt
     assert "<output>" in prompt
+
+
+# ── 템플릿 로더 테스트 (KNK-1048: 경로 인자화) ───────────────────────────────
+
+def test_load_template_extracts_image_prompt_block(tmp_path) -> None:
+    """frontmatter·제목을 건너뛰고 <image_prompt> 블록만 꺼낸다."""
+    path = tmp_path / "T.md"
+    path.write_text(
+        "---\nversion: 1\n---\n# 제목\n설명\n<image_prompt>\n<genre>{{genre}}</genre>\n</image_prompt>\n",
+        encoding="utf-8",
+    )
+    body = _load_template(path)
+    assert body.startswith("<image_prompt>")
+    assert body.endswith("</image_prompt>")
+    assert "version:" not in body
+
+
+def test_load_template_missing_file_raises(tmp_path) -> None:
+    """템플릿 파일이 없으면 경로를 담은 RuntimeError."""
+    path = tmp_path / "MISSING.md"
+    with pytest.raises(RuntimeError, match="찾을 수 없습니다"):
+        _load_template(path)
+
+
+def test_load_template_missing_block_raises(tmp_path) -> None:
+    """<image_prompt> 블록이 없으면 RuntimeError."""
+    path = tmp_path / "T.md"
+    path.write_text("---\nversion: 1\n---\n본문만 있음\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="<image_prompt> 블록이 없습니다"):
+        _load_template(path)
 
 
 # ── 병렬 생성 테스트 ──────────────────────────────────────────────────────────

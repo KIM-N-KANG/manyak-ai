@@ -58,6 +58,9 @@ FEATURE_CHOICE_GENERATION = "choice_generation"
 # 해당 인물만 비우므로 로그로만 남으면 아무도 모른다 — 시간 초과·429·거부를 여기로 모은다.
 # 백엔드 AiCallFeature에는 대응값이 없다(AI 서버 전용 태그).
 FEATURE_CHARACTER_IMAGE = "character_image_generation"
+# 컴파일 스토리 썸네일(표지) 생성(KNK-1047)의 AI측 오류 그룹용 태그. 인물 이미지와 같은
+# 통로를 쓰지만 실패 원인(세로 크기 거부 등)을 따로 보려고 태그를 나눈다. AI 서버 전용 태그.
+FEATURE_THUMBNAIL_IMAGE = "thumbnail_image_generation"
 
 # AN-4-7 실패 코드.
 ERROR_PROVIDER_TIMEOUT = "provider_timeout"

@@ -17,7 +17,7 @@ from src.schemas.chat_turn import (
     EndingCandidate,
     MainEvent,
 )
-from src.schemas.story_compile import StoryCompileResponse, StorySpec
+from src.schemas.story_compile import StoryCompileResponse, StorySpec, ThumbnailImageOut
 from src.services.chat_assembler import assemble
 from src.services.story_compile_render import spec_to_response
 
@@ -26,7 +26,7 @@ _FIXTURES = Path(__file__).parent.parent / "unit" / "fixtures"
 
 def _compiled() -> StoryCompileResponse:
     spec = StorySpec(**json.loads((_FIXTURES / "spec_valid.json").read_text(encoding="utf-8-sig")))
-    return spec_to_response(spec)
+    return spec_to_response(spec, thumbnail_image=ThumbnailImageOut(error="generation_failed"))
 
 
 def _chat_request_from(res: StoryCompileResponse) -> ChatTurnRequest:

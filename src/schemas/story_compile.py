@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.schemas.response_meta import StoryResponseMeta
@@ -232,6 +234,37 @@ class CharacterImageOut(BaseModel):
     error: str | None = None  # 실패 사유. 성공이면 None
 
 
+# 썸네일 한 장의 이름. 지금은 스토리당 한 장이라 고정이다(KNK-1027 image_name 계약).
+THUMBNAIL_IMAGE_NAME = "썸네일_기본"
+# 썸네일 실패 사유 코드. 5-ai-server §5-3-3 계약과 같다 — 이 밖의 값은 스키마가 막는다.
+ThumbnailErrorCode = Literal["timeout", "rate_limited", "rejected", "generation_failed"]
+THUMBNAIL_ERROR_CODES: tuple[str, ...] = ("timeout", "rate_limited", "rejected", "generation_failed")
+
+
+class ThumbnailImageOut(BaseModel):
+    """스토리 썸네일(표지) 한 장 — 성공 시 base64 문자열, 실패 시 None + 사유 코드(KNK-1047).
+
+    인물 이미지(CharacterImageOut)와 같은 꼴이되 인물 name이 없다 — 표지는 특정 인물에
+    매칭되지 않는다. 실패 표현은 한 가지다: 객체는 항상 있고 image_base64가 None이면 실패,
+    error에 코드가 실린다. 백엔드는 성공 여부를 image_base64가 문자열인지로 판단하고,
+    실패면 기존 프리셋 썸네일을 유지한다.
+
+    이름·형식·코드는 Literal로, 성공/실패 상호 배타는 검증기로 막는다 — 계약에 없는 값이나
+    "그림도 있고 실패 사유도 있는" 응답이 만들어지는 순간 바로 드러나게 한다(Codex 리뷰 2).
+    """
+
+    image_name: Literal["썸네일_기본"] = THUMBNAIL_IMAGE_NAME
+    image_base64: str | None = None  # 이미지 바이너리의 base64 인코딩. 실패하면 None
+    content_type: Literal["image/webp"] = "image/webp"  # 성공·실패 모두 image/webp
+    error: ThumbnailErrorCode | None = None  # 실패 사유 코드. 성공이면 None
+
+    @model_validator(mode="after")
+    def _success_or_failure(self) -> "ThumbnailImageOut":
+        if (self.image_base64 is None) == (self.error is None):
+            raise ValueError("썸네일은 image_base64(성공)와 error(실패) 중 정확히 하나만 가져야 합니다")
+        return self
+
+
 class StoryCompileResponse(BaseModel):
     """컴파일 API output — ERD 테이블에 1:1 대응하는 nested 계약본."""
 
@@ -251,4 +284,8 @@ class StoryCompileResponse(BaseModel):
     # 참고: character_appearances는 인물 전원, character_images는 외형이 있는 인물만 포함하므로
     # 두 배열의 길이가 다를 수 있다. 백엔드는 name으로 매칭한다.
     character_images: list[CharacterImageOut] = Field(default_factory=list)
+    # 스토리 썸네일(표지) 1장(KNK-1047). 인물 이미지와 동시에 생성하며 실패해도 컴파일은 성공한다.
+    # 기본값 없는 필수 필드다 — null도, 빠지는 것도 없이 항상 객체다. 기본값을 두면 OpenAPI
+    # 문서에 "선택"으로 표시돼 백엔드가 표지가 안 올 수도 있다고 오해한다(Codex 리뷰 1).
+    thumbnail_image: ThumbnailImageOut
     meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). compile_story가 항상 채운다.
