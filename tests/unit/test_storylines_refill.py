@@ -160,6 +160,34 @@ async def test_refill_breaking_contract_falls_back_to_original(
     assert len(captured) == 1 and captured[0]["level"] == "warning"
 
 
+async def test_empty_body_refill_restores_original(monkeypatch: pytest.MonkeyPatch) -> None:
+    """재호출이 본문 빈 편을 데려오면 원본을 되돌린다(Codex 리뷰 P2, KNK-1102).
+
+    빈 문자열도 str이라 스키마 검증만으로는 통과한다. 소진 시에도 결과가 나가는 완화
+    이후로는 빈 본문이 원본을 덮어쓴 채 200으로 나갈 수 있어, 빈 본문을 계약 위반으로
+    걸러 원본 복귀 경로를 태우는지 고정한다.
+    """
+    captured: list[dict] = []
+
+    async def fake_complete(system: str, user: str, *args: object, **kwargs: object):
+        label = str(kwargs.get("label", "storylines"))
+        if label.startswith("storylines-refill"):
+            data = {"stories": [{"id": 2, "storyline": "", "recommended_infos": ["가", "나", "다"]}]}
+        else:
+            data = _stories("서린 1편", "없는 2편", "서린 3편")
+        return data, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    monkeypatch.setattr(
+        story_llm, "capture_ai_exception", lambda exc, **kw: captured.append({"exc": exc, **kw})
+    )
+    system, user = _prompts()
+    result, _usage = await story_llm.generate_storylines(system, user, required_names=["서린"])
+    # 빈 편은 버려지고 본문이 있는 원본이 그대로 나간다.
+    assert [s["storyline"] for s in result["stories"]] == ["서린 1편", "없는 2편", "서린 3편"]
+    assert len(captured) == 1 and captured[0]["level"] == "warning"
+
+
 def test_refill_prompt_asks_to_fix_not_rewrite() -> None:
     """재호출 지시가 '다시 써라'가 아니라 '고쳐라'인지, 이름만 얹지 말라는 경고가 있는지 확인."""
     _, user = _prompts()

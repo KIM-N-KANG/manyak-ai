@@ -324,6 +324,11 @@ def _validate_storylines(data: dict) -> None:
             raise _InvalidAiResponse(f"stories[{i}]가 응답 스키마와 맞지 않습니다.") from exc
         if len(parsed.recommended_infos) != 3:
             raise _InvalidAiResponse(f"stories[{i}]의 recommended_infos가 3개가 아닙니다.")
+        # Pydantic은 빈 문자열도 str로 통과시킨다. 이름 검증 완화(KNK-1102)로 소진 시에도
+        # 결과가 나가므로, 빈 본문이 원본을 덮어쓴 채 200으로 나가는 구멍을 여기서 막는다
+        # (재호출이 빈 편을 데려오면 병합 후 이 검증이 걸려 원본으로 되돌아간다 — Codex 리뷰 P2).
+        if not parsed.storyline.strip():
+            raise _InvalidAiResponse(f"stories[{i}]의 storyline이 비어 있습니다.")
 
 
 def _missing_name_indexes(data: dict, required_names: tuple[str, ...]) -> list[int]:
