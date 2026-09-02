@@ -105,7 +105,8 @@ _COMPILE_MAX_TOKENS = 16_384
 # 낮았다(KNK-269 검증). 모델이 temperature를 받지 않으면 어댑터가 인자를 보내지 않는다.
 _TEMPERATURE = 0.75
 
-# 빈 필수 필드를 채우기 위한 부분 재호출 최대 횟수. 초과하면 502로 막는다.
+# 빈 필수 필드를 채우기 위한 부분 재호출 최대 횟수. 소진 시 컴파일은 502로 막고,
+# 스토리라인 이름 미등장은 그대로 내주며 기록만 남긴다(KNK-1102).
 _MAX_REFILL = 2
 
 # invalid 응답 재호출(KNK-312)의 전체 시간 상한(초). 백엔드 storylines read timeout이 90초라
@@ -323,6 +324,11 @@ def _validate_storylines(data: dict) -> None:
             raise _InvalidAiResponse(f"stories[{i}]가 응답 스키마와 맞지 않습니다.") from exc
         if len(parsed.recommended_infos) != 3:
             raise _InvalidAiResponse(f"stories[{i}]의 recommended_infos가 3개가 아닙니다.")
+        # Pydantic은 빈 문자열도 str로 통과시킨다. 이름 검증 완화(KNK-1102)로 소진 시에도
+        # 결과가 나가므로, 빈 본문이 원본을 덮어쓴 채 200으로 나가는 구멍을 여기서 막는다
+        # (재호출이 빈 편을 데려오면 병합 후 이 검증이 걸려 원본으로 되돌아간다 — Codex 리뷰 P2).
+        if not parsed.storyline.strip():
+            raise _InvalidAiResponse(f"stories[{i}]의 storyline이 비어 있습니다.")
 
 
 def _missing_name_indexes(data: dict, required_names: tuple[str, ...]) -> list[int]:
@@ -400,7 +406,9 @@ async def generate_storylines(
     required_names(사용자가 이름 지은 주변 인물, KNK-833)가 빠지면 **빠진 편만** 다시
     받는다(KNK-840, 최대 2회). 전체 재호출로 되돌리지 않는 이유는 잘 나온 편까지 버리게
     되고, 출력이 3배라 값과 대기 시간도 그만큼 늘기 때문이다(실측: 한 편만 빠지는 경우가
-    나옴). meta의 retry_count는 전체 재호출과 부분 재호출을 합한 수이고, 토큰도 합산한다.
+    나옴). 재호출을 소진해도 이름이 남아 있으면 502가 아니라 결과를 그대로 반환하고
+    Sentry 경고만 남긴다(KNK-1102). meta의 retry_count는 전체 재호출과 부분 재호출을
+    합한 수이고, 토큰도 합산한다.
     """
     result, usage = await _complete_json(
         system_prompt,
@@ -451,10 +459,11 @@ async def generate_storylines(
         missing = _missing_name_indexes(result, names)
 
     if missing:
-        exc = _InvalidAiResponse(
-            f"부분 재호출 후에도 입력 주변 인물이 빠진 편이 {len(missing)}편 남았습니다."
-        )
-        _raise_storylines_invalid(exc, usage, refills)
+        # 재호출로도 이름이 안 들어가는 입력이 있다(2026-09-01 운영: 한 사용자가 몇 번을
+        # 눌러도 같은 이유로 502 — 사용자 입장에선 영구 실패). 이름 미등장은 품질 흠이지
+        # 못 쓸 결과가 아니므로 502 대신 그대로 내주고 기록만 남긴다(KNK-1102).
+        # 완성본 보증은 컴파일 쪽 인물 카드 검증(KNK-833)이 맡는다.
+        _report_names_still_missing(missing, usage, refills)
 
     total = LlmUsage(
         usage.model,
@@ -466,8 +475,21 @@ async def generate_storylines(
     return result, total
 
 
-def _raise_storylines_invalid(exc: _InvalidAiResponse, usage: LlmUsage, refills: int) -> None:
-    """부분 재호출로도 못 고친 응답을 502로 막는다(Sentry 보고 포함)."""
+def _report_names_still_missing(missing: list[int], usage: LlmUsage, refills: int) -> None:
+    """부분 재호출로도 인물이 안 들어간 사실을 Sentry 경고로만 남긴다(KNK-1102).
+
+    응답은 성공(200)으로 나가므로 error가 아니라 warning이다 — 아침 Sentry 요약에서
+    빈도를 보다가 특정 입력에서 반복되면 프롬프트를 고칠 근거가 된다. 편 번호(1-based)만
+    싣고 이름·본문은 싣지 않는다(AN-4-10 원문 비수집).
+    """
+    exc = _InvalidAiResponse(
+        f"부분 재호출 후에도 입력 주변 인물이 빠진 편이 남았습니다: 편={[i + 1 for i in missing]}"
+    )
+    logger.warning(
+        "storylines 이름 미등장 편=%s — 재호출 %d회 소진, 그대로 반환(KNK-1102)",
+        [i + 1 for i in missing],
+        refills,
+    )
     capture_ai_exception(
         exc,
         feature=FEATURE_STORYLINE_GENERATION,
@@ -476,14 +498,8 @@ def _raise_storylines_invalid(exc: _InvalidAiResponse, usage: LlmUsage, refills:
         model=usage.model,
         prompt_versions={"STORYLINES": STORYLINES_VERSION},
         retry_count=usage.retry_count + refills,
+        level="warning",
     )
-    http_exc = HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail=_DETAIL_BY_CODE[ERROR_INVALID_AI_RESPONSE],
-    )
-    # 실패 트레이스에도 실제 재호출 횟수가 실리게 한다(_complete_json과 같은 관례).
-    http_exc.retry_count = usage.retry_count + refills
-    raise http_exc from exc
 
 
 # ── 컴파일 결과 검증 (StorySpec 파싱 전 dict 단계) ──────────────────────────

@@ -155,8 +155,12 @@ def capture_ai_exception(
     prompt_versions: dict | None = None,
     retry_count: int | None = None,
     latency_ms: int | None = None,
+    level: str | None = None,
 ) -> None:
     """AI 호출 실패를 Sentry에 보고한다(AN-4-8). DSN 미설정 시 자동 no-op.
+
+    level은 요청 자체는 성공으로 내보내면서 기록만 남기는 완화 경로(KNK-1102,
+    스토리라인 이름 등장 미충족)가 "warning"으로 지정한다. 미지정이면 error.
 
     원문(프롬프트·응답)은 인자로 받지 않는다 — feature·provider·model·error_code(tag)와
     prompt_versions·retry_count·latency_ms(context)만 싣는다. error_code가 없으면
@@ -170,6 +174,8 @@ def capture_ai_exception(
     if error_code is None:
         error_code = classify_error_code(exc)
     with sentry_sdk.new_scope() as scope:
+        if level is not None:
+            scope.set_level(level)
         scope.set_tag("feature", feature)
         scope.set_tag("provider", provider)
         scope.set_tag("error_code", error_code)
