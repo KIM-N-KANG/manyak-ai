@@ -241,9 +241,13 @@ class _FakeScope:
     def __init__(self) -> None:
         self.tags: dict = {}
         self.contexts: dict = {}
+        self.level: str | None = None
 
     def set_tag(self, k: str, v: object) -> None:
         self.tags[k] = v
+
+    def set_level(self, level: str) -> None:
+        self.level = level
 
     def set_context(self, k: str, v: object) -> None:
         self.contexts[k] = v
@@ -285,6 +289,28 @@ def test_capture_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
     assert scope.contexts["ai"]["prompt_versions"] == {"SAFETY": 1, "CORE": 2}
     assert scope.contexts["ai"]["retry_count"] == 1
     assert captured["exc"] is err
+
+
+def test_capture_applies_level_only_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    """level 인자가 scope에 실제로 반영되는지 고정한다(KNK-1102, Codex 리뷰).
+
+    호출부 mock만 검사하면 이 함수가 level을 버려도 테스트가 통과한다 — 그러면 완화
+    경로(스토리라인 이름 미등장)가 warning이 아니라 error로 집계된다. 미지정 시에는
+    level을 건드리지 않는 것(기존 error 유지)도 함께 고정한다.
+    """
+    scope = _FakeScope()
+    monkeypatch.setattr(sentry.sentry_sdk, "new_scope", lambda: scope)
+    monkeypatch.setattr(sentry.sentry_sdk, "capture_exception", lambda e: None)
+
+    capture_ai_exception(
+        ValueError("boom"), feature="storyline_generation", provider="deepseek", level="warning"
+    )
+    assert scope.level == "warning"
+
+    plain = _FakeScope()
+    monkeypatch.setattr(sentry.sentry_sdk, "new_scope", lambda: plain)
+    capture_ai_exception(ValueError("boom"), feature="storyline_generation", provider="deepseek")
+    assert plain.level is None  # 미지정이면 scope 기본(error) 그대로
 
 
 def test_capture_classifies_when_error_code_omitted(monkeypatch: pytest.MonkeyPatch) -> None:

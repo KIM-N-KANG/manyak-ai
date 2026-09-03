@@ -134,11 +134,11 @@ manyak-ai는 AI 서버라 QA = "서버 띄워 실제로 답하는지" 확인. de
 uvicorn src.main:app --port 8000        # 별도 터미널
 curl http://localhost:8000/api/v1/health
 ```
-`config.py`가 `DEEPSEEK_API_KEY`를 필수로 요구해, 기동에도 `.env`에 키가 있어야 한다.
+기동 검사(`validate_selected_models`)가 선택된 모델의 공급자 키를 전부 요구해, 기동에도 `.env`에 `DEEPSEEK_API_KEY`(채팅·스토리라인)와 `OPENAI_API_KEY`(스토리 컴파일)가 있어야 한다.
 
 ### 5-3. 실제 AI 기능 (LLM 호출 — 과금)
 
-**키를 손으로 만지지 않는다.** `qa.sh`가 `.env`에 키가 없으면 Secrets Manager에서 받아 넣고, 끝나면 내용을 원상복구한다(파일 권한은 0600으로 유지). 값은 변수에만 담기고 화면·로그에 찍히지 않는다.
+**키를 손으로 만지지 않는다.** `qa.sh`가 `.env`에 필요한 키(스크립트의 `REQUIRED_KEYS` — 현재 `DEEPSEEK_API_KEY`·`OPENAI_API_KEY`)가 하나라도 없으면 Secrets Manager에서 받아 넣고, 끝나면 내용을 원상복구한다(파일 권한은 0600으로 유지). 값은 변수에만 담기고 화면·로그에 찍히지 않는다. 컴파일 모델의 공급자가 바뀌면 `REQUIRED_KEYS`도 같이 고친다 — v0.2.6 QA에서 DEEPSEEK만 주입하다 OPENAI 키 부재로 라이브가 기동 실패한 전례가 있다.
 
 > 예전 런북에는 `aws secretsmanager … | python -c "print(...)"`를 실행한 뒤 "출력을 화면에 남기지 말라"고 적혀 있었다. **그 명령은 실행하는 순간 이미 키를 터미널에 뿌린다**(대화 기록·스크롤백에 남는다). 쓰지 말 것.
 
@@ -165,7 +165,7 @@ bash .agents/skills/release-deploy/scripts/infra-check.sh        # 읽기 전용
 
 `watch-deploy.sh`가 따로 있는 이유: `gh run watch`를 run ID 없이 부르면 비대화형 환경에서 `run ID required when not running interactively`로 즉시 실패한다. 스크립트가 최신 main 실행을 찾아 넘기고 `--exit-status`로 워크플로 실패를 종료코드에 싣는다.
 
-**`qa.sh`는 키가 없으면 Secrets Manager에서 가져와 `.env`에 넣고, 끝나면 내용을 원상복구한다**(파일 권한은 0600으로 유지 — 기본이 0666이라 되돌리면 다음 주입 때 또 위험해진다). 값은 어디에도 출력하지 않는다(`test.sh`가 docker 인자를 화면에 그대로 찍기 때문에 `-e`로 넘기면 키가 노출된다 — 그래서 `.env` 경유다).
+**`qa.sh`는 필요한 키(`REQUIRED_KEYS`)가 없으면 Secrets Manager에서 가져와 `.env`에 넣고, 끝나면 내용을 원상복구한다**(파일 권한은 0600으로 유지 — 기본이 0666이라 되돌리면 다음 주입 때 또 위험해진다). 값은 어디에도 출력하지 않는다(`test.sh`가 docker 인자를 화면에 그대로 찍기 때문에 `-e`로 넘기면 키가 노출된다 — 그래서 `.env` 경유다).
 
 **운영 헬스체크는 SSM으로만 된다.** AI 서버는 외부에 노출돼 있지 않아 브라우저·curl로 못 두드린다. `prod-health.sh`가 EC2를 태그로 찾아 `/api/v1/health`를 찌른다. `curl`은 `-f`가 없으면 HTTP 500에도 종료코드 0이라, 스크립트가 응답 본문의 `status`·`version`을 직접 검사한다.
 

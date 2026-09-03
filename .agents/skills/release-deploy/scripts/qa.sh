@@ -36,7 +36,7 @@ cleanup_injected_key() {
   if [ ! -f "$BACKUP" ]; then
     # 키를 넣어 놓고 백업이 사라졌다 = 되돌릴 원본이 없다. 조용히 성공으로 끝내면 안 된다.
     echo "!! 위험: 백업($BACKUP)이 사라졌습니다 — .env에 주입한 prod 키가 남아 있을 수 있습니다." >&2
-    echo "!! .env에서 DEEPSEEK_API_KEY 줄을 직접 확인하세요." >&2
+    echo "!! .env에서 DEEPSEEK_API_KEY·OPENAI_API_KEY 줄을 직접 확인하세요." >&2
     exit 1
   fi
   if mv "$BACKUP" "$ROOT/.env"; then
@@ -45,7 +45,7 @@ cleanup_injected_key() {
     echo ">>> .env 내용을 QA 전 상태로 되돌렸습니다(주입한 prod 키 제거). 권한은 0600으로 유지합니다."
     return 0
   fi
-  echo "!! 위험: .env 복구 실패 — 주입한 prod DEEPSEEK_API_KEY가 .env에 남아 있습니다." >&2
+  echo "!! 위험: .env 복구 실패 — 주입한 prod LLM 키가 .env에 남아 있습니다." >&2
   echo "!! 손으로 되돌리세요: mv '$BACKUP' '$ROOT/.env'" >&2
   exit 1   # EXIT trap 안에서 종료코드를 덮어써, 이 QA를 성공으로 보고하지 못하게 한다
 }
@@ -71,20 +71,32 @@ recover_orphan_backup() {
 }
 recover_orphan_backup
 
+# 기동 검사(validate_selected_models)는 선택된 모델의 공급자 키를 전부 요구한다 —
+# 채팅·스토리라인(deepseek)과 스토리 컴파일(gpt-5.6-terra=openai). 하나라도 빠지면 import에서 죽는다.
+# v0.2.6 QA에서 실제로 걸렸다: DEEPSEEK만 주입해 OPENAI_API_KEY 부재로 라이브가 기동 실패했다.
+REQUIRED_KEYS="DEEPSEEK_API_KEY OPENAI_API_KEY"
+
+has_required_keys() {
+  local k
+  for k in $REQUIRED_KEYS; do
+    grep -q "^${k}=..*" "$ROOT/.env" 2>/dev/null || return 1
+  done
+  return 0
+}
+
 # 키가 없으면 Secrets Manager에서 끌어와 .env에 넣는다. 값은 어디에도 출력하지 않는다.
 # (test.sh가 docker 인자를 화면에 그대로 찍으므로 -e로 넘기면 키가 노출된다 → .env 경유)
-ensure_deepseek_key() {
-  grep -q "^DEEPSEEK_API_KEY=..*" "$ROOT/.env" 2>/dev/null && return 0
+ensure_llm_keys() {
+  has_required_keys && return 0
 
-  echo ">>> .env에 DEEPSEEK_API_KEY가 없습니다 — Secrets Manager에서 가져옵니다"
+  echo ">>> .env에 필요한 LLM 키가 없습니다 — Secrets Manager에서 가져옵니다"
   command -v aws     >/dev/null || { echo "    aws CLI 없음"; return 1; }
   command -v python3 >/dev/null || { echo "    python3 없음"; return 1; }
 
-  local key
-  key=$(aws secretsmanager get-secret-value --region "${AWS_REGION:-ap-northeast-2}" \
-          --secret-id manyak/prod/app --query SecretString --output text 2>/dev/null \
-        | python3 -c "import sys,json;print(json.load(sys.stdin).get('DEEPSEEK_API_KEY',''))" 2>/dev/null)
-  [ -n "$key" ] || { echo "    Secrets에서 키를 얻지 못했습니다(자격 확인: aws sts get-caller-identity)"; return 1; }
+  local secret_json k v
+  secret_json=$(aws secretsmanager get-secret-value --region "${AWS_REGION:-ap-northeast-2}" \
+          --secret-id manyak/prod/app --query SecretString --output text 2>/dev/null)
+  [ -n "$secret_json" ] || { echo "    Secrets를 읽지 못했습니다(자격 확인: aws sts get-caller-identity)"; return 1; }
 
   # 쓰기 하나하나의 성공을 확인한다. 실패를 넘기면 키가 없거나 반쯤 쓰인 .env로 QA가 돌고,
   # 그래도 "주입 완료"라고 보고하게 된다.
@@ -96,15 +108,26 @@ ensure_deepseek_key() {
   chmod 600 "$BACKUP" "$ROOT/.env" \
     || { echo "    권한을 0600으로 조이지 못했습니다 — 운영 키를 쓰지 않고 중단합니다"; return 1; }
   # 임시 파일 이름은 .env.bak-* 를 따른다 — 그래야 gitignore에 걸려 키가 커밋되지 않는다.
-  if ! { grep -v "^DEEPSEEK_API_KEY=" "$BACKUP" || true
-         printf 'DEEPSEEK_API_KEY=%s\n' "$key"; } > "$BACKUP.tmp"; then
-    rm -f "$BACKUP.tmp"; echo "    .env 재작성 실패"; return 1
+  # 원본에서 REQUIRED_KEYS 줄을 걷어낸 뒤 Secrets 값으로 다시 채운다(빠진 키만이 아니라 전부 —
+  # 절반은 로컬 값·절반은 prod 값인 어정쩡한 조합을 만들지 않는다).
+  if ! grep -vE "^($(echo "$REQUIRED_KEYS" | tr ' ' '|'))=" "$BACKUP" > "$BACKUP.tmp"; then
+    # grep은 매칭 0건이면 종료코드 1을 낸다 — 파일이 실제로 쓰였으면 정상이다.
+    [ -f "$BACKUP.tmp" ] || { rm -f "$BACKUP.tmp"; echo "    .env 재작성 실패"; return 1; }
   fi
+  for k in $REQUIRED_KEYS; do
+    v=$(printf '%s' "$secret_json" \
+        | python3 -c "import sys,json;print(json.load(sys.stdin).get('$k',''))" 2>/dev/null)
+    if [ -z "$v" ]; then
+      rm -f "$BACKUP.tmp"; echo "    Secrets에 $k 가 없습니다 — 중단합니다"; return 1
+    fi
+    printf '%s=%s\n' "$k" "$v" >> "$BACKUP.tmp" \
+      || { rm -f "$BACKUP.tmp"; echo "    .env 재작성 실패"; return 1; }
+  done
   chmod 600 "$BACKUP.tmp" \
     || { rm -f "$BACKUP.tmp"; echo "    임시 파일 권한을 조이지 못했습니다 — 중단합니다"; return 1; }
   mv "$BACKUP.tmp" "$ROOT/.env" || { rm -f "$BACKUP.tmp"; echo "    .env 교체 실패"; return 1; }
-  unset key
-  echo "    주입 완료(값 미출력). QA가 끝나면 .env를 원상복구합니다."
+  unset secret_json v
+  echo "    주입 완료(값 미출력, 대상: $REQUIRED_KEYS). QA가 끝나면 .env를 원상복구합니다."
   return 0
 }
 
@@ -114,13 +137,13 @@ FAILED=""
 # deepseek_api_key가 기본값 없는 필수 필드라 import 시점에 터진다. 그래서 키 없는 머신에서는
 # 유닛이 먼저 깨지고, 정작 키를 채우려던 아래 ensure_deepseek_key까지 가지도 못했다.
 # 라이브를 돌 계획이면 키를 먼저 확보한다(어차피 곧 필요하다).
-if [ "$RUN_LIVE" = "1" ] && ! grep -q "^DEEPSEEK_API_KEY=..*" "$ROOT/.env" 2>/dev/null; then
+if [ "$RUN_LIVE" = "1" ] && ! has_required_keys; then
   echo "############ 0/2 키 확보 (유닛도 키가 있어야 import된다) ############"
-  ensure_deepseek_key || { echo ">>> 키를 확보하지 못했습니다 — QA를 진행할 수 없습니다"; exit 1; }
+  ensure_llm_keys || { echo ">>> 키를 확보하지 못했습니다 — QA를 진행할 수 없습니다"; exit 1; }
 fi
 # --no-live인데 키가 없으면 유닛조차 못 돈다. 원인을 유닛 실패로 뭉뚱그리지 않고 먼저 알린다.
-if ! grep -q "^DEEPSEEK_API_KEY=..*" "$ROOT/.env" 2>/dev/null; then
-  echo "FAIL: .env에 DEEPSEEK_API_KEY가 없어 테스트가 import 단계에서 실패합니다." >&2
+if ! has_required_keys; then
+  echo "FAIL: .env에 LLM 키($REQUIRED_KEYS)가 없어 테스트가 import 단계에서 실패합니다." >&2
   echo "      --no-live 없이 실행하면 Secrets Manager에서 자동으로 가져옵니다." >&2
   exit 1
 fi
@@ -142,8 +165,8 @@ elif [ "$RUN_LIVE" = "0" ]; then
 else
   echo "############ 2/2 라이브 통합 테스트 (실제 LLM 호출 — 과금) ############"
   # 위 0/2에서 이미 확보했으면 여기선 grep 한 번으로 즉시 통과한다(재조회 없음).
-  if ! ensure_deepseek_key; then
-    echo ">>> 라이브 건너뜀 — DEEPSEEK_API_KEY를 .env에도 Secrets에도 확보하지 못했습니다"
+  if ! ensure_llm_keys; then
+    echo ">>> 라이브 건너뜀 — LLM 키($REQUIRED_KEYS)를 .env에도 Secrets에도 확보하지 못했습니다"
     FAILED="$FAILED 라이브(키없음)"
   elif bash "$ROOT/scripts/test.sh" --live tests/integration; then
     echo ">>> 라이브 통과"
