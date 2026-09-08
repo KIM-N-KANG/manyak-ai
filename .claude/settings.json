@@ -24,7 +24,7 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/session-start.sh\"",
-            "statusMessage": "하네스 규칙·제품 스펙(product-specs 전체) 전문 로드"
+            "statusMessage": "하네스 운영 규칙(knk-harness/AGENTS.md) 로드"
           }
         ]
       }

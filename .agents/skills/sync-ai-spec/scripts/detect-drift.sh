@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 스펙 드리프트 감지 — 5-ai-server.md의 기준 코드 SHA 이후 dev에 쌓인 변경을 뽑는다.
+# 스펙 드리프트 감지 — 5-1-ai-server-spec.md의 기준 코드 SHA 이후 dev에 쌓인 변경을 뽑는다.
 #
 #   bash .agents/skills/sync-ai-spec/scripts/detect-drift.sh
 #
 # 감시 경로와 SHA를 손으로 옮겨 적지 않게 하려고 만든 스크립트다.
 # 어디서 실행하든 manyak-ai 레포 루트를 스스로 찾는다(두 레포를 오가는 스킬이라 작업 디렉터리를 믿지 않는다).
 #
-# 종료코드: 0  = 변경 없음(스펙 최신)      10 = 감시 경로 안에 변경 있음(층 판단으로)
+# 종료코드: 0  = 변경 없음(스펙 최신)      10 = 감시 경로 안에 변경 있음(변경 분류로)
 #           11 = 감시 경로 밖 변경만 있음(커밋 메시지 확인 필요)
 #           1  = 스펙 파일 없음            3  = 메타 표에 기준 코드 SHA 없음
 #           4  = 기준 SHA가 로컬에 없음    5  = git fetch 실패    2  = 사용법 오류
@@ -21,7 +21,8 @@ esac
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) \
   || { echo "FAIL: git 레포 안에서 실행해야 합니다." >&2; exit 1; }
-SPEC="$ROOT/../knk-harness/docs/product-specs/5-ai-server.md"
+SPEC="$ROOT/../knk-harness/docs/product-specs/5-1-ai-server-spec.md"
+ADR="$ROOT/../knk-harness/docs/product-specs/5-2-ai-server-adr.md"
 
 # 감시 경로 — 스펙에 영향이 있는 곳. 표에서 눈으로 옮기지 않도록 여기 한 곳에만 둔다.
 WATCH=(src/ prompt/ spec/ Dockerfile pyproject.toml .github/workflows/ .env.example)
@@ -29,10 +30,14 @@ WATCH=(src/ prompt/ spec/ Dockerfile pyproject.toml .github/workflows/ .env.exam
 EXCLUDE=()
 for p in "${WATCH[@]}"; do EXCLUDE+=(":(exclude)$p"); done
 
-[ -f "$SPEC" ] || {
-  echo "FAIL: knk-harness 경로를 확인해주세요. '../knk-harness/docs/product-specs/5-ai-server.md'를 찾을 수 없습니다." >&2
-  exit 1
-}
+# 동기화 대상은 스펙(5-1)·ADR(5-2) 둘이다. 하나만 있는 하네스(옛 체크아웃)에서 돌리면 반쪽 갱신이
+# 시작되므로 둘 다 있을 때만 진행한다.
+for f in "$SPEC" "$ADR"; do
+  [ -f "$f" ] || {
+    echo "FAIL: knk-harness 경로를 확인해주세요. '${f#"$ROOT"/}'를 찾을 수 없습니다(스펙 5-1·ADR 5-2 둘 다 필요)." >&2
+    exit 1
+  }
+done
 
 # 메타 표의 '기준 코드' 행에서 dev 브랜치 SHA만 뽑는다(같은 줄의 main SHA와 헷갈리지 않게 '브랜치' 뒤로 한정).
 BASE_SHA=$(grep -m1 '^| *기준 코드 *|' "$SPEC" | sed -nE 's/.*브랜치 `([0-9a-f]{7,40})`.*/\1/p')
@@ -58,7 +63,7 @@ echo "기준 코드 $BASE_SHA -> origin/dev $NEW_SHA"
 echo "감시 경로: ${WATCH[*]}"
 echo
 
-echo "############ 감시 경로 안의 변경 (층 판단 대상) ############"
+echo "############ 감시 경로 안의 변경 (변경 분류 대상) ############"
 # 조회 실패와 '변경 없음'은 둘 다 빈 결과다 — 상태를 안 보면 실패를 "스펙 최신"으로 보고하게 된다.
 IN=$(git -C "$ROOT" log "$BASE_SHA..origin/dev" --oneline -- "${WATCH[@]}") \
   || { echo "FAIL: 변경 목록 조회 실패 — '변경 없음'과 구별할 수 없어 중단합니다." >&2; exit 1; }
@@ -92,7 +97,7 @@ if [ -z "$IN" ]; then
   # 종료코드 0은 "판단할 것 없음"이라 스킬이 곧장 끝낸다. 밖의 변경이 남아 있으면
   # 커밋 메시지를 사람이 훑어야 하므로 0과 구분되는 코드를 낸다.
   echo ">>> 감시 경로 안의 변경은 없지만, 밖의 변경이 남아 있습니다 — 위 목록의 커밋 메시지를 확인하세요."
-  echo ">>> 설계 변경을 시사하면 층 판단으로, 아니면 '스펙 최신'으로 보고합니다."
+  echo ">>> 설계 변경을 시사하면 변경 분류로, 아니면 '스펙 최신'으로 보고합니다."
   exit 11
 fi
 echo ">>> 갱신 후 메타 표에 적을 새 기준 코드: $NEW_SHA"

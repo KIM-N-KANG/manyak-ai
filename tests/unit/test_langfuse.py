@@ -285,7 +285,7 @@ def test_dimension_tags_genre_only() -> None:
 def test_dimension_tags_accepts_only_genre_tags() -> None:
     """dimension_tags의 인자를 genre_tags 하나로 고정(KNK-652 회귀 방지) — 채팅용 genre가
     같은 이름이든 다른 이름(chat_genre 등)이든 새 인자가 생기면 실패한다. 장르 태그는
-    스토리 제작 트레이스에만 싣는다(5-ai-server §5-6)."""
+    스토리 제작 트레이스에만 싣는다(5-1-ai-server-spec.md §5-6)."""
     import inspect
 
     assert list(inspect.signature(dimension_tags).parameters) == ["genre_tags"]
