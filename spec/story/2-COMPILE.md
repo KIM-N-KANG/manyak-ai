@@ -1,6 +1,6 @@
 ---
-version: 13
-updated: 2026-08-31
+version: 14
+updated: 2026-09-08
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -163,7 +163,7 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 - **실패 표현**: 한 가지뿐입니다. `thumbnail_image`는 항상 객체이며(null 없음, 필수 필드), 성공이면 `image_base64`가 문자열이고 `error`가 null, 실패면 `image_base64`가 null이고 `error`에 코드(`timeout`·`rate_limited`·`rejected`·`generation_failed`)가 실립니다. 썸네일 로직 자체의 예외도 `generation_failed`로 바꿉니다. 이름·형식·코드는 스키마가 계약값만 허용하고, 성공/실패 상호 배타도 스키마가 검증합니다.
 - **실패 격리**: 표지 실패가 인물 이미지나 컴파일에 영향을 주지 않고, 그 반대도 같습니다.
 - **관측**: Sentry 보고의 `feature` 값은 `thumbnail_image_generation`, `meta.prompt_versions`에 `THUMBNAIL_IMAGE` 버전.
-- **시간 제한**: 썸네일 전체에 별도 상한을 두지 않습니다. `IMAGE_TIMEOUT`(기본 60초)은 시도 한 번의 제한이고 SDK가 시간 초과·429·서버 오류에 2번 더 시도하므로, 최악은 3번 시도 약 180초 이상입니다. 이 상한은 시간 제한 후속(5-ai-server A18)에서 다룹니다.
+- **시간 제한**: 썸네일 전체에 별도 상한을 두지 않습니다. `IMAGE_TIMEOUT`(기본 60초)은 시도 한 번의 제한이고 SDK가 시간 초과·429·서버 오류에 2번 더 시도하므로, 최악은 3번 시도 약 180초 이상입니다. 이 상한은 시간 제한 후속(`5-2-ai-server-adr.md` A18)에서 다룹니다.
 
 ### 4-8. 프롬프트 캐싱
 
@@ -277,7 +277,7 @@ ERD 4테이블에 1:1 대응하는 nested 구조에 인물 외형·인물 이미
 | meta | object | 응답 로깅 메타(`ai_call_logs` 적재용, KNK-243) |
 | meta.retry_count | number | 부분 재호출 횟수(0~2) |
 
-**백엔드 저장 안내(KNK-465)**: `story_endings`는 엔딩 4필드(name·min_turns·achievement_condition·epilogue)를 담을 칸으로, `story_main_events`는 name·description·key_sentence + 배열 순서를 담을 순서 칸으로 저장합니다(상위 정본 `5-ai-server.md §5-3-3`과 일치). 엔딩은 정상 3개이되 폴백 시 0개가 올 수 있습니다. 두 목록은 통글로 뭉치지 않고 항목별 이산 필드 그대로 내려가므로 칸별로 저장하면 됩니다. 사건의 배열 순서는 명목 순서일 뿐 전개를 강제하지 않습니다(건너뛰기 허용).
+**백엔드 저장 안내(KNK-465)**: `story_endings`는 엔딩 4필드(name·min_turns·achievement_condition·epilogue)를 담을 칸으로, `story_main_events`는 name·description·key_sentence + 배열 순서를 담을 순서 칸으로 저장합니다(상위 정본 `5-1-ai-server-spec.md §5-3-3`과 일치). 엔딩은 정상 3개이되 폴백 시 0개가 올 수 있습니다. 두 목록은 통글로 뭉치지 않고 항목별 이산 필드 그대로 내려가므로 칸별로 저장하면 됩니다. 사건의 배열 순서는 명목 순서일 뿐 전개를 강제하지 않습니다(건너뛰기 허용).
 
 `meta`의 나머지 필드(model·prompt_versions·provider·input_token_count·output_token_count)는 스토리라인과 동일합니다. `prompt_versions`에는 컴파일 템플릿(`COMPILE` 또는 `COMPILE_GEMINI`)과 이미지 템플릿(`CHARACTER_IMAGE`·`THUMBNAIL_IMAGE`) 버전이 함께 들어갑니다. 토큰 수는 본호출과 재호출을 **합산**하며, model은 본호출 응답값을 씁니다.
 

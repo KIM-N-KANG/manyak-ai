@@ -9,7 +9,7 @@
 - 출력: AI → 백엔드. 항상 정확히 3개 — 유효한 요청이면 LLM 생성 실패도 폴백으로
   흡수해 200이다(스키마 위반 요청은 422 검증 오류 — "항상 200"은 생성 실패에 한정).
 - 표기: 동기 REST라 story 계열과 같은 snake_case다 — camelCase는 chat SSE completed
-  페이로드만의 공식 예외(5-ai-server §5-1)라 여기로 넓히지 않는다.
+  페이로드만의 공식 예외(5-1-ai-server-spec.md §5-3-1)라 여기로 넓히지 않는다.
 """
 
 from pydantic import BaseModel, Field
