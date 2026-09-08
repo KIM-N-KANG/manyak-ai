@@ -22,6 +22,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) \
   || { echo "FAIL: git 레포 안에서 실행해야 합니다." >&2; exit 1; }
 SPEC="$ROOT/../knk-harness/docs/product-specs/5-1-ai-server-spec.md"
+ADR="$ROOT/../knk-harness/docs/product-specs/5-2-ai-server-adr.md"
 
 # 감시 경로 — 스펙에 영향이 있는 곳. 표에서 눈으로 옮기지 않도록 여기 한 곳에만 둔다.
 WATCH=(src/ prompt/ spec/ Dockerfile pyproject.toml .github/workflows/ .env.example)
@@ -29,10 +30,14 @@ WATCH=(src/ prompt/ spec/ Dockerfile pyproject.toml .github/workflows/ .env.exam
 EXCLUDE=()
 for p in "${WATCH[@]}"; do EXCLUDE+=(":(exclude)$p"); done
 
-[ -f "$SPEC" ] || {
-  echo "FAIL: knk-harness 경로를 확인해주세요. '../knk-harness/docs/product-specs/5-1-ai-server-spec.md'를 찾을 수 없습니다." >&2
-  exit 1
-}
+# 동기화 대상은 스펙(5-1)·ADR(5-2) 둘이다. 하나만 있는 하네스(옛 체크아웃)에서 돌리면 반쪽 갱신이
+# 시작되므로 둘 다 있을 때만 진행한다.
+for f in "$SPEC" "$ADR"; do
+  [ -f "$f" ] || {
+    echo "FAIL: knk-harness 경로를 확인해주세요. '${f#"$ROOT"/}'를 찾을 수 없습니다(스펙 5-1·ADR 5-2 둘 다 필요)." >&2
+    exit 1
+  }
+done
 
 # 메타 표의 '기준 코드' 행에서 dev 브랜치 SHA만 뽑는다(같은 줄의 main SHA와 헷갈리지 않게 '브랜치' 뒤로 한정).
 BASE_SHA=$(grep -m1 '^| *기준 코드 *|' "$SPEC" | sed -nE 's/.*브랜치 `([0-9a-f]{7,40})`.*/\1/p')
