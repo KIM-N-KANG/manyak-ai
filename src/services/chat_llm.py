@@ -7,7 +7,7 @@
 
 이벤트(dict)를 async generator로 낸다. SSE 와이어 변환·선택지 합치기는 엔드포인트(chat.py)가 맡는다.
 - {"event": "token",     "text": ...}
-- {"event": "character_image", "name": ..., "image_name": ..., "image_url": ...}  — 이미지 보유 인물의 `인물명:` 줄 직전(KNK-1005·1026)
+- {"event": "character_image", "name": ..., "image_name": ..., "image_url": ...}  — 한 턴에서 이미지 보유 인물별 첫 `인물명:` 줄 직전(KNK-1219)
 - {"event": "completed", "ai_output": ..., "character_images": [...], "model": ..., "provider": ..., "input_tokens": ..., "output_tokens": ...}
 - {"event": "error",     "code": ..., "message": ...}
 """
