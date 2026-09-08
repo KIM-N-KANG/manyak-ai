@@ -7,7 +7,7 @@
 
 이벤트(dict)를 async generator로 낸다. SSE 와이어 변환·선택지 합치기는 엔드포인트(chat.py)가 맡는다.
 - {"event": "token",     "text": ...}
-- {"event": "character_image", "name": ..., "image_name": ..., "image_url": ...}  — 이미지 보유 인물의 `인물명:` 줄 직전(KNK-1005·1026)
+- {"event": "character_image", "name": ..., "image_name": ..., "image_url": ...}  — 한 턴에서 이미지 보유 인물별 첫 `인물명:` 줄 직전(KNK-1219)
 - {"event": "completed", "ai_output": ..., "character_images": [...], "model": ..., "provider": ..., "input_tokens": ..., "output_tokens": ...}
 - {"event": "error",     "code": ..., "message": ...}
 """
@@ -155,14 +155,18 @@ def _speaker_label_re(names: "Iterable[str]") -> "re.Pattern[str]":
 def _insert_storage_markers(
     text: str, character_images: list[CharacterImageMapping]
 ) -> tuple[str, list[dict]]:
-    """볼드를 뗀 완료 본문에서 인물명 라벨 앞에 URL 마커를 붙이고 표시 순서 목록을 만든다."""
+    """볼드를 뗀 완료 본문에서 인물별 첫 라벨 앞에 URL 마커를 붙이고 표시 순서 목록을 만든다."""
     images = _images_by_name(character_images)
     if not images:
         return text, []
     displayed: list[dict] = []
+    displayed_names: set[str] = set()
 
     def replace(match: "re.Match[str]") -> str:
         image = images[match.group(2)]
+        if image.name in displayed_names:
+            return match.group(0)
+        displayed_names.add(image.name)
         displayed.append(_image_payload(image))
         # 마커는 대사 줄 위에 빈 줄을 두고 따로 둔다 — 프론트가 마커 줄을 통째로 이미지로
         # 바꾸기 쉽게(프론트 요청, KNK-1002). 원래 들여쓰기는 대사 줄에 그대로 남긴다.
@@ -178,19 +182,20 @@ class _SpeakerLabelStreamParser:
 
     이미지의 근거는 LLM이 따로 쓰는 태그가 아니라 대사 형식 자체(`인물명:`)다 — 형식은
     프롬프트가 아니라 코드가 담보한다(D7). 줄이 시작될 때마다 라벨인지 확정될 때까지
-    글자를 잠시 모으고, 볼드 라벨은 평문으로 바꿔 내보낸다. 이미지 보유 인물의 라벨이면
+    글자를 잠시 모으고, 볼드 라벨은 평문으로 바꿔 내보낸다. 이미지 보유 인물의 첫 라벨이면
     character_image 이벤트를 라벨 글자보다 먼저 낸다.
     """
 
     def __init__(self, character_images: list[CharacterImageMapping]) -> None:
         self._images = _images_by_name(character_images)
+        self._displayed_names: set[str] = set()
         self._label_re = _speaker_label_re(self._images) if self._images else None
         self._buffer = ""          # 줄머리에서 모으는 중인 글자
         self._collecting = True    # 본문 첫 줄부터 줄머리다
         self._skip_ws = False      # 볼드 라벨을 `이름: `로 바꾼 직후, 원문의 뒤따르는 공백을 버린다
 
     def feed(self, text: str) -> list[dict]:
-        """델타 하나를 처리한다. 일반 글은 token, 이미지 보유 인물의 라벨 앞엔 character_image다."""
+        """델타 하나를 처리한다. 일반 글은 token, 인물별 첫 라벨 앞엔 character_image다."""
         events: list[dict] = []
         visible: list[str] = []
 
@@ -216,9 +221,10 @@ class _SpeakerLabelStreamParser:
             if resolved is not None:
                 name, label_text = resolved
                 image = self._images.get(name)
-                if image is not None:
+                if image is not None and image.name not in self._displayed_names:
                     emit_visible()
                     events.append({"event": EVENT_CHARACTER_IMAGE, **_image_payload(image)})
+                    self._displayed_names.add(image.name)
                 visible.append(label_text)
                 self._buffer = ""
                 self._collecting = False
@@ -274,7 +280,7 @@ async def stream_chat_turn(
     """messages를 LLM에 스트리밍 호출하고 token·character_image→completed(또는 error)를 낸다.
 
     줄머리 볼드 화자 라벨은 실시간 token과 완료 본문 양쪽에서 평문 `이름: `으로 바꾼다.
-    인물 이미지 매핑이 있으면 이미지 보유 인물의 인물명 라벨(`이름:`) 앞에 이미지 이벤트를
+    인물 이미지 매핑이 있으면 이미지 보유 인물의 첫 인물명 라벨(`이름:`) 앞에 이미지 이벤트를
     끼우고, 완료 시 같은 자리에 URL 저장 마커를 붙여 `ai_output`과 표시 순서의
     `character_images`를 낸다(KNK-1005). 선택지는 여기서 만들지 않으며,
     엔드포인트가 본문 종료 후 별도 호출로 받아 completed에 합친다.
