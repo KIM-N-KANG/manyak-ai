@@ -82,8 +82,8 @@ class MainEvent(BaseModel):
 
     컴파일 산출물(`StoryMainEventOut`)·일반 제작 저작분과 동일 구조로 백엔드
     `story_main_events`에서 온다. key_sentence는 사용자 입력이 이 사건과 의미상
-    관련되는지 판단하는 기준 문장이며, 관련성 판정은 AI의 정성 판정이다(D11 —
-    5-1-ai-server-spec.md §5-3-4).
+    관련되는지 판단하는 기준 문장이며, 관련성 판정은 AI의 정성 판정이다(5-1-ai-server-spec.md §5-3-4 ·
+    5-2-ai-server-adr.md D11).
     """
 
     name: str
