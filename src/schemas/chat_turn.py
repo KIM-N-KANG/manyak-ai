@@ -82,8 +82,8 @@ class MainEvent(BaseModel):
 
     컴파일 산출물(`StoryMainEventOut`)·일반 제작 저작분과 동일 구조로 백엔드
     `story_main_events`에서 온다. key_sentence는 사용자 입력이 이 사건과 의미상
-    관련되는지 판단하는 기준 문장이며, 관련성 판정은 AI의 정성 판정이다(D11 —
-    5-ai-server §5-3-4).
+    관련되는지 판단하는 기준 문장이며, 관련성 판정은 AI의 정성 판정이다(5-1-ai-server-spec.md §5-3-4 ·
+    5-2-ai-server-adr.md D11).
     """
 
     name: str
@@ -162,7 +162,7 @@ class ChatTurnRequest(BaseModel):
     # 넣는다(빈 문자열이면 빈 칸 그대로). 메모리를 요약·기록(생성)하는 로직은 별개 기능(Phase 4)
     # 이라, 그전까지 백엔드는 빈 문자열을 보낸다.
     summary: str
-    # ── 주요 사건·엔딩 진행 재료 (KNK-482, 5-ai-server §5-3-4·D11) ──────────────
+    # ── 주요 사건·엔딩 진행 재료 (KNK-482, 5-1-ai-server-spec.md §5-3-4 · 5-2-ai-server-adr.md D11) ──────────────
     # 넷 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
     # 않으므로, 없으면 기존 요청과 동일하게 동작한다(하위호환 — 백엔드 전달은
     # 4-backend §4-3-10). 재료가 실리면 프롬프트 판정 재료와 completed 판정 메타의

@@ -25,7 +25,7 @@ experiment·scripts에는 계측이 아예 실리지 않는다. 뒤늦은 import
 **활성화 가드 (KNK-652).** 원문 수집은 6-analytics §6-7이 "prod 전용·JP 리전 저장" 조건 아래
 허용한 예외다. 키 유무만 보고 켜면 키가 다른 환경에 흘러들거나 HOST를 빠뜨렸을 때(기본값이
 JP가 아님) 허용 조건 밖에서 원문이 수집되므로, 키가 있어도 host가 JP 엔드포인트이고 환경이
-prod일 때만 켠다(5-ai-server §5-6). 미충족이면 기동을 막지 않고 no-op + 오류 로그 — 관측
+prod일 때만 켠다(5-1-ai-server-spec.md §5-6). 미충족이면 기동을 막지 않고 no-op + 오류 로그 — 관측
 실패가 서비스를 깨면 안 된다는 원칙과 같다. 로컬 통합 검증이 필요하면 로컬 `.env`의
 환경값을 의식적으로 prod로 바꿔 켠다(기본은 차단).
 
@@ -84,7 +84,7 @@ def init_langfuse() -> None:
     if host != _ALLOWED_HOST:
         logger.error(
             "Langfuse 비활성 — LANGFUSE_HOST가 JP 엔드포인트(%s)가 아님: %s "
-            "(원문 수집은 JP 리전만 허용, 5-ai-server §5-6)",
+            "(원문 수집은 JP 리전만 허용, 5-1-ai-server-spec.md §5-6)",
             _ALLOWED_HOST,
             settings.langfuse_host,
         )
@@ -92,7 +92,7 @@ def init_langfuse() -> None:
     if settings.sentry_environment != _ALLOWED_ENVIRONMENT:
         logger.error(
             "Langfuse 비활성 — 환경이 prod가 아님: %s "
-            "(원문 수집은 prod 전용, 5-ai-server §5-6. 로컬 검증은 .env 환경값을 의식적으로 변경)",
+            "(원문 수집은 prod 전용, 5-1-ai-server-spec.md §5-6. 로컬 검증은 .env 환경값을 의식적으로 변경)",
             settings.sentry_environment,
         )
         return
@@ -137,7 +137,7 @@ def dimension_tags(
 
     장르는 스토리 제작 시점에만 선택되므로 **스토리 제작 트레이스(스토리라인·컴파일)에만**
     싣는다 — 채팅 턴·선택지의 단일 `genre` 인자는 KNK-652에서 제거했다(채팅 트레이스 장르는
-    후속, 5-ai-server §5-6). story `genre_tags`는 키워드 단계 개편(KNK-621)이 커스텀 장르
+    후속, 5-1-ai-server-spec.md §5-6). story `genre_tags`는 키워드 단계 개편(KNK-621)이 커스텀 장르
     입력을 400으로 차단하면 사전 정의만 남는다 — 켜기는 그 배포 이후로 순서를 잡는다.
     주인공·주변 인물 특징(인물 세트 `features`, KNK-833)은 사용자가 직접 키워드를 입력해
     추가할 수 있어(US-3-3, 4-backend §4-4) **원문이 섞이고 카디널리티가 폭발**한다 — 그래서

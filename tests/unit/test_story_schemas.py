@@ -1,6 +1,6 @@
 """인물 단위 입력 스키마(KNK-833) 검증.
 
-계약(5-ai-server.md §5-3-2): 주인공·주변 인물은 {name, gender, features[]} 세트이고
+계약(5-1-ai-server-spec.md §5-3-2): 주인공·주변 인물은 {name, gender, features[]} 세트이고
 세 항목 전부 선택이다. 빈 값은 LLM 자동 생성 대상이므로 스키마가 거부하면 안 되고,
 gender는 "MALE"·"FEMALE"·null 외의 값을 거부해야 한다. 개수 상한(5명·특징 3개)은
 백엔드 소관이라 여기서 검증하지 않는 것도 계약이다.
