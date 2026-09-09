@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # **호출마다 반드시 넘긴다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
 _TIMEOUT_SECONDS = 90.0
 
-# 인물 이름 상한. 클라이언트·백엔드가 30자로 막는다(3-1-client.md §3-1-4).
+# 인물 이름 상한. 클라이언트·백엔드가 30자로 막는다(spec/3-1-client-spec.md §3-1-4).
 _SPEAKER_NAME_MAX_CHARS = 30
 
 # 라벨 안에서 허용하는 공백 수(볼드 기호와 이름 사이, 이름과 콜론 사이). 정규식과 스트리밍

@@ -15,6 +15,6 @@ if [ ! -f "$HARNESS/AGENTS.md" ]; then
     exit 0
 fi
 
-printf '%s\n\n' "【시작 절차】 아래는 하네스 운영 규칙(knk-harness/AGENTS.md) 전문이다. 제품 명세(docs/product-specs)는 여기 포함하지 않았다 — 작업에 필요한 문서만 CLAUDE.md의 인덱스에서 골라 직접 열어 근거로 삼아라."
+printf '%s\n\n' "【시작 절차】 아래는 하네스 운영 규칙(knk-harness/AGENTS.md) 전문이다. 제품 문서(docs/spec·docs/design·docs/adr)는 여기 포함하지 않았다 — 작업에 필요한 문서만 CLAUDE.md의 인덱스에서 골라 직접 열어 근거로 삼아라."
 echo '===== KNK-HARNESS AGENTS.md (하네스 운영 규칙) ====='
 cat "$HARNESS/AGENTS.md"

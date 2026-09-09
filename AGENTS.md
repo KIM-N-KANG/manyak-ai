@@ -9,21 +9,22 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 
 | 작업 범위 | 먼저 확인할 문서 |
 | --- | --- |
-| 도메인 용어·필드 이름 | `../knk-harness/docs/product-specs/0-glossary.md` |
-| 제품 배경·MVP 범위·사용자 요구 | `../knk-harness/docs/product-specs/1-background.md`, `2-user-stories.md` |
-| 클라이언트 화면·호출 흐름·SSE 소비 방식 | `../knk-harness/docs/product-specs/3-1-client.md`, `3-2-web-app.md` |
-| 백엔드 API·SSE·저장·오류 계약 | `../knk-harness/docs/product-specs/4-backend.md` |
-| AI 요청·응답·프롬프트·실패 처리·채팅 판정 계약 | `../knk-harness/docs/product-specs/5-1-ai-server-spec.md` |
-| AI 설계 결정의 배경·대안·근거 | `../knk-harness/docs/product-specs/5-2-ai-server-adr.md` |
-| 이벤트·지표·AI 관측 | `../knk-harness/docs/product-specs/6-analytics.md` |
-| AI 서버 배포·환경 변수·운영 검수 | `../knk-harness/docs/product-specs/7-deployment.md` |
+| 도메인 용어·필드 이름 | `../knk-harness/docs/spec/0-glossary.md` |
+| 제품 배경·MVP 범위·사용자 요구 | `../knk-harness/docs/spec/1-background.md`, `../knk-harness/docs/spec/2-user-stories.md` |
+| 클라이언트 화면·호출 흐름·SSE 소비 방식 | `../knk-harness/docs/spec/3-1-client-spec.md`, `../knk-harness/docs/spec/3-2-web-spec.md` |
+| 백엔드 API·SSE·저장·오류 계약 | `../knk-harness/docs/spec/4-backend-server-spec.md` |
+| AI 요청·응답·실패 처리·채팅 판정 계약 | `../knk-harness/docs/spec/5-ai-server-spec.md` |
+| AI 호출 구조·프롬프트·모델·관측 설정 | `../knk-harness/docs/design/3-ai-server-design.md` |
+| AI 설계 결정의 배경·대안·근거 | `../knk-harness/docs/adr/3-ai-server-adr.md` |
+| 이벤트·지표·AI 관측 | `../knk-harness/docs/spec/6-analytics.md` |
+| AI 서버 배포·환경 변수·운영 검수 | `../knk-harness/docs/design/4-deployment.md` |
 | 채팅 내부 설계·구현 규칙 | `spec/chat/`의 관련 문서 |
 | 스토리 내부 설계·구현 규칙 | `spec/story/`의 관련 문서 |
 
 `../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다. 두 가지 예외가 있습니다.
 
-1. 구현이 `dev`에 머지된 뒤 `sync-ai-spec` 스킬로 AI 서버 문서 두 개
-   (`5-1-ai-server-spec.md` 스펙, `5-2-ai-server-adr.md` 의사결정 기록)를 동기화하는 것(아래 "작업 워크플로" 참조).
+1. 구현이 `dev`에 머지된 뒤 `sync-ai-spec` 스킬로 AI 서버 문서 세 개
+   (`docs/spec/5-ai-server-spec.md` Spec, `docs/design/3-ai-server-design.md` Design, `docs/adr/3-ai-server-adr.md` ADR)를 동기화하는 것(아래 "작업 워크플로" 참조).
 2. AI 서버 변경 때문에 다른 제품 스펙을 고쳐야 하면, 고칠 곳과 문구를 먼저 보여주고 승인받은 뒤 그 부분만 고칩니다.
    다른 서비스(백엔드·프론트)에도 걸리는 규칙이면 그 사실을 함께 알립니다.
 
@@ -49,7 +50,7 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 - 코드 스타일 규칙(프로젝트 레이아웃·네이밍·임포트 순서·응답 모델·에러 처리·금지 패턴)은
   `.agents/STYLEGUIDE.md`를 따릅니다. 코드를 쓸 때도 리뷰할 때도 같은 기준입니다.
 - 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 위 인덱스에서 제품 명세와 로컬 `spec/` 문서를 골라 먼저 확인합니다.
-  외부 계약(요청·응답·판정·SSE)의 SSOT는 `5-1-ai-server-spec.md`, 설계 결정의 배경·대안·근거는 `5-2-ai-server-adr.md`입니다.
+  외부 계약(요청·응답·판정·SSE)의 SSOT는 `docs/spec/5-ai-server-spec.md`, 현재 내부 구조·설정은 `docs/design/3-ai-server-design.md`, 설계 결정의 배경·대안·근거는 `docs/adr/3-ai-server-adr.md`입니다.
 - 채팅 프롬프트는 레이어 8종(CORE·SAFETY·STORY·CHARACTER·USER·MEMORY·JUDGEMENT·CHOICES)으로
   나뉘어 `prompt/chat/`에 템플릿으로 존재합니다. 어떤 내용이 어느 레이어에 속하는지는
   `spec/chat/1-PROMPT-LAYER.md`·`2-LAYER-PLACEMENT.md`가 정합니다 — 임의 배치 금지.
@@ -64,8 +65,8 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 - **수정이 끝났다고 바로 커밋하지 않습니다.** 변경 요지를 먼저 보고하고 사용자 확인을 받은 뒤 커밋합니다.
 - 스펙 반영은 작업 티켓과 별도의 티켓으로 합니다. 작업 티켓을 만들 때 Phase별 "스펙 문서 업데이트" 티켓 아래에
   스펙 반영 자식 티켓을 함께 둡니다. 자식 티켓은 에이전트가 만들되, 만들 내용(제목·부모·담당자·추정치)을 먼저 보여주고
-  승인받은 뒤 만듭니다. 구현이 `dev`에 머지되면 그 자식 티켓으로 `sync-ai-spec` 스킬을 돌려 스펙(`5-1-ai-server-spec.md`)과
-  의사결정 기록(`5-2-ai-server-adr.md`)에 반영합니다.
+  승인받은 뒤 만듭니다. 구현이 `dev`에 머지되면 그 자식 티켓으로 `sync-ai-spec` 스킬을 돌려 Spec(`docs/spec/5-ai-server-spec.md`)·Design(`docs/design/3-ai-server-design.md`)·
+  ADR(`docs/adr/3-ai-server-adr.md`)에 반영합니다.
 
 ### 스킬 배치(.agents/skills)
 - 스킬 정본은 `.agents/skills/`이고, `.claude/skills/*`는 그것을 가리키는 심링크입니다(한 소스, 두 에이전트). `CLAUDE.md`→`AGENTS.md`도 같은 방식입니다.
@@ -125,6 +126,6 @@ Codex가 이 레포의 PR을 리뷰할 때 따르는 기준입니다. "통과시
 - 성능·불필요한 비용: 중복 LLM 호출, N+1, 토큰 낭비
 - 테스트 부재·약한 단언·커버되지 않은 분기
 - 팀 컨벤션 위반: 커밋·PR에 `Co-Authored-By` 금지, `git add -- <경로>`만 사용(`git add -A`/`.` 금지), `dev` 직접 커밋 금지, 프롬프트 전문·시크릿·채팅 원문 노출 금지
-- 제품 동작·계약 변경이 관련 스펙(`spec/`, `../knk-harness/docs/product-specs/`)과 어긋나는지
+- 제품 동작·계약 변경이 관련 스펙(`spec/`, `../knk-harness/docs/spec/`)과 어긋나는지
 
 각 지적에는 코드상의 근거와 구체적 수정 방향을 함께 답니다. 실제 결함이 없으면 억지 지적 없이 그 사실을 밝힙니다.

@@ -1,6 +1,6 @@
 ---
-version: 14
-updated: 2026-09-08
+version: 15
+updated: 2026-09-09
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -66,7 +66,7 @@ updated: 2026-09-08
 
 **[8] 인물별 이미지 생성(KNK-414)**: 컴파일이 성공하면 인물 카드의 외형 필드(age·body·face·hair·outfit·visual_identity)로 이미지 프롬프트를 조립하고, 인물별 이미지를 병렬 생성합니다. 이미지 생성은 컴파일의 부가물이라, 한 인물이 실패해도 나머지 인물과 스토리 명세에 영향을 주지 않습니다. 채팅 플레이에서 인물이 말할 때 해당 인물의 이미지를 보여주기 위해 컴파일 시점에 한 번 만들어 둡니다. 이미지를 S3에 직접 올리지 않고 base64로 응답에 실어 보내는 이유는, AI 서버가 저장소를 모르는 stateless 구조를 유지하기 위해서입니다.
 
-**[8] 표지 썸네일 생성(KNK-1047)**: 같은 시점에 스토리 표지 1장도 만듭니다. 재료는 컴파일 요청의 장르 태그와 [6]까지 채워진 인물 카드의 외형이라 백엔드가 새로 보낼 것이 없고, 별도 엔드포인트 없이 컴파일 응답에 함께 실어 보냅니다(팀 협의 2026-08-30). 인물 이미지와 동시에 돌리므로 컴파일 대기 시간은 둘 중 오래 걸리는 쪽만큼만 늘어납니다. 표지가 실패해도 컴파일은 성공합니다. 백엔드가 성공 시 S3에 올려 표지로 쓰고 실패 시 기존 프리셋을 유지하는 것은 백엔드 계획입니다(`4-backend.md §4-3-9` AI 썸네일 전환).
+**[8] 표지 썸네일 생성(KNK-1047)**: 같은 시점에 스토리 표지 1장도 만듭니다. 재료는 컴파일 요청의 장르 태그와 [6]까지 채워진 인물 카드의 외형이라 백엔드가 새로 보낼 것이 없고, 별도 엔드포인트 없이 컴파일 응답에 함께 실어 보냅니다(팀 협의 2026-08-30). 인물 이미지와 동시에 돌리므로 컴파일 대기 시간은 둘 중 오래 걸리는 쪽만큼만 늘어납니다. 표지가 실패해도 컴파일은 성공합니다. 백엔드가 성공 시 S3에 올려 표지로 쓰고 실패 시 기존 프리셋을 유지하는 것은 백엔드 계획입니다(`spec/4-backend-server-spec.md §4-3-9` AI 썸네일 전환).
 
 **[9] 통글 마크다운으로 변환하는 이유**: 백엔드의 ERD 4테이블 중 `story_settings`는 사람이 읽기 좋고 채팅 AI가 바로 슬롯에 끼울 수 있는 통글 마크다운으로 저장합니다. 검증에 유리한 세분 구조와 저장·활용에 유리한 통글 구조가 다르므로, 서버가 마지막에 세분 명세를 통글로 재조립합니다.
 
@@ -163,7 +163,7 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 - **실패 표현**: 한 가지뿐입니다. `thumbnail_image`는 항상 객체이며(null 없음, 필수 필드), 성공이면 `image_base64`가 문자열이고 `error`가 null, 실패면 `image_base64`가 null이고 `error`에 코드(`timeout`·`rate_limited`·`rejected`·`generation_failed`)가 실립니다. 썸네일 로직 자체의 예외도 `generation_failed`로 바꿉니다. 이름·형식·코드는 스키마가 계약값만 허용하고, 성공/실패 상호 배타도 스키마가 검증합니다.
 - **실패 격리**: 표지 실패가 인물 이미지나 컴파일에 영향을 주지 않고, 그 반대도 같습니다.
 - **관측**: Sentry 보고의 `feature` 값은 `thumbnail_image_generation`, `meta.prompt_versions`에 `THUMBNAIL_IMAGE` 버전.
-- **시간 제한**: 썸네일 전체에 별도 상한을 두지 않습니다. `IMAGE_TIMEOUT`(기본 60초)은 시도 한 번의 제한이고 SDK가 시간 초과·429·서버 오류에 2번 더 시도하므로, 최악은 3번 시도 약 180초 이상입니다. 이 상한은 시간 제한 후속(`5-2-ai-server-adr.md` A18)에서 다룹니다.
+- **시간 제한**: 썸네일 전체에 별도 상한을 두지 않습니다. `IMAGE_TIMEOUT`(기본 60초)은 시도 한 번의 제한이고 SDK가 시간 초과·429·서버 오류에 2번 더 시도하므로, 최악은 3번 시도 약 180초 이상입니다. 이 상한은 시간 제한 후속(`adr/3-ai-server-adr.md` A18)에서 다룹니다.
 
 ### 4-8. 프롬프트 캐싱
 
@@ -273,11 +273,11 @@ ERD 4테이블에 1:1 대응하는 nested 구조에 인물 외형·인물 이미
 | story_endings | object[] | 엔딩(`story_endings` 테이블). 정상 3개(폴백 시 0개). 각 항목 name·min_turns(1 이상 정수)·achievement_condition·epilogue. 성취 유형은 미출력, name으로 식별 |
 | character_appearances | object[] | 인물별 외형 정보. 각 항목 name·gender·age·body·face·hair·outfit·visual_identity. 인물 전원이 포함되며, 백엔드가 저장해 이미지 재생성에 사용 |
 | character_images | object[] | 인물별 이미지(KNK-414). 각 항목 name(인물 이름 — 백엔드가 외형·인물과 연결하는 키)·image_name(이미지 한 장의 이름, 지금은 인물당 한 장이라 `인물이름_기본`. 백엔드가 uuid를 붙여 파일명으로 쓰고 `story_characters.image_name`에 저장, KNK-1027)·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 사유 코드, 성공 시 null). image_name은 성공·실패 항목 모두에 있음. 인물별로 성공/실패가 독립. 빈 배열은 인물 0명이거나 이미지 로직 자체가 실패한 경우 |
-| thumbnail_image | object | 스토리 표지 썸네일 1장(KNK-1047). 필수 필드(null 없음). image_name(`썸네일_기본` 고정)·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 `timeout`·`rate_limited`·`rejected`·`generation_failed` 중 하나, 성공 시 null). 인물 name이 없으므로 인물 매칭에 넣지 말 것. 백엔드 계획(`4-backend.md §4-3-9`): 성공이면 S3에 올려 스토리 표지로 쓰고, 실패면 기존 프리셋 유지 |
+| thumbnail_image | object | 스토리 표지 썸네일 1장(KNK-1047). 필수 필드(null 없음). image_name(`썸네일_기본` 고정)·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 `timeout`·`rate_limited`·`rejected`·`generation_failed` 중 하나, 성공 시 null). 인물 name이 없으므로 인물 매칭에 넣지 말 것. 백엔드 계획(`spec/4-backend-server-spec.md §4-3-9`): 성공이면 S3에 올려 스토리 표지로 쓰고, 실패면 기존 프리셋 유지 |
 | meta | object | 응답 로깅 메타(`ai_call_logs` 적재용, KNK-243) |
 | meta.retry_count | number | 부분 재호출 횟수(0~2) |
 
-**백엔드 저장 안내(KNK-465)**: `story_endings`는 엔딩 4필드(name·min_turns·achievement_condition·epilogue)를 담을 칸으로, `story_main_events`는 name·description·key_sentence + 배열 순서를 담을 순서 칸으로 저장합니다(상위 정본 `5-1-ai-server-spec.md §5-3-3`과 일치). 엔딩은 정상 3개이되 폴백 시 0개가 올 수 있습니다. 두 목록은 통글로 뭉치지 않고 항목별 이산 필드 그대로 내려가므로 칸별로 저장하면 됩니다. 사건의 배열 순서는 명목 순서일 뿐 전개를 강제하지 않습니다(건너뛰기 허용).
+**백엔드 저장 안내(KNK-465)**: `story_endings`는 엔딩 4필드(name·min_turns·achievement_condition·epilogue)를 담을 칸으로, `story_main_events`는 name·description·key_sentence + 배열 순서를 담을 순서 칸으로 저장합니다(상위 정본 `spec/5-ai-server-spec.md §5-3-3`과 일치). 엔딩은 정상 3개이되 폴백 시 0개가 올 수 있습니다. 두 목록은 통글로 뭉치지 않고 항목별 이산 필드 그대로 내려가므로 칸별로 저장하면 됩니다. 사건의 배열 순서는 명목 순서일 뿐 전개를 강제하지 않습니다(건너뛰기 허용).
 
 `meta`의 나머지 필드(model·prompt_versions·provider·input_token_count·output_token_count)는 스토리라인과 동일합니다. `prompt_versions`에는 컴파일 템플릿(`COMPILE` 또는 `COMPILE_GEMINI`)과 이미지 템플릿(`CHARACTER_IMAGE`·`THUMBNAIL_IMAGE`) 버전이 함께 들어갑니다. 토큰 수는 본호출과 재호출을 **합산**하며, model은 본호출 응답값을 씁니다.
 
