@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 from src.core.config import settings
 from src.services.image.base import (
     ADAPTER_OPENAI_IMAGE,
+    IMAGE_PURPOSE_CHARACTER,
+    IMAGE_PURPOSE_THUMBNAIL,
     ImageGenerationError,
     ImageRequest,
     ImageResult,
@@ -26,6 +28,8 @@ __all__ = [
     "ImageGenerationError",
     "ImageRequest",
     "ImageResult",
+    "IMAGE_PURPOSE_CHARACTER",
+    "IMAGE_PURPOSE_THUMBNAIL",
     "THUMBNAIL_IMAGE_SIZE",
 ]
 
@@ -97,10 +101,12 @@ def validate_startup() -> None:
         raise ImageGenerationError("IMAGE_TIMEOUT은 0보다 큰 유한한 초 단위 숫자여야 합니다.")
 
 
-async def generate_image(prompt: str, *, size: str | None = None) -> ImageResult:
+async def generate_image(prompt: str, *, purpose: str, size: str | None = None) -> ImageResult:
     """이미지를 생성한다. 모델은 IMAGE_MODEL 환경변수로 결정된다.
 
     호출부는 이 함수만 부른다. 어떤 공급자를 쓰는지, SDK가 뭔지 모른다.
+    purpose는 IMAGE_PURPOSE_*(인물·썸네일) 중 하나로, 어댑터가 Langfuse 관측 이름을 가르는 데
+    쓴다(KNK-1240). 기본값을 두지 않는다 — 새 호출부가 인물로 잘못 집계되지 않게 한다.
     size를 주지 않으면 IMAGE_SIZE(인물 이미지 크기)를 쓴다. 썸네일처럼 다른 크기가
     필요한 호출부만 명시한다. 명시한 값은 IMAGE_SIZE와 같은 형식 검사를 거친다 —
     잘못된 값이 공급자까지 갔다가 "거부됨"으로 둔갑하면 코드 실수를 못 알아본다.
@@ -116,6 +122,7 @@ async def generate_image(prompt: str, *, size: str | None = None) -> ImageResult
     req = ImageRequest(
         model=model,
         prompt=prompt,
+        purpose=purpose,
         size=size,
         quality=settings.image_quality,
         timeout=settings.image_timeout,

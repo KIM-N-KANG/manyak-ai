@@ -121,7 +121,10 @@ async def test_generate_all_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """인물 3명 전원 성공."""
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt: str):
+    purposes: list = []
+
+    async def fake_generate(prompt: str, *, purpose: str):
+        purposes.append(purpose)
         return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
@@ -132,13 +135,14 @@ async def test_generate_all_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(results) == 3
     assert all(r.image is not None for r in results)
     assert [r.name for r in results] == ["레이", "세린", "칸"]
+    assert purposes == ["character"] * 3  # Langfuse 관측 이름을 인물로 가른다(KNK-1240)
 
 
 async def test_generate_partial_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """한 인물 실패 시 나머지는 정상 반환된다."""
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt: str):
+    async def fake_generate(prompt: str, **_kwargs):
         # asyncio.gather 실행 순서에 의존하지 않도록 프롬프트 내용으로 실패를 결정한다.
         # 세린만 gender="여성"이라 프롬프트에 <gender>여성</gender>이 들어간다.
         if "<gender>여성</gender>" in prompt:
@@ -162,7 +166,7 @@ async def test_generate_skips_missing_appearance(monkeypatch: pytest.MonkeyPatch
     """외형 필드가 비어서 프롬프트를 못 만드는 인물은 건너뛴다."""
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt: str):
+    async def fake_generate(prompt: str, **_kwargs):
         return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
@@ -229,7 +233,7 @@ async def test_generate_all_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """전원 실패해도 예외가 나지 않고 결과가 돌아온다."""
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt: str):
+    async def fake_generate(prompt: str, **_kwargs):
         raise ImageGenerationError("전부 실패")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
@@ -263,7 +267,7 @@ async def test_provider_failure_is_reported_to_sentry(monkeypatch: pytest.Monkey
 
     calls = _capture_recorder(monkeypatch)
 
-    async def fake_generate(prompt: str):
+    async def fake_generate(prompt: str, **_kwargs):
         if "<gender>여성</gender>" in prompt:
             raise ImageTimeout("시간 초과")
         return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
@@ -287,7 +291,7 @@ async def test_missing_appearance_is_not_reported_to_sentry(monkeypatch) -> None
 
     calls = _capture_recorder(monkeypatch)
 
-    async def fake_generate(prompt: str):
+    async def fake_generate(prompt: str, **_kwargs):
         return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)

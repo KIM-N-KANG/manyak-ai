@@ -48,7 +48,7 @@ async def test_images_safe_returns_base64(monkeypatch: pytest.MonkeyPatch) -> No
     """성공한 인물의 이미지가 base64로 변환된다."""
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt):
+    async def fake_generate(prompt, **_kwargs):
         return ImageResult(image_bytes=_FAKE_WEBP, model="test", provider="openai")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
@@ -69,7 +69,7 @@ async def test_images_safe_partial_failure(monkeypatch: pytest.MonkeyPatch) -> N
     """한 인물 실패 시 해당 인물만 error가 채워지고 나머지는 정상."""
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt):
+    async def fake_generate(prompt, **_kwargs):
         # asyncio.gather 실행 순서에 의존하지 않도록 프롬프트 내용으로 실패를 결정한다.
         # 세린만 gender="여성"이라 프롬프트에 <gender>여성</gender>이 들어간다.
         if "<gender>여성</gender>" in prompt:
@@ -142,7 +142,7 @@ async def test_images_safe_skips_missing_appearance(monkeypatch: pytest.MonkeyPa
     """외형 필드가 비어 프롬프트를 못 만드는 인물은 error로 돌아온다."""
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt):
+    async def fake_generate(prompt, **_kwargs):
         return ImageResult(image_bytes=_FAKE_WEBP, model="test", provider="openai")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
@@ -215,7 +215,7 @@ async def test_images_safe_base64_error_returns_empty(monkeypatch: pytest.Monkey
     """base64 변환 중 오류가 나도 빈 배열로 폴백한다(try 안에 있으므로)."""
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt):
+    async def fake_generate(prompt, **_kwargs):
         # image_bytes가 None이면 base64.b64encode에서 TypeError가 난다
         return ImageResult(image_bytes=None, model="test", provider="openai")
 
@@ -251,7 +251,7 @@ async def test_compile_story_includes_character_images(monkeypatch: pytest.Monke
 
     import src.services.image.generate_characters as gen_mod
 
-    async def fake_generate(prompt):
+    async def fake_generate(prompt, **_kwargs):
         return ImageResult(image_bytes=_FAKE_WEBP, model="test", provider="openai")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)

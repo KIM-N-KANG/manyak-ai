@@ -13,7 +13,7 @@ AI가 발행하는 SSE 이벤트는 token·character_image·completed·error·pi
 동안만 나가는 신호로, 백엔드의 이벤트 간 상한 시계를 되돌린다(KNK-750 — `EVENT_PING` 주석).
 started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed의 ai_output·character_images·meta는
 와이어 계약 키(aiOutput·characterImages·camelCase)로 직렬화한다(by_alias=True). completed의 choices는 하위호환 빈 배열 고정 —
-백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3)이라 선행 배포에 안전하다.
+백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3)이라 선행 배포에 안전하다.
 판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 재료 없는 요청에서
 null이고, 서버 DTO가 ignoreUnknown이라 역시 선행 배포에 안전하다.
 """
@@ -107,7 +107,7 @@ async def _event_stream(
     스트림 전체를 감싸므로 본문·판정 두 호출이 한 트레이스에 묶인다.
     """
     # 분석 차원 부착(KNK-640): 6레이어+판정 버전을 싣는다. 채팅 턴은 재호출이 없어 retry_count=0.
-    # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(5-ai-server §5-6).
+    # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
     with observe_request(
         "채팅 턴",
         input_data=req.model_dump(mode="json"),
@@ -203,7 +203,7 @@ async def _event_stream(
                 )
                 payload = CompletedData(
                     ai_output=ai_output,
-                    # 하위호환 빈 배열 — 백엔드는 '빈 배열이면 저장하지 않음'(4-backend §4-3-3).
+                    # 하위호환 빈 배열 — 백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3).
                     # 프론트·백엔드 전환 완료 후 필드 제거를 검토한다.
                     choices=[],
                     character_images=ev.get("character_images", []),
@@ -248,7 +248,7 @@ async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
     """
     # 누적 재호출(최대 3회)까지 한 트레이스로 묶인다(KNK-624). 분석 차원 부착(KNK-640):
     # 프롬프트 버전은 미리, 재호출 횟수는 생성 결과에서 사후에 싣는다.
-    # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(5-ai-server §5-6).
+    # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
     with observe_request(
         "채팅 선택지",
         input_data=request.model_dump(mode="json", exclude={"user_source"}),

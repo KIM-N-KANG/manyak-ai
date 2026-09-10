@@ -310,7 +310,7 @@ Sentry MCP는 쿼리를 내부 에이전트로 고쳐 쓴 뒤 던지는데, 그 
 
 ##### 경로와 화면 이름
 
-정본은 `knk-harness/docs/product-specs/3-frontend.md §3-3`의 라우트 표다. 클라우드 루틴에
+정본은 `knk-harness/docs/design/1-1-web-design.md §1-1-2`의 라우팅 테이블이다. 클라우드 루틴에
 그 레포가 없을 수 있어 여기 옮겨 둔다. **표에 없는 경로가 나오면 이름을 지어내지 말고
 경로를 그대로 적는다.**
 

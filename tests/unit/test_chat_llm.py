@@ -126,10 +126,10 @@ def _visible(events: list[dict]) -> str:
     return "".join(e["text"] for e in events if e["event"] == "token")
 
 
-async def test_stream_emits_image_before_every_label_across_chunk_boundaries(
+async def test_stream_emits_image_before_first_label_per_character_across_chunk_boundaries(
     mock_stream,
 ) -> None:
-    # 태그 없이 `인물명:` 줄만으로 이미지가 뜨고, 같은 인물이 다시 말하면 다시 뜬다.
+    # 인물별 첫 `인물명:` 줄 앞에만 이미지가 뜨고, 반복 대사 본문은 그대로 남는다.
     # 라벨이 델타 경계에서 쪼개져도 잡는다.
     mock_stream(
         [
@@ -148,19 +148,82 @@ async def test_stream_emits_image_before_every_label_across_chunk_boundaries(
     assert _visible(events) == (
         "*문이 열린다.*\n세린: 기다렸어?\n레이: 들어가자.\n세린: 다시 확인할게."
     )
-    assert _image_names(events) == ["세린", "레이", "세린"]
+    assert _image_names(events) == ["세린", "레이"]
+    for name, preceding_text in [
+        ("세린", "*문이 열린다.*\n"),
+        ("레이", "*문이 열린다.*\n세린: 기다렸어?\n"),
+    ]:
+        image_at = next(
+            i for i, event in enumerate(events)
+            if event["event"] == "character_image" and event["name"] == name
+        )
+        assert _visible(events[:image_at]) == preceding_text
+        assert events[image_at + 1]["event"] == "token"
+        assert events[image_at + 1]["text"].startswith(f"{name}:")
     assert completed["ai_output"] == (
         "*문이 열린다.*\n"
         "[[https://cdn.example.com/serin.webp]]\n\n세린: 기다렸어?\n"
         "[[https://cdn.example.com/rei.webp]]\n\n레이: 들어가자.\n"
-        "[[https://cdn.example.com/serin.webp]]\n\n세린: 다시 확인할게."
+        "세린: 다시 확인할게."
     )
     # 요청에 image_name이 없으면 빈 값 그대로 내보낸다 — 인물 이름으로 채워 있는 척하지 않는다(KNK-1026).
     assert completed["character_images"] == [
         {"name": "세린", "image_name": "", "image_url": "https://cdn.example.com/serin.webp"},
         {"name": "레이", "image_name": "", "image_url": "https://cdn.example.com/rei.webp"},
-        {"name": "세린", "image_name": "", "image_url": "https://cdn.example.com/serin.webp"},
     ]
+
+
+@pytest.mark.parametrize("chunk_size", [1, 7, 1000])
+@pytest.mark.parametrize("labels", [
+    ("지한결", "지한결", "지한결"),
+    ("한결", "지한결", "한결"),
+    ("지한결", "한결", "지한결"),
+])
+async def test_three_dialogues_emit_one_image_and_storage_marker(
+    mock_stream, chunk_size: int, labels: tuple[str, str, str]
+) -> None:
+    images = [CharacterImageMapping(
+        name="지한결", image_name="지한결_기본", image_url="https://cdn.example.com/jhg.webp"
+    )]
+    text = f"{labels[0]}: 하나.\n**{labels[1]}:** 둘.\n{labels[2]}: 셋."
+    visible = f"{labels[0]}: 하나.\n{labels[1]}: 둘.\n{labels[2]}: 셋."
+    mock_stream([text[i:i + chunk_size] for i in range(0, len(text), chunk_size)])
+
+    events = [event async for event in stream_chat_turn([], character_images=images)]
+    completed = next(event for event in events if event["event"] == "completed")
+
+    assert events[0]["event"] == "character_image"
+    assert _image_names(events) == ["지한결"]
+    assert _visible(events) == visible
+    assert completed["ai_output"] == f"[[https://cdn.example.com/jhg.webp]]\n\n{visible}"
+    assert completed["character_images"] == [{
+        "name": "지한결", "image_name": "지한결_기본",
+        "image_url": "https://cdn.example.com/jhg.webp",
+    }]
+
+
+async def test_images_reset_each_turn_and_follow_only_current_speakers(mock_stream) -> None:
+    # 매핑은 그대로여도 여러 인물 → 한 인물 → 같은 인물 순서로 각 턴에 맞게 표시한다.
+    images = _character_images()
+    for text, expected_names in [
+        ("세린: 하나.\n레이: 둘.\n세린: 셋.", ["세린", "레이"]),
+        ("레이: 넷.\n레이: 다섯.", ["레이"]),
+        ("레이: 여섯.", ["레이"]),
+    ]:
+        mock_stream(list(text))
+        events = [event async for event in stream_chat_turn([], character_images=images)]
+        completed = next(event for event in events if event["event"] == "completed")
+
+        assert _image_names(events) == expected_names
+        assert _visible(events) == text
+        expected_text = text
+        expected_images = []
+        for name in expected_names:
+            image = next(image for image in images if image.name == name)
+            expected_text = expected_text.replace(f"{name}:", f"[[{image.image_url}]]\n\n{name}:", 1)
+            expected_images.append({"name": name, "image_name": "", "image_url": image.image_url})
+        assert completed["ai_output"] == expected_text
+        assert completed["character_images"] == expected_images
 
 
 async def test_image_name_from_request_is_carried_in_event_and_completed(mock_stream) -> None:
@@ -270,15 +333,15 @@ async def test_surname_stripped_alias_triggers_image(mock_stream) -> None:
     events = [event async for event in stream_chat_turn([], character_images=images)]
     completed = next(event for event in events if event["event"] == "completed")
 
-    assert _image_names(events) == ["지한결", "지한결"]
+    assert _image_names(events) == ["지한결"]
     assert completed["ai_output"] == (
         "[[https://cdn.example.com/jhg.webp]]\n\n한결: 왜 이제 와?\n"
-        "[[https://cdn.example.com/jhg.webp]]\n\n지한결: 늦었네."
+        "지한결: 늦었네."
     )
 
 
 async def test_full_name_pieces_trigger_image(mock_stream) -> None:
-    # 등록 `카시안 발데르크` — 어느 조각으로 불러도 같은 이미지가 붙는다.
+    # 등록 `카시안 발데르크` — 다른 별칭으로 다시 불러도 이미지는 한 번만 붙는다.
     images = [
         CharacterImageMapping(name="카시안 발데르크", image_url="https://cdn.example.com/kasian.webp")
     ]
@@ -286,10 +349,10 @@ async def test_full_name_pieces_trigger_image(mock_stream) -> None:
     events = [event async for event in stream_chat_turn([], character_images=images)]
     completed = next(event for event in events if event["event"] == "completed")
 
-    assert _image_names(events) == ["카시안 발데르크", "카시안 발데르크"]
+    assert _image_names(events) == ["카시안 발데르크"]
     assert completed["ai_output"] == (
         "[[https://cdn.example.com/kasian.webp]]\n\n카시안: 물러서.\n"
-        "[[https://cdn.example.com/kasian.webp]]\n\n발데르크: 명령이다."
+        "발데르크: 명령이다."
     )
 
 
@@ -341,21 +404,31 @@ async def test_alias_label_split_across_deltas(mock_stream) -> None:
     assert _image_names(events) == ["지한결"]
 
 
-async def test_thirty_char_name_is_recognized_plain_and_bold(mock_stream) -> None:
+@pytest.mark.parametrize("first_label", ["{name}:", "**{name}:**", "**{name}**:"])
+async def test_thirty_char_name_is_recognized_plain_and_bold(
+    mock_stream, first_label: str
+) -> None:
     # 이름 상한(30자)까지 평문·볼드 모두 잡는다 — 옛 볼드 정규식의 20자 제한을 없앴다.
     long_name = "가" * 30
     images = [
         CharacterImageMapping(name=long_name, image_url="https://cdn.example.com/long.webp")
     ]
-    mock_stream([f"{long_name}: 늦었어.\n**{long_name}:** 다시."])
+    text = f"{first_label.format(name=long_name)} 늦었어.\n**{long_name}:** 다시."
+    mock_stream(list(text))
     events = [event async for event in stream_chat_turn([], character_images=images)]
     completed = next(event for event in events if event["event"] == "completed")
 
     assert _visible(events) == f"{long_name}: 늦었어.\n{long_name}: 다시."
-    assert _image_names(events) == [long_name, long_name]
+    assert _image_names(events) == [long_name]
+    assert events[0]["event"] == "character_image"
+    assert events[1]["event"] == "token"
+    assert events[1]["text"].startswith(f"{long_name}:")
+    assert completed["character_images"] == [{
+        "name": long_name, "image_name": "", "image_url": "https://cdn.example.com/long.webp",
+    }]
     assert completed["ai_output"] == (
         f"[[https://cdn.example.com/long.webp]]\n\n{long_name}: 늦었어.\n"
-        f"[[https://cdn.example.com/long.webp]]\n\n{long_name}: 다시."
+        f"{long_name}: 다시."
     )
 
 
@@ -481,7 +554,7 @@ def test_stream_events_and_storage_markers_share_one_rule() -> None:
     stored, markers = chat_llm._insert_storage_markers(normalized, images)
 
     assert _image_names(streamed) == [m["name"] for m in markers]
-    assert _image_names(streamed) == ["세린", "레이", "세린", "레이", "세린"]
+    assert _image_names(streamed) == ["세린", "레이"]
     assert _visible(streamed) == normalized
     assert stored.count("[[") == len(markers)
 

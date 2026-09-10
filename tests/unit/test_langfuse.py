@@ -10,7 +10,12 @@ from contextlib import contextmanager
 import langfuse as langfuse_pkg
 
 import src.core.langfuse as lf
-from src.core.langfuse import dimension_tags, observe_request, shutdown_langfuse
+from src.core.langfuse import (
+    dimension_tags,
+    observe_generation,
+    observe_request,
+    shutdown_langfuse,
+)
 
 
 def test_init_langfuse_noop_without_keys(monkeypatch) -> None:
@@ -285,7 +290,7 @@ def test_dimension_tags_genre_only() -> None:
 def test_dimension_tags_accepts_only_genre_tags() -> None:
     """dimension_tags의 인자를 genre_tags 하나로 고정(KNK-652 회귀 방지) — 채팅용 genre가
     같은 이름이든 다른 이름(chat_genre 등)이든 새 인자가 생기면 실패한다. 장르 태그는
-    스토리 제작 트레이스에만 싣는다(5-ai-server §5-6)."""
+    스토리 제작 트레이스에만 싣는다(spec/5-ai-server-spec.md §5-6)."""
     import inspect
 
     assert list(inspect.signature(dimension_tags).parameters) == ["genre_tags"]
@@ -381,3 +386,144 @@ def test_observe_request_active_survives_metadata_failure(monkeypatch) -> None:
         ran = True
         trace.set_metadata(retry_count=1)
     assert ran is True  # span.update가 던져도 예외가 밖으로 새지 않는다
+
+
+# ── observe_generation: 자동 계측이 못 덮는 호출(이미지)의 수동 관측(KNK-1240) ─────────────
+
+
+class _FakeGenerationSpan:
+    """가짜 generation 관측 — update(**fields) 호출을 순서대로 기록한다."""
+
+    def __init__(self) -> None:
+        self.updates: list[dict] = []
+
+    def update(self, **fields) -> None:
+        self.updates.append(fields)
+
+
+def _install_fake_generation_client(monkeypatch, span: _FakeGenerationSpan, captured: dict) -> None:
+    @contextmanager
+    def fake_current_observation(**kwargs):
+        captured.update(kwargs)
+        yield span
+
+    class _FakeClient:
+        def start_as_current_observation(self, **kwargs):
+            return fake_current_observation(**kwargs)
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", lambda: _FakeClient(), raising=False)
+
+
+def test_observe_generation_passthrough_when_disabled(monkeypatch) -> None:
+    """비활성이면 SDK를 건드리지 않고 블록을 통과시키며, 핸들의 finish도 안전하다."""
+    monkeypatch.setattr(lf._state, "enabled", False)
+
+    def _boom():
+        raise AssertionError("비활성인데 SDK를 불렀다")
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", _boom, raising=False)
+
+    ran = False
+    with observe_generation("이미지 생성:인물", model="gpt-image-2", input_data="prompt") as gen:
+        ran = True
+        gen.finish(output={"bytes": 1}, usage_details={"input": 1})
+    assert ran is True
+
+
+def test_observe_generation_active_records_start_and_finish(monkeypatch) -> None:
+    """활성 경로: 호출 전 값(이름·모델·모델 인자·입력)은 관측 시작에, 호출 뒤 값(출력·usage)은
+    finish로 1회 update된다. as_type은 generation이어야 토큰·비용 열이 생긴다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+    span = _FakeGenerationSpan()
+    captured: dict = {}
+    _install_fake_generation_client(monkeypatch, span, captured)
+
+    with observe_generation(
+        "이미지 생성:썸네일",
+        model="gpt-image-2-2026-04-21",
+        model_parameters={"size": "768x1024", "quality": "low"},
+        input_data="a prompt",
+    ) as gen:
+        gen.finish(
+            output={"format": "webp", "bytes": 1234},
+            usage_details={"input": 10, "output": 20, "total": 30},
+        )
+
+    assert captured == {
+        "name": "이미지 생성:썸네일",
+        "as_type": "generation",
+        "model": "gpt-image-2-2026-04-21",
+        "model_parameters": {"size": "768x1024", "quality": "low"},
+        "input": "a prompt",
+    }
+    assert span.updates == [
+        {
+            "output": {"format": "webp", "bytes": 1234},
+            "usage_details": {"input": 10, "output": 20, "total": 30},
+        }
+    ]
+
+
+def test_observe_generation_finish_skips_empty_values(monkeypatch) -> None:
+    """output·usage가 모두 없으면 update를 부르지 않는다(usage 없는 응답 대비)."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+    span = _FakeGenerationSpan()
+    _install_fake_generation_client(monkeypatch, span, {})
+
+    with observe_generation("이미지 생성:인물", model="m") as gen:
+        gen.finish(output=None, usage_details=None)
+        gen.finish(usage_details={})
+    assert span.updates == []
+
+
+def test_observe_generation_marks_error_and_propagates_exception(monkeypatch) -> None:
+    """본작업 예외로 블록을 나가면 관측을 ERROR로 표시하되 **예외 타입 이름만** 싣고(원문 미기록),
+    예외 자체는 그대로 전파한다 — 이미지 어댑터가 실패를 예외로 알리는 방식과 맞물린다."""
+    import pytest
+
+    monkeypatch.setattr(lf._state, "enabled", True)
+    span = _FakeGenerationSpan()
+    _install_fake_generation_client(monkeypatch, span, {})
+
+    secret = "공급자-오류-원문-마커"
+    with pytest.raises(ValueError, match=secret):
+        with observe_generation("이미지 생성:인물", model="m"):
+            raise ValueError(f"이미지 생성 실패: {secret}")
+
+    assert span.updates == [{"level": "ERROR", "status_message": "ValueError"}]
+    assert secret not in repr(span.updates)
+
+
+def test_observe_generation_survives_start_failure(monkeypatch, caplog) -> None:
+    """SDK 시작 호출이 실패해도 본작업은 관측 없이 진행된다 — 이미지 생성은 컴파일의
+    부가물이라도 관측 도구 고장으로 통째로 실패하면 안 된다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+
+    def _boom():
+        raise RuntimeError("simulated Langfuse client failure")
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", _boom, raising=False)
+
+    ran = False
+    with caplog.at_level("WARNING"):
+        with observe_generation("이미지 생성:인물", model="m") as gen:
+            ran = True
+            gen.finish(usage_details={"input": 1})  # 빈 핸들 — 예외 없이 통과
+    assert ran is True
+    assert any("생성 관측 시작 실패" in r.message for r in caplog.records)
+
+
+def test_observe_generation_survives_update_failure(monkeypatch, caplog) -> None:
+    """finish의 update가 실패해도 경고만 남기고 본작업 결과는 그대로다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+
+    class _BoomSpan:
+        def update(self, **fields) -> None:
+            raise RuntimeError("SDK update failure")
+
+    _install_fake_generation_client(monkeypatch, _BoomSpan(), {})
+
+    with caplog.at_level("WARNING"):
+        with observe_generation("이미지 생성:인물", model="m") as gen:
+            gen.finish(usage_details={"input": 1})  # 예외가 새면 실패
+    assert any("생성 관측 기록 실패" in r.message for r in caplog.records)
