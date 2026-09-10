@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from src.core.config import settings
 from src.core.sentry import FEATURE_CHARACTER_IMAGE, capture_ai_exception
 from src.schemas.story_compile import CharacterSetting
-from src.services.image import generate_image, ImageGenerationError
+from src.services.image import IMAGE_PURPOSE_CHARACTER, ImageGenerationError, generate_image
 from src.services.image.base import PROVIDER_OPENAI, ImageResult
 from src.services.image.prompt import CHARACTER_IMAGE_VERSION, build_image_prompt
 
@@ -46,7 +46,7 @@ async def _generate_one(
     async with semaphore:
         start = time.monotonic()
         try:
-            result = await generate_image(prompt)
+            result = await generate_image(prompt, purpose=IMAGE_PURPOSE_CHARACTER)
             logger.info("이미지 생성 성공: %s", character.name)
             return CharacterImageResult(name=character.name, image=result)
         except ImageGenerationError as exc:

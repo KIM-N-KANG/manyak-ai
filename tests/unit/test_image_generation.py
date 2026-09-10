@@ -4,6 +4,7 @@
 """
 
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
@@ -60,7 +61,7 @@ def _mock_client(monkeypatch, response=None, side_effect=None):
 async def test_openai_generate_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """정상 호출 시 PNG 바이너리와 모델·공급자를 돌려준다."""
     _mock_client(monkeypatch)
-    req = ImageRequest(model="gpt-image-2-low", prompt="test prompt")
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="test prompt")
     result = await openai_api.generate(req)
 
     assert result.image_bytes == _FAKE_PNG
@@ -77,7 +78,7 @@ async def test_openai_generate_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch,
         side_effect=APITimeoutError(request=httpx.Request("POST", "https://api.openai.com")),
     )
-    req = ImageRequest(model="gpt-image-2-low", prompt="test", timeout=5.0)
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="test", timeout=5.0)
     with pytest.raises(ImageTimeout):
         await openai_api.generate(req)
 
@@ -103,7 +104,7 @@ async def test_openai_generate_rate_limited(monkeypatch: pytest.MonkeyPatch) -> 
             body=None,
         ),
     )
-    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="test")
     with pytest.raises(ImageRateLimited):
         await openai_api.generate(req)
 
@@ -120,7 +121,7 @@ async def test_openai_generate_bad_request(monkeypatch: pytest.MonkeyPatch) -> N
             body=None,
         ),
     )
-    req = ImageRequest(model="gpt-image-2-low", prompt="bad prompt")
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="bad prompt")
     with pytest.raises(ImageBadRequest):
         await openai_api.generate(req)
 
@@ -128,7 +129,7 @@ async def test_openai_generate_bad_request(monkeypatch: pytest.MonkeyPatch) -> N
 async def test_openai_generate_empty_data(monkeypatch: pytest.MonkeyPatch) -> None:
     """응답에 이미지 데이터가 없으면 ImageGenerationError."""
     _mock_client(monkeypatch, response=_FakeResponse(data=[_FakeImageData(b64_json=None)]))
-    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="test")
     with pytest.raises(ImageGenerationError, match="데이터가 없습니다"):
         await openai_api.generate(req)
 
@@ -143,7 +144,7 @@ async def test_openai_generate_missing_data_list(monkeypatch, data) -> None:
     response = _FakeResponse(data=[_FakeImageData()])
     response.data = data
     _mock_client(monkeypatch, response=response)
-    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="test")
     with pytest.raises(ImageGenerationError, match="데이터가 없습니다"):
         await openai_api.generate(req)
 
@@ -151,7 +152,7 @@ async def test_openai_generate_missing_data_list(monkeypatch, data) -> None:
 async def test_openai_generate_null_data_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """data 첫 항목이 null이어도 AttributeError가 아니라 ImageGenerationError."""
     _mock_client(monkeypatch, response=_FakeResponse(data=[None]))
-    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="test")
     with pytest.raises(ImageGenerationError, match="데이터가 없습니다"):
         await openai_api.generate(req)
 
@@ -159,7 +160,7 @@ async def test_openai_generate_null_data_entry(monkeypatch: pytest.MonkeyPatch) 
 async def test_openai_generate_non_string_base64(monkeypatch: pytest.MonkeyPatch) -> None:
     """b64_json이 문자열이 아니어도 TypeError가 아니라 ImageGenerationError."""
     _mock_client(monkeypatch, response=_FakeResponse(data=[_FakeImageData(b64_json=123)]))
-    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="test")
     with pytest.raises(ImageGenerationError, match="문자열이 아닙니다"):
         await openai_api.generate(req)
 
@@ -167,7 +168,7 @@ async def test_openai_generate_non_string_base64(monkeypatch: pytest.MonkeyPatch
 async def test_openai_generate_malformed_base64(monkeypatch: pytest.MonkeyPatch) -> None:
     """base64가 깨져 있으면 binascii.Error가 아니라 ImageGenerationError."""
     _mock_client(monkeypatch, response=_FakeResponse(data=[_FakeImageData(b64_json="!!!not-base64!!!")]))
-    req = ImageRequest(model="gpt-image-2-low", prompt="test")
+    req = ImageRequest(model="gpt-image-2-low", purpose="character", prompt="test")
     with pytest.raises(ImageGenerationError, match="base64"):
         await openai_api.generate(req)
 
@@ -181,7 +182,7 @@ async def test_generate_image_routes_to_openai(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(settings, "image_timeout", 30.0)
     _mock_client(monkeypatch)
 
-    result = await generate_image("test prompt")
+    result = await generate_image("test prompt", purpose="character")
     assert result.image_bytes == _FAKE_PNG
     assert result.provider == "openai"
 
@@ -196,7 +197,7 @@ async def test_generate_image_uses_settings_size_by_default(monkeypatch: pytest.
     monkeypatch.setattr(settings, "image_size", "512x512")
     mock = _mock_client(monkeypatch)
 
-    await generate_image("test prompt")
+    await generate_image("test prompt", purpose="character")
     assert mock.images.generate.call_args.kwargs["size"] == "512x512"
 
 
@@ -210,7 +211,7 @@ async def test_generate_image_passes_explicit_size(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(settings, "image_size", "1024x768")
     mock = _mock_client(monkeypatch)
 
-    await generate_image("test prompt", size="640x960")
+    await generate_image("test prompt", purpose="character", size="640x960")
     assert mock.images.generate.call_args.kwargs["size"] == "640x960"
 
 
@@ -225,7 +226,7 @@ async def test_generate_image_rejects_invalid_explicit_size(monkeypatch, bad_siz
     mock = _mock_client(monkeypatch)
 
     with pytest.raises(ImageGenerationError, match="가로x세로"):
-        await generate_image("test prompt", size=bad_size)
+        await generate_image("test prompt", purpose="character", size=bad_size)
     mock.images.generate.assert_not_called()
 
 
@@ -243,7 +244,7 @@ async def test_generate_image_unknown_model(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(settings, "image_model", "unknown-model-9000")
 
     with pytest.raises(ImageGenerationError, match="등록되지 않았습니다"):
-        await generate_image("test")
+        await generate_image("test", purpose="character")
 
 
 # ── 모델 등록 테스트 ──────────────────────────────────────────────────────────
@@ -325,3 +326,186 @@ def test_image_startup_validation_rejects_bad_parameters(
 
     with pytest.raises(ImageGenerationError, match=problem):
         validate_startup()
+
+
+# ── Langfuse 관측 배선(KNK-1240) ─────────────────────────────────────────────
+# 자동 계측이 images.generate를 덮지 않으므로 어댑터가 observe_generation으로 손수 기록한다.
+# 실제 Langfuse 전송 없이(무과금) "무엇을 어디에 기록하는가"만 고정한다.
+
+
+@dataclass
+class _FakeInputTokensDetails:
+    text_tokens: int = 7
+    image_tokens: int = 0
+
+
+@dataclass
+class _FakeOutputTokensDetails:
+    image_tokens: int = 500
+    text_tokens: int = 0
+
+
+@dataclass
+class _FakeUsage:
+    input_tokens: int = 7
+    output_tokens: int = 500
+    total_tokens: int = 507
+    input_tokens_details: _FakeInputTokensDetails | None = None
+    output_tokens_details: _FakeOutputTokensDetails | None = None
+
+    def __post_init__(self):
+        if self.input_tokens_details is None:
+            self.input_tokens_details = _FakeInputTokensDetails()
+
+
+@dataclass
+class _FakeResponseWithUsage(_FakeResponse):
+    usage: _FakeUsage | None = None
+
+
+class _Recorder:
+    """observe_generation 대역 — 시작 인자와 finish 인자, 블록 예외를 기록한다."""
+
+    def __init__(self) -> None:
+        self.started: dict = {}
+        self.finished: dict | None = None  # finish로 실린 값의 합(여러 번 불려도 누적)
+        self.exc: BaseException | None = None
+
+    def finish(self, **kwargs) -> None:
+        self.finished = {**(self.finished or {}), **kwargs}
+
+
+def _mock_observation(monkeypatch) -> _Recorder:
+    rec = _Recorder()
+
+    @contextmanager
+    def fake_observe_generation(name, **kwargs):
+        rec.started = {"name": name, **kwargs}
+        try:
+            yield rec
+        except BaseException as exc:
+            rec.exc = exc
+            raise
+
+    monkeypatch.setattr(openai_api, "observe_generation", fake_observe_generation)
+    return rec
+
+
+async def test_openai_generate_records_observation_with_usage(monkeypatch) -> None:
+    """성공 시: 이름은 용도별, 모델·크기·화질·출력 형식은 시작에, 출력 요약(바이너리 아님)과
+    표준+세부 usage 키는 finish에 실린다. 세부 키(input_text·input_image·output_image)가
+    있어야 텍스트·이미지 단가가 다른 gpt-image 계열의 비용이 맞게 계산된다."""
+    rec = _mock_observation(monkeypatch)
+    _mock_client(
+        monkeypatch,
+        response=_FakeResponseWithUsage(
+            usage=_FakeUsage(
+                input_tokens_details=_FakeInputTokensDetails(text_tokens=7, image_tokens=0),
+                output_tokens_details=_FakeOutputTokensDetails(image_tokens=500, text_tokens=0),
+            )
+        ),
+    )
+    req = ImageRequest(
+        model="gpt-image-2-low", purpose="thumbnail", prompt="test prompt", size="768x1024", quality="low"
+    )
+    await openai_api.generate(req)
+
+    assert rec.started == {
+        "name": "이미지 생성:썸네일",
+        "model": "gpt-image-2-low",
+        "model_parameters": {"size": "768x1024", "quality": "low", "output_format": "webp"},
+        "input_data": "test prompt",
+    }
+    assert rec.finished == {
+        "output": {"format": "webp", "bytes": len(_FAKE_PNG)},
+        "usage_details": {
+            "input": 7,
+            "output": 500,
+            "total": 507,
+            "input_text": 7,
+            "input_image": 0,
+            "output_text": 0,
+            "output_image": 500,
+        },
+    }
+    assert rec.exc is None
+
+
+async def test_openai_generate_observation_name_for_character(monkeypatch) -> None:
+    rec = _mock_observation(monkeypatch)
+    _mock_client(monkeypatch)
+    await openai_api.generate(ImageRequest(model="gpt-image-2-low", purpose="character", prompt="p"))
+    assert rec.started["name"] == "이미지 생성:인물"
+
+
+async def test_openai_generate_observation_unknown_purpose_is_visible(monkeypatch) -> None:
+    """모르는 용도는 조용히 인물로 섞이지 않고 값 그대로 이름에 드러난다."""
+    rec = _mock_observation(monkeypatch)
+    _mock_client(monkeypatch)
+    await openai_api.generate(ImageRequest(model="gpt-image-2-low", purpose="banner", prompt="p"))
+    assert rec.started["name"] == "이미지 생성:banner"
+
+
+async def test_openai_generate_records_without_usage(monkeypatch) -> None:
+    """usage가 없는 응답(문서상 gpt-image 계열만 usage 제공)도 죽지 않고 출력 요약만 기록한다."""
+    rec = _mock_observation(monkeypatch)
+    _mock_client(monkeypatch, response=_FakeResponseWithUsage(usage=None))
+    await openai_api.generate(ImageRequest(model="gpt-image-2-low", purpose="character", prompt="p"))
+    assert rec.finished == {
+        "output": {"format": "webp", "bytes": len(_FAKE_PNG)},
+        "usage_details": None,
+    }
+
+
+async def test_openai_generate_records_partial_usage(monkeypatch) -> None:
+    """세부 필드가 빠진 usage는 있는 값만 싣는다(output_tokens_details=None)."""
+    rec = _mock_observation(monkeypatch)
+    _mock_client(
+        monkeypatch,
+        response=_FakeResponseWithUsage(usage=_FakeUsage(output_tokens_details=None)),
+    )
+    await openai_api.generate(ImageRequest(model="gpt-image-2-low", purpose="character", prompt="p"))
+    assert rec.finished["usage_details"] == {
+        "input": 7,
+        "output": 500,
+        "total": 507,
+        "input_text": 7,
+        "input_image": 0,
+    }
+
+
+async def test_openai_generate_failure_leaves_observation_block_with_neutral_exception(
+    monkeypatch,
+) -> None:
+    """공급자 실패는 관측 블록을 공급자 중립 예외(ImageTimeout 등)로 나간다 — 관측에는 그
+    타입 이름이 ERROR로 남고(observe_generation 계약), 응답이 없으니 finish도 불리지 않는다."""
+    from openai import APITimeoutError
+    import httpx
+
+    rec = _mock_observation(monkeypatch)
+    _mock_client(
+        monkeypatch,
+        side_effect=APITimeoutError(request=httpx.Request("POST", "https://api.openai.com")),
+    )
+    with pytest.raises(ImageTimeout):
+        await openai_api.generate(ImageRequest(model="gpt-image-2-low", purpose="character", prompt="p"))
+    assert isinstance(rec.exc, ImageTimeout)
+    assert rec.finished is None
+
+
+async def test_openai_generate_parse_failure_keeps_usage_and_marks_observation(monkeypatch) -> None:
+    """응답 해석 실패(빈 데이터)도 관측 블록 안에서 나가 ERROR로 남는다. 단 **usage는 이미
+    기록돼 있어야 한다** — 응답이 온 시점에 과금은 일어났으므로, 해석 실패로 원가가 빠지면
+    이 티켓의 목적(원가 집계)이 깨진다(자체 리뷰)."""
+    rec = _mock_observation(monkeypatch)
+    _mock_client(monkeypatch, response=_FakeResponseWithUsage(data=[], usage=_FakeUsage()))
+    with pytest.raises(ImageGenerationError):
+        await openai_api.generate(ImageRequest(model="gpt-image-2-low", purpose="character", prompt="p"))
+    assert isinstance(rec.exc, ImageGenerationError)
+    assert rec.finished == {"usage_details": {"input": 7, "output": 500, "total": 507, "input_text": 7, "input_image": 0}}
+
+
+async def test_generate_image_requires_purpose() -> None:
+    """purpose에 기본값이 없다 — 새 호출부가 인물로 잘못 집계되지 않게 호출 시점에 드러낸다."""
+    with pytest.raises(TypeError):
+        await generate_image("test prompt")  # type: ignore[call-arg]
