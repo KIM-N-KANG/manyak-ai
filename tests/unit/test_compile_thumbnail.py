@@ -51,9 +51,10 @@ async def test_generate_thumbnail_calls_image_with_portrait_size(monkeypatch) ->
     """썸네일 호출은 인물 이미지 크기가 아니라 THUMBNAIL_IMAGE_SIZE(768x1024)로 나간다."""
     seen: dict = {}
 
-    async def fake_generate(prompt, *, size=None):
+    async def fake_generate(prompt, *, size=None, purpose=None):
         seen["prompt"] = prompt
         seen["size"] = size
+        seen["purpose"] = purpose
         return ImageResult(image_bytes=_FAKE_WEBP, model="test", provider="openai")
 
     monkeypatch.setattr(thumb_mod, "generate_image", fake_generate)
@@ -62,6 +63,7 @@ async def test_generate_thumbnail_calls_image_with_portrait_size(monkeypatch) ->
 
     assert result.image is not None and result.error is None
     assert seen["size"] == THUMBNAIL_IMAGE_SIZE == "768x1024"
+    assert seen["purpose"] == "thumbnail"  # Langfuse 관측 이름을 썸네일로 가른다(KNK-1240)
     assert "<genre>다크 판타지</genre>" in seen["prompt"]
     assert "<character>" in seen["prompt"]
 
@@ -73,7 +75,7 @@ async def test_generate_thumbnail_reports_provider_failure_to_sentry(monkeypatch
     def _record(exc, **kwargs):
         calls.append({"exc": exc, **kwargs})
 
-    async def fake_generate(prompt, *, size=None):
+    async def fake_generate(prompt, *, size=None, **_kwargs):
         raise ImageTimeout("이미지 생성 시간 초과 (60초)")
 
     monkeypatch.setattr(thumb_mod, "capture_ai_exception", _record)
@@ -119,7 +121,7 @@ async def test_thumbnail_safe_returns_base64_on_success(monkeypatch) -> None:
 )
 async def test_thumbnail_safe_maps_failure_to_stable_code(monkeypatch, provider_error, code) -> None:
     """공급자 원문은 응답에 나가지 않고 안정적인 코드 4종 중 하나로 접힌다."""
-    async def fake_generate(prompt, *, size=None):
+    async def fake_generate(prompt, *, size=None, **_kwargs):
         raise provider_error
 
     monkeypatch.setattr(thumb_mod, "generate_image", fake_generate)
@@ -235,7 +237,7 @@ async def test_compile_story_includes_thumbnail(monkeypatch) -> None:
     async def fake_complete(system, user, **kwargs):
         return spec, story_llm.LlmUsage("test", 100, 200, provider="openai")
 
-    async def fake_generate(prompt, *, size=None):
+    async def fake_generate(prompt, *, size=None, **_kwargs):
         assert size == THUMBNAIL_IMAGE_SIZE
         return ImageResult(image_bytes=_FAKE_WEBP, model="test", provider="openai")
 
@@ -266,7 +268,7 @@ async def test_compile_story_thumbnail_failure_keeps_200_and_character_images(mo
 
         return [CharacterImageOut(name="레이", image_name="레이_기본", image_base64="AAAA")]
 
-    async def fake_generate(prompt, *, size=None):
+    async def fake_generate(prompt, *, size=None, **_kwargs):
         raise ImageBadRequest("이미지 생성 요청 거부: size")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)

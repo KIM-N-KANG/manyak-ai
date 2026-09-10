@@ -12,6 +12,11 @@ ADAPTER_OPENAI_IMAGE = "openai_image"
 # 공급자 식별자 — 텍스트 LLM과 같은 값을 공유한다(로깅·Sentry 태그 일관성).
 PROVIDER_OPENAI = "openai"
 
+# 이미지 용도 — Langfuse 관측 이름을 가르는 값(KNK-1240). 인물 이미지와 썸네일의
+# 장수·실패율을 따로 봐야 하므로 호출부가 요청에 실어 보낸다.
+IMAGE_PURPOSE_CHARACTER = "character"
+IMAGE_PURPOSE_THUMBNAIL = "thumbnail"
+
 
 @dataclass(frozen=True)
 class ImageRequest:
@@ -19,6 +24,7 @@ class ImageRequest:
 
     model: str
     prompt: str
+    purpose: str  # IMAGE_PURPOSE_* — 관측 이름 구분용
     size: str = "1024x1024"
     quality: str = "low"
     timeout: float = 60.0

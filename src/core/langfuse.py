@@ -1,8 +1,9 @@
 """Langfuse LLM 관측 초기화 (KNK-624).
 
 서비스가 부른 LLM 호출의 프롬프트·응답 원문과 토큰·지연을 Langfuse에 남긴다. 이 모듈이
-계측을 **켜는 유일한 지점**이고(`init_langfuse`), 트레이스로 묶는 도구(`observe_request`)와
-종료 flush(`shutdown_langfuse`)를 함께 둔다.
+계측을 **켜는 유일한 지점**이고(`init_langfuse`), 트레이스로 묶는 도구(`observe_request`),
+자동 계측이 못 덮는 호출을 손으로 기록하는 도구(`observe_generation`), 종료 flush(`shutdown_langfuse`)를
+함께 둔다.
 
 **계측을 왜 여기서만 켜나 (핵심 설계).** `langfuse.openai`는 import되는 순간 `openai` 모듈의
 `AsyncCompletions.create`를 프로세스 전역으로 monkey-patch한다 — 서브클래스가 아니라 원본
@@ -250,19 +251,131 @@ def observe_request(
         yield trace
     finally:
         trace._flush()  # 미리 값 + 사후 값(retry_count)을 모아 1회 기록(내부 자체 보호)
-        # 스팬 종료 실패가 응답을 깨면 안 된다. 본작업 예외가 진행 중이면 exc_info를 넘겨
-        # SDK가 스팬에 오류 상태를 기록할 수 있게 하되(기존 with 문과 동일 의미), SDK의
-        # 예외 억제 반환값은 무시한다 — 본작업 예외 전파는 제너레이터가 결정한다.
-        exc = sys.exc_info()
+        _close_observation(stack, "트레이스")
+
+
+def _close_observation(stack: ExitStack, what: str) -> None:
+    """관측 컨텍스트를 닫는다 — 본작업 예외가 진행 중이면 그 정보를 SDK에 넘긴다.
+
+    스팬 종료 실패가 응답을 깨면 안 된다. 본작업 예외가 진행 중이면 exc_info를 넘겨
+    SDK가 스팬에 오류 상태를 기록할 수 있게 하되(기존 with 문과 동일 의미), SDK의
+    예외 억제 반환값은 무시한다 — 본작업 예외 전파는 호출한 제너레이터가 결정한다.
+    finally 블록 안에서만 부른다(sys.exc_info로 진행 중 예외를 읽는다).
+    """
+    exc = sys.exc_info()
+    try:
+        if exc[0] is not None:
+            stack.__exit__(*exc)
+        else:
+            stack.close()
+    except Exception as e:  # noqa: BLE001
+        # 예외 타입만 기록 — exc_info는 진행 중인 본작업 예외를 연쇄로 끌어와
+        # 사용자 입력·LLM 원문이 로그로 샐 수 있다(AN-4-10, Codex P2. _flush와 동일 원칙).
+        logger.warning("Langfuse %s 종료 실패(%s) — 응답에는 영향 없음", what, type(e).__name__)
+
+
+class _Generation:
+    """observe_generation이 넘기는 핸들. 호출이 끝난 뒤 알 수 있는 값(출력·usage)을 관측에 싣는다.
+
+    비활성이면 span이 None이라 아무 일도 하지 않는다. 기록 실패는 경고 로그로만 남기고
+    본작업에 전파하지 않는다(_Trace와 동일 원칙).
+    """
+
+    def __init__(self, span: object | None = None) -> None:
+        self._span = span
+
+    def finish(
+        self,
+        *,
+        output: object | None = None,
+        usage_details: dict[str, int] | None = None,
+    ) -> None:
+        """호출 성공 뒤 출력 요약과 토큰 사용량을 기록한다. None인 값은 싣지 않는다."""
+        if self._span is None:
+            return
+        fields: dict[str, object] = {}
+        if output is not None:
+            fields["output"] = output
+        if usage_details:
+            fields["usage_details"] = usage_details
+        if not fields:
+            return
         try:
-            if exc[0] is not None:
-                stack.__exit__(*exc)
-            else:
-                stack.close()
+            self._span.update(**fields)
+        except Exception as e:  # noqa: BLE001 — 관측 기록 실패가 서비스 응답을 깨면 안 된다
+            logger.warning(
+                "Langfuse 생성 관측 기록 실패(%s) — 관측만 누락, 응답에는 영향 없음",
+                type(e).__name__,
+            )
+
+    def _mark_failed(self, exc: BaseException) -> None:
+        """본작업 예외로 블록을 나갈 때 관측을 오류로 표시한다. 예외 원문은 싣지 않고 타입 이름만 남긴다."""
+        if self._span is None:
+            return
+        try:
+            self._span.update(level="ERROR", status_message=type(exc).__name__)
         except Exception as e:  # noqa: BLE001
-            # 예외 타입만 기록 — exc_info는 진행 중인 본작업 예외를 연쇄로 끌어와
-            # 사용자 입력·LLM 원문이 로그로 샐 수 있다(AN-4-10, Codex P2. _flush와 동일 원칙).
-            logger.warning("Langfuse 트레이스 종료 실패(%s) — 응답에는 영향 없음", type(e).__name__)
+            logger.warning(
+                "Langfuse 생성 관측 오류 표시 실패(%s) — 응답에는 영향 없음", type(e).__name__
+            )
+
+
+@contextmanager
+def observe_generation(
+    name: str,
+    *,
+    model: str,
+    model_parameters: dict[str, str | int | float | bool | None] | None = None,
+    input_data: object | None = None,
+) -> Iterator[_Generation]:
+    """자동 계측이 덮지 않는 LLM 호출 하나를 generation 관측으로 기록한다(KNK-1240).
+
+    `langfuse.openai` 자동 계측은 chat·responses·embeddings 계열만 감싸고 `images.generate`는
+    지나친다. 그런 호출은 이 블록으로 감싸 손으로 기록한다. 블록은 현재 컨텍스트의 트레이스
+    (예: observe_request가 연 "스토리 컴파일") 아래에 자식으로 붙는다 — 병렬 태스크에서 불러도
+    contextvars가 복사되므로 같은 트레이스에 모인다.
+
+    호출 전에 아는 값(이름·모델·모델 인자·입력)은 여기서 싣고, 호출 뒤에 아는 값(출력·usage)은
+    핸들의 finish로 싣는다. 블록이 예외로 끝나면 관측을 ERROR로 표시한다(예외 타입 이름만 기록).
+
+    비활성(키 미설정 또는 JP·prod 조건 미충족)이면 아무 스팬도 만들지 않고 그대로 통과한다.
+    SDK 시작·종료 실패는 삼키되 본작업이 낸 예외는 그대로 전파한다(observe_request와 같은 경계).
+    """
+    if not _state.enabled:
+        yield _Generation()
+        return
+
+    stack = ExitStack()
+    try:
+        from langfuse import get_client
+
+        observation_kwargs: dict[str, object] = {
+            "name": name,
+            "as_type": "generation",
+            "model": model,
+        }
+        if model_parameters is not None:
+            observation_kwargs["model_parameters"] = model_parameters
+        if input_data is not None:
+            observation_kwargs["input"] = input_data
+        span = stack.enter_context(get_client().start_as_current_observation(**observation_kwargs))
+    except Exception:  # noqa: BLE001 — 관측 시작 실패가 본작업을 막으면 안 된다
+        logger.warning("Langfuse 생성 관측 시작 실패 — 관측 없이 본작업 진행", exc_info=True)
+        try:
+            stack.close()
+        except Exception:  # noqa: BLE001
+            logger.warning("Langfuse 생성 관측 정리 실패 — 무시", exc_info=True)
+        yield _Generation()
+        return
+
+    generation = _Generation(span)
+    try:
+        yield generation
+    finally:
+        exc = sys.exc_info()[1]
+        if exc is not None:
+            generation._mark_failed(exc)
+        _close_observation(stack, "생성 관측")
 
 
 def shutdown_langfuse() -> None:

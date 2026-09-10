@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from src.core.config import settings
 from src.core.sentry import FEATURE_THUMBNAIL_IMAGE, capture_ai_exception
 from src.schemas.story_compile import CharacterSetting
-from src.services.image import THUMBNAIL_IMAGE_SIZE, ImageGenerationError, generate_image
+from src.services.image import (
+    IMAGE_PURPOSE_THUMBNAIL,
+    THUMBNAIL_IMAGE_SIZE,
+    ImageGenerationError,
+    generate_image,
+)
 from src.services.image.base import PROVIDER_OPENAI, ImageResult
 from src.services.image.prompt import THUMBNAIL_IMAGE_VERSION, build_thumbnail_prompt
 
@@ -38,7 +43,9 @@ async def generate_thumbnail_image(
     prompt = build_thumbnail_prompt(characters, genre_tags)
     start = time.monotonic()
     try:
-        result = await generate_image(prompt, size=THUMBNAIL_IMAGE_SIZE)
+        result = await generate_image(
+            prompt, purpose=IMAGE_PURPOSE_THUMBNAIL, size=THUMBNAIL_IMAGE_SIZE
+        )
         logger.info("썸네일 생성 성공")
         return ThumbnailImageResult(image=result)
     except ImageGenerationError as exc:

@@ -3,7 +3,12 @@ import os
 import pytest
 
 from src.core.config import settings
-from src.services.image import THUMBNAIL_IMAGE_SIZE, generate_image
+from src.services.image import (
+    IMAGE_PURPOSE_CHARACTER,
+    IMAGE_PURPOSE_THUMBNAIL,
+    THUMBNAIL_IMAGE_SIZE,
+    generate_image,
+)
 from src.services.image.base import PROVIDER_OPENAI, ImageResult
 
 
@@ -16,7 +21,8 @@ def require_live_env() -> None:
 async def test_image_generation_live_returns_webp() -> None:
     result = await generate_image(
         "A fictional adult fantasy detective, neutral studio background, "
-        "fully clothed, non-violent character portrait."
+        "fully clothed, non-violent character portrait.",
+        purpose=IMAGE_PURPOSE_CHARACTER,
     )
 
     assert isinstance(result, ImageResult)
@@ -33,6 +39,7 @@ async def test_thumbnail_size_live_returns_portrait_webp() -> None:
     """
     result = await generate_image(
         "A quiet fantasy castle courtyard at dusk, anime illustration, no people, no text.",
+        purpose=IMAGE_PURPOSE_THUMBNAIL,
         size=THUMBNAIL_IMAGE_SIZE,
     )
 
