@@ -542,6 +542,30 @@ async def test_storylines_ids_normalized_to_sequence(monkeypatch, captures) -> N
     assert captures == []  # 실패 캡처 없음(200 경로)
 
 
+async def test_storylines_missing_id_passes(monkeypatch, captures) -> None:
+    """id가 아예 없어도 재호출·502 없이 통과하고 순서대로 1·2·3이 붙는다.
+
+    2026-09-10 DeepSeek가 모든 편에서 id를 빼고 답하기 시작해, id를 필수로 보던 검증이
+    요청마다 재호출 2회 → 502를 만들었다(운영 스토리라인 전면 실패, Sentry PYTHON-FASTAPI-C).
+    id는 코드가 덮어쓰는 값이라 검증 대상에서 뺀다.
+    """
+    no_ids = (
+        '{"stories": ['
+        '{"storyline": "본문1", "recommended_infos": ["a", "b", "c"]},'
+        '{"storyline": "본문2", "recommended_infos": ["a", "b", "c"]},'
+        '{"id": "셋", "storyline": "본문3", "recommended_infos": ["a", "b", "c"]}]}'
+    )
+    create, calls = _returns_sequence([no_ids])
+    _install(monkeypatch, create)
+
+    result, usage = await story_llm.generate_storylines("SYS", "USER")
+
+    assert [s["id"] for s in result["stories"]] == [1, 2, 3]
+    assert calls["count"] == 1  # 재호출 없음
+    assert usage.retry_count == 0
+    assert captures == []
+
+
 async def test_storylines_schema_mismatch_retries_then_succeeds(monkeypatch, captures) -> None:
     """1차 스키마 불일치(FASTAPI-A 모양) → 2차 정상: 500 없이 회복하고 재호출 횟수를 기록한다."""
     create, calls = _returns_sequence([_SCHEMA_MISMATCH_JSON, _VALID_STORYLINES_JSON])
