@@ -318,8 +318,12 @@ def _validate_storylines(data: dict) -> None:
     for i, item in enumerate(stories):
         if not isinstance(item, dict):
             raise _InvalidAiResponse(f"stories[{i}]가 JSON 객체가 아닙니다.")
+        # id는 검증하지 않는다 — 어차피 _normalize_storyline_ids가 등장 순서(1·2·3)로 덮어쓴다.
+        # DeepSeek가 id를 통째로 빼고 답하기 시작해(2026-09-10, Sentry PYTHON-FASTAPI-C)
+        # 필수 검증이 걸리면 재호출 2회 뒤 502로 스토리라인이 전부 막혔다. 무해한 값을 두고
+        # 벌하지 않는 D7 원칙과 같다(test_storylines_missing_id_passes).
         try:
-            parsed = StoryItem(**item)
+            parsed = StoryItem(**{k: v for k, v in item.items() if k != "id"}, id=i + 1)
         except (TypeError, ValueError) as exc:
             raise _InvalidAiResponse(f"stories[{i}]가 응답 스키마와 맞지 않습니다.") from exc
         if len(parsed.recommended_infos) != 3:
