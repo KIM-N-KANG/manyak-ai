@@ -9,7 +9,7 @@
 - 출력: AI → 백엔드. 항상 정확히 3개 — 유효한 요청이면 LLM 생성 실패도 폴백으로
   흡수해 200이다(스키마 위반 요청은 422 검증 오류 — "항상 200"은 생성 실패에 한정).
 - 표기: 동기 REST라 story 계열과 같은 snake_case다 — camelCase는 chat SSE completed
-  페이로드만의 공식 예외(5-1-ai-server-spec.md §5-3-1)라 여기로 넓히지 않는다.
+  페이로드만의 공식 예외(spec/5-ai-server-spec.md §5-3-1)라 여기로 넓히지 않는다.
 """
 
 from pydantic import BaseModel, Field
@@ -24,7 +24,7 @@ class ChatChoicesRequest(ChatTurnRequest):
     ChatTurnRequest를 상속해 백엔드가 턴 요청과 같은 조립 로직을 재사용하게 한다.
     ⚠️ history는 **메인 턴 요청과 동일한 스냅샷(이번 턴 제외)**이어야 한다 — 선택지
     호출 시점에는 이번 턴이 이미 DB에 저장돼 있으므로, 그대로 재조립하면 방금 장면이
-    history와 ai_output에 중복 삽입된다(제외는 백엔드 책임 — 4-backend 재생성 조립과
+    history와 ai_output에 중복 삽입된다(제외는 백엔드 책임 — spec/4-backend-server-spec.md 재생성 조립과
     같은 1..N-1 잘라내기).
     """
 

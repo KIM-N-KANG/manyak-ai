@@ -665,7 +665,7 @@ def _inject_protagonist(data: dict, protagonist: CharacterInput) -> None:
     """사용자가 입력한 주인공 이름·성별을 주인공 프로필에 정본으로 덮어쓴다(KNK-838).
 
     사용자가 정한 값은 LLM 출력에 맡기지 않고 코드가 담보한다(장르 덮어쓰기와 같은
-    원칙, 5-1-ai-server-spec.md §5-3-3 · 5-2-ai-server-adr.md D7). 비운 항목은 LLM이 지은 값을 그대로 둔다.
+    원칙, spec/5-ai-server-spec.md §5-3-3 · adr/3-ai-server-adr.md D7). 비운 항목은 LLM이 지은 값을 그대로 둔다.
     성별은 계약 값("MALE"·"FEMALE")이 아니라 통글에 실리는 한국어로 바꿔 쓴다.
     """
     ur = _as_dict(data.get("prompt_settings")).get("user_role_setting")
@@ -896,7 +896,7 @@ def _default_image_name(character_name: str) -> str:
     """인물 이미지 한 장의 이름(KNK-1027). 지금은 인물당 한 장이라 `인물이름_기본`으로 고정한다.
 
     이름은 AI가 완성해서 주는 문자열이다 — 백엔드가 `name`·표정 같은 칸을 조립하지 않게 해,
-    구분 기준이 늘어도 백엔드가 바뀌지 않게 한다(5-1-ai-server-spec.md §5-3-4 · 5-2-ai-server-adr.md 기존 인물 이미지 계약).
+    구분 기준이 늘어도 백엔드가 바뀌지 않게 한다(spec/5-ai-server-spec.md §5-3-4 · adr/3-ai-server-adr.md 기존 인물 이미지 계약).
     """
     return f"{character_name}_기본"
 

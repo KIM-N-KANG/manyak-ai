@@ -236,7 +236,7 @@ class CharacterImageOut(BaseModel):
 
 # 썸네일 한 장의 이름. 지금은 스토리당 한 장이라 고정이다(KNK-1027 image_name 계약).
 THUMBNAIL_IMAGE_NAME = "썸네일_기본"
-# 썸네일 실패 사유 코드. 5-1-ai-server-spec.md §5-3-3 계약과 같다 — 이 밖의 값은 스키마가 막는다.
+# 썸네일 실패 사유 코드. spec/5-ai-server-spec.md §5-3-3 계약과 같다 — 이 밖의 값은 스키마가 막는다.
 ThumbnailErrorCode = Literal["timeout", "rate_limited", "rejected", "generation_failed"]
 THUMBNAIL_ERROR_CODES: tuple[str, ...] = ("timeout", "rate_limited", "rejected", "generation_failed")
 

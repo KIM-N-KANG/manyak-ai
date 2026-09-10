@@ -143,7 +143,7 @@ async def test_chat_choices_trace_receives_connection_metadata(
 
     헬퍼(dimension_tags) 시그니처만 지키면 인라인 태그 재유입을 놓친다 — 엔드포인트가
     observe_request에 tags 인자 자체를 넘기지 않음을 본다(장르 태그는 스토리 제작
-    트레이스에만 — 5-1-ai-server-spec.md §5-6).
+    트레이스에만 — spec/5-ai-server-spec.md §5-6).
     """
     from contextlib import contextmanager
 
