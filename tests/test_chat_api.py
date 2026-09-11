@@ -874,3 +874,36 @@ async def test_http_disconnect_waits_for_both_cleanup(monkeypatch, mock_events, 
     response = await chat_module.chat_turn(ChatTurnRequest(**payload))
     await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send), 1)
     assert stopped == {"image", "judgement"}
+
+
+@pytest.mark.parametrize("error", [None, "timeout", "rate_limited", "rejected", "generation_failed"])
+async def test_child_image_trace_records_result_without_raw_data(monkeypatch, mock_events, error) -> None:
+    from contextlib import contextmanager
+    from unittest.mock import AsyncMock
+    from src.core.langfuse import _Trace
+    from src.services import chat_child_image
+    from src.services.image.generate_child import ChildImageResult
+
+    trace = _Trace()
+    @contextmanager
+    def observe(*args, **kwargs):
+        yield trace
+    monkeypatch.setattr(chat_module, "observe_request", observe)
+    monkeypatch.setattr(chat_child_image, "generate_child_image", AsyncMock(return_value=ChildImageResult(
+        "레이", "private-image-name", None if error else "private-base64", error=error,
+    )))
+    mock_events([{"event": "completed", "ai_output": "레이: private-dialogue"}])
+    payload = _payload()
+    payload.update(generate_child_image=True, character_images=[{
+        "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/private-parent.webp",
+    }])
+    result = [event async for event in chat_module._event_stream(ChatTurnRequest(**payload), {})]
+    assert "event: completed" in result[-1]
+    record = trace._metadata["child_image"]
+    assert record["status"] == ("failed" if error else "success")
+    assert record["reason"] == error
+    assert record["parent_fallback"] is bool(error)
+    assert record["duration_ms"] >= 0
+    assert record["prompt_version"] >= 1
+    assert "private" not in str(record) and "레이" not in str(record)
+    assert "cost" not in record and "usage" not in record  # 이미지 generation에만 기록한다.

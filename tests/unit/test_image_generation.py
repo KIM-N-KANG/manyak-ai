@@ -509,3 +509,35 @@ async def test_generate_image_requires_purpose() -> None:
     """purpose에 기본값이 없다 — 새 호출부가 인물로 잘못 집계되지 않게 호출 시점에 드러낸다."""
     with pytest.raises(TypeError):
         await generate_image("test prompt")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("has_usage", [True, False])
+async def test_child_edit_records_usage_once_without_image_data(monkeypatch, has_usage) -> None:
+    from unittest.mock import Mock
+    from src.services.image.base import ImageReference
+
+    rec = _mock_observation(monkeypatch)
+    usage = _FakeUsage(
+        input_tokens=27, total_tokens=527,
+        input_tokens_details=_FakeInputTokensDetails(text_tokens=7, image_tokens=20),
+        output_tokens_details=_FakeOutputTokensDetails(image_tokens=500),
+    ) if has_usage else None
+    client = Mock()
+    edit = AsyncMock(return_value=_FakeResponseWithUsage(usage=usage))
+    client.with_options.return_value.images.edit = edit
+    monkeypatch.setattr(openai_api, "_client", lambda *a, **kw: client)
+    await openai_api.generate(ImageRequest(
+        model="gpt-image-2", purpose="child", prompt="test prompt",
+        reference=ImageReference(_FAKE_PNG, "image/png", "private-parent.png"),
+    ))
+    edit.assert_awaited_once()
+    assert rec.started["name"] == "이미지 생성:자식"
+    assert "private-parent" not in str(rec.started)
+    assert _FAKE_B64 not in str(rec.finished)
+    if has_usage:
+        assert rec.finished["usage_details"] == {
+            "input": 27, "output": 500, "total": 527,
+            "input_text": 7, "input_image": 20, "output_text": 0, "output_image": 500,
+        }
+    else:
+        assert rec.finished["usage_details"] is None  # 누락을 0 사용량으로 바꾸지 않는다.

@@ -23,6 +23,7 @@ import json
 import time
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from dataclasses import asdict
 
 from anyio import CancelScope
 from fastapi import APIRouter
@@ -51,7 +52,7 @@ from src.schemas.response_meta import ChatResponseMeta, StoryResponseMeta
 from src.services import llm
 from src.services.chat_assembler import LAYER_VERSIONS, assemble
 from src.services.chat_llm import stream_chat_turn
-from src.services.chat_child_image import stream_with_child_image
+from src.services.chat_child_image import ChildImageObservation, stream_with_child_image
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
 from src.services.chat_judgement import JUDGEMENT_VERSION, generate_judgement
 
@@ -121,11 +122,12 @@ async def _event_stream(
             "prompt_versions": {**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
             "retry_count": 0,
         },
-    ):
+    ) as trace:
         # 이 턴에 쓴 시간을 잰다 — 판정에 얼마를 줄 수 있는지가 여기서 나온다(아래 참조).
         turn_started = time.monotonic()
         messages = assemble(req)
         judging = None
+        image_observation = ChildImageObservation() if req.generate_child_image else None
 
         def start_judgement(ai_output: str) -> None:
             nonlocal judging
@@ -140,6 +142,7 @@ async def _event_stream(
                 events, req,
                 deadline=turn_started + _TURN_BUDGET_SECONDS - _SAFETY_MARGIN_SECONDS,
                 on_body_completed=start_judgement,
+                observation=image_observation,
             )
         try:
             async with aclosing(events):
@@ -215,6 +218,8 @@ async def _event_stream(
                     else:  # EVENT_ERROR
                         yield _sse(name, ErrorData(code=ev["code"], message=ev["message"]).model_dump())
         finally:
+            if image_observation is not None:
+                trace.set_metadata(child_image=asdict(image_observation))
             if judging is not None:
                 with CancelScope(shield=True):
                     if not judging.done() and not judging.cancelling():

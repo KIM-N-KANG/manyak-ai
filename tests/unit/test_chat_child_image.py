@@ -210,3 +210,81 @@ async def test_on_time_image_survives_delayed_delivery(monkeypatch, request_data
         assert result["event"] == "character_image"
         assert result["generated_image"]["image_base64"] == "valid-data"
         assert result["generated_image"]["error"] is None
+
+
+@pytest.mark.parametrize("text,reason", [("행인: 안녕.", "no_parent"), ("*조용하다.*", "no_parent")])
+async def test_observation_when_no_parent(request_data, text, reason) -> None:
+    observation = service.ChildImageObservation()
+    result = [e async for e in service.stream_with_child_image(
+        events(text), request_data, deadline=time.monotonic()+5, observation=observation,
+    )]
+    assert result[-1]["event"] == "completed"
+    assert (observation.status, observation.reason) == ("skipped", reason)
+    assert observation.duration_ms is None and not observation.parent_fallback
+
+
+async def test_observation_for_outer_timeout(monkeypatch, request_data) -> None:
+    async def slow(inputs):
+        await asyncio.Event().wait()
+    monkeypatch.setattr(service, "generate_child_image", slow)
+    monkeypatch.setattr(service, "_IMAGE_BUDGET_SECONDS", 0.01)
+    observation = service.ChildImageObservation()
+    result = [e async for e in service.stream_with_child_image(
+        events("라떼: 안녕."), request_data, deadline=time.monotonic()+5, observation=observation,
+    )]
+    assert result[-1]["event"] == "completed"
+    assert (observation.status, observation.reason) == ("failed", "timeout")
+    assert observation.duration_ms > 0 and observation.parent_fallback
+
+
+async def test_observation_for_cancelled_generation(monkeypatch, request_data) -> None:
+    async def slow(inputs):
+        await asyncio.Event().wait()
+    monkeypatch.setattr(service, "generate_child_image", slow)
+    monkeypatch.setattr(service, "_PING_INTERVAL_SECONDS", 0.01)
+    observation = service.ChildImageObservation()
+    async with aclosing(service.stream_with_child_image(
+        events("라떼: 안녕."), request_data, deadline=time.monotonic()+5, observation=observation,
+    )) as stream:
+        assert (await anext(stream))["event"] == "ping"
+    assert (observation.status, observation.reason) == ("cancelled", "cancelled")
+    assert observation.duration_ms > 0 and not observation.parent_fallback
+
+
+@pytest.mark.parametrize("expired", [False, True])
+async def test_observation_when_body_fails(request_data, expired) -> None:
+    async def failed():
+        yield {"event": "error", "code": "LLM_ERROR", "message": "private error"}
+    observation = service.ChildImageObservation()
+    result = [e async for e in service.stream_with_child_image(
+        failed(), request_data, deadline=0 if expired else time.monotonic()+5, observation=observation,
+    )]
+    assert result[-1]["event"] == "error"
+    assert observation.status == "skipped"
+    assert observation.reason == ("body_timeout" if expired else "body_error")
+    assert observation.duration_ms is None and not observation.parent_fallback
+
+
+async def test_user_cancellation_stays_cancelled_after_deadline(monkeypatch, request_data) -> None:
+    from types import SimpleNamespace
+
+    now = [100.0]
+    async def slow(inputs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            # 129초에 사용자가 나갔지만 연결 정리는 마감(130초) 후 끝난다.
+            await asyncio.sleep(0)
+            now[0] = 131.0
+    monkeypatch.setattr(service, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(service, "generate_child_image", slow)
+    monkeypatch.setattr(service, "_PING_INTERVAL_SECONDS", 0.01)
+    observation = service.ChildImageObservation()
+    async with aclosing(service.stream_with_child_image(
+        events("라떼: 안녕."), request_data, deadline=205.0, observation=observation,
+    )) as stream:
+        assert (await anext(stream))["event"] == "ping"
+        now[0] = 129.0
+    assert (observation.status, observation.reason) == ("cancelled", "cancelled")
+    assert observation.duration_ms == 31000.0
+    assert not observation.parent_fallback

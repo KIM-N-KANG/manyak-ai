@@ -599,7 +599,29 @@ AI는 저장 결과를 돌려받지 않는다. 컴파일과 마찬가지로 백�
   정리 중 반복되는 연결 종료 신호가 정리 작업을 다시 중단하지 않도록 보호한다.
 
 15초는 AI가 남겨 두는 여유이며, 백엔드의 실제 저장 완료 시간까지 보장하지는 않는다.
-관측·비용 보강은 KNK-1268에서 이어간다.
+
+#### 자식 이미지 생성 기록
+
+자식 이미지 기능을 켠 요청은 기존 `채팅 턴` 관측의 `child_image` metadata에 아래 값을 남긴다.
+기능을 끈 요청은 이 항목을 추가하지 않는다.
+
+| 필드 | 의미 |
+| --- | --- |
+| `status` | `not_started`: 본문 단계에서 종료, `skipped`: 대상 없음 또는 본문 실패, `success`: 생성 성공, `failed`: 생성 실패, `cancelled`: 생성 중 취소 |
+| `reason` | 성공 시 null. 그 외 `body_incomplete`, `no_parent`, `body_error`, `body_timeout`, `timeout`, `rate_limited`, `rejected`, `generation_failed`, `cancelled`, `unexpected_error` |
+| `duration_ms` | 부모 다운로드를 포함한 생성 소요 시간. 취소 정리 시간도 포함하며 시작하지 않았으면 null |
+| `parent_fallback` | AI가 자식 생성 실패로 부모 대체 이벤트를 내보내면 true. 백엔드 저장 실패나 클라이언트의 실제 표시 여부는 포함하지 않음 |
+| `prompt_version` | 자식 이미지 프롬프트 버전 |
+
+기존 `이미지 생성:자식` generation은 같은 채팅 트레이스 안에서 이미지 API의 모델·지연·사용량을
+기록한다. 텍스트 입력·이미지 입력·이미지 출력 사용량은 기존 세부 키로 구분한다. 비용 계산은
+Langfuse의 해당 모델 단가 설정을 사용하며, 채팅 metadata에 비용이나 사용량을 복사하지 않는다.
+응답을 받지 못해 사용량이 없으면 비용을 0으로 추정하지 않는다. API 호출 전 다운로드가 실패하면
+이미지 generation은 없고 채팅의 실패 기록만 남는다.
+
+새 metadata에는 인물 이름·이미지 이름·URL·대화 원문·base64를 넣지 않는다. 이미지 generation도
+부모 첨부 파일과 생성 이미지 바이너리를 기록하지 않는다. Langfuse 비활성·기록 장애는 기존
+관측 통로가 처리하므로 채팅 결과에 영향을 주지 않는다.
 
 ### 4.3 명세 재검증 메모
 [2-LAYER-PLACEMENT.md]는 "임의 깊이 삽입"을 전제하나, 실제 OpenAI 호환 API에서 **mid-array system 메시지의 동작**은 모델마다 다르다. 따라서 Depth 블록을 `system` 역할로 끝 근처에 둘지, `user` 역할 메타 메시지로 둘지는 **Phase 5에서 검증 후 확정**한다(7절).
