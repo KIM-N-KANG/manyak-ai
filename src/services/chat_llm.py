@@ -142,6 +142,29 @@ def _image_payload(image: CharacterImageMapping) -> dict:
     }
 
 
+def find_first_parent_image(
+    text: str, character_images: list[CharacterImageMapping]
+) -> CharacterImageMapping | None:
+    """부모 이미지가 있는 인물 중 본문에서 가장 먼저 말한 인물의 부모를 고른다.
+
+    별칭 충돌은 전체 이미지 매핑으로 판정한다. 기본 이미지가 없는 인물을 먼저 빼면
+    그 인물의 정식 이름·별칭을 다른 인물로 잘못 해석할 수 있다.
+    """
+    images = _images_by_name(character_images)
+    if not images:
+        return None
+    parents = {
+        image.name: image
+        for image in character_images
+        if image.name and image.image_name == f"{image.name}_기본"
+    }
+    for match in _speaker_label_re(images).finditer(_strip_speaker_bold(text)):
+        parent = parents.get(images[match.group(2)].name)
+        if parent is not None and parent.image_url.strip():
+            return parent
+    return None
+
+
 def _speaker_label_re(names: "Iterable[str]") -> "re.Pattern[str]":
     """이미지 보유 인물의 평문 인물명 라벨(`이름:`)을 줄머리에서 찾는 정규식.
 
