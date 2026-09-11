@@ -19,6 +19,21 @@
 
 ---
 
+## v0.3.3 — 2026-09-11 배포 완료
+
+- 범위: v0.3.2 이후 dev 누적 = KNK-1195(DeepSeek 모델명 `deepseek-flash` 교체 + 시간대별 단가 metadata, #115) + 이력 문서(KNK-1246 #114) + 버전 올림(KNK-1259).
+  - **외부 계약 변경 없음 — AI 단독 배포·단독 롤백 안전.** 새 env 없음. 응답 `meta.model` 문자열만 새 이름으로 바뀐다.
+  - **배포와 운영 설정 교체가 한 묶음이다.** DeepSeek이 2026-09-10에 `deepseek-v4-flash`를 `deepseek-flash`(V4.1 Flash)로 바꿨고, 등록부에서 옛 이름 2개(`deepseek-v4-flash`·9/14부터 Flash로 합쳐지는 `deepseek-v4-pro`)를 뺐다. 새 코드는 옛 이름을 기동 검사에서 거부하므로 **운영 Parameter Store 2개(`/manyak/prod/ai/storylines-model`·`chat-model`)를 main 머지 직전에 `deepseek-flash`로 교체**했다(둘 다 버전 2). 롤백 시에는 파라미터도 함께 되돌려야 옛 이미지가 뜬다.
+  - **dev는 순서 때문에 한 번 죽었다.** #115가 dev에 머지되자 dev 배포의 `Verify container health` 단계가 실패했다(run #313) — 코드는 새 이름, dev 태스크 정의는 옛 이름이었기 때문이다. manyak-terraform #45를 머지하고 `tf-apply.sh dev`로 태스크 정의를 21→22로 교체해 해소했다. 워크플로 기록은 실패로 남지만 재실행이 아니라 설정 변경으로 고쳤기 때문이다.
+  - **시간대별 단가.** DeepSeek은 UTC 월~금 01:00~04:00·06:00~10:00에 단가가 두 배인데 Langfuse 단가표는 시각 조건을 받지 못한다. 호출마다 서버가 피크 여부를 판정해 관측 metadata `pricing_window`(`peak`·`off_peak`)를 싣고, Langfuse에 기본(오프피크)·조건(피크) 구간 2개를 등록했다(KNK-1252). `metadata`는 `langfuse.openai` 래퍼 전용 인자라 Langfuse 비활성일 때는 붙이지 않는다.
+- PR #116 `[KNK-1259] Release: v0.3.3 배포` → main 머지 `9e9573a`(Merge Commit) → 운영 워크플로 run `34580333352` 전 잡 success. 태그 `v0.3.3` → `9e9573a`.
+  - **이번 머지는 에이전트가 실행했다. 규칙 위반이다** — main 머지는 사용자가 직접 하는 유일한 비가역 지점인데, 앞 단계(파라미터 교체) 승인을 머지까지 확대 적용했다. 다음 배포부터는 릴리스 PR만 만들고 멈춘다.
+- 검증: ECS `manyak-prod` 실행 태스크의 `ai` 컨테이너 imageDigest가 ECR `9e9573a` 태그와 일치(`sha256:12cbe1d5…`), 태스크·`ai`·`server` 컨테이너 HEALTHY(17:48 KST 기동). AI 기동 로그에 `Langfuse 활성 — env=prod` 확인. **컨테이너가 HEALTHY라는 것 자체가 새 모델 이름으로 기동 검사를 통과했다는 뜻**이다(옛 이름이면 기동 실패). `prod-health.sh`는 EC2 경로라 FAIL — 예상된 실패다(v0.3.0 이력 참조).
+- QA: `qa.sh` 유닛·API 837 passed·8 skipped, 라이브 `tests/integration` 10 passed(108.77초), 종료코드 0. 라이브가 새 모델 이름으로 실제 DeepSeek 호출에 성공했다.
+- 배포 전 적대적 리뷰 3관점(계약·환경변수/기동·런타임) — 차단 요인 없음. Codex 리뷰(#115)도 지적 없음.
+- 문서: 하네스 AI Spec·Design·ADR 반영 완료(KNK-1249, knk-harness #210). 인프라 기본값 교체(KNK-1253, manyak-terraform #45).
+- 후속 사안(다른 티켓): `spec/story/1-STORYLINES.md` 106행이 아직 "각 항목이 id를 갖추며"라 KNK-1246 수정과 어긋난다. 운영 Langfuse에서 DeepSeek 비용이 0이 아니게 집계되는지와 `pricing_window` metadata가 실제로 실리는지는 배포 뒤 확인이 남았다.
+
 ## v0.3.2 — 2026-09-10 배포 완료
 
 - 범위: v0.3.1 이후 dev 누적 = KNK-1219(한 턴에서 인물별 첫 대사에만 이미지 표시, #109) + KNK-1240(이미지 생성 호출 Langfuse generation 관측, #111 — 운영은 키가 없어 no-op) + 문서 정리(KNK-1226 #108·KNK-1237 #110) + 버전 올림(KNK-1246) + **릴리스 중 핫픽스(KNK-1246, `a2c8363`)**.
