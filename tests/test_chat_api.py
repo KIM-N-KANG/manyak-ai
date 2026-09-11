@@ -718,3 +718,44 @@ async def test_ping_payload_comes_from_the_schema(
     body = (await client.post("/api/v1/chat/turns", json=_payload())).text
 
     assert _data_of(body, "ping") == PingData().model_dump() == {}
+
+
+async def test_child_image_opt_in_emits_data_once_and_parent_storage(client, mock_events, monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+    from src.services import chat_child_image
+    from src.services.image.generate_child import ChildImageResult
+
+    child = AsyncMock(return_value=ChildImageResult("레이", "레이_실시간_test", "image-data"))
+    monkeypatch.setattr(chat_child_image, "generate_child_image", child)
+    mock_events([
+        {"event": "token", "text": "*문이 열린다.*\n레이: 안녕."},
+        {"event": "completed", "ai_output": "*문이 열린다.*\n레이: 안녕."},
+    ])
+    payload = _payload()
+    payload["generate_child_image"] = True
+    payload["character_images"] = [{"name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp"}]
+    response = await client.post("/api/v1/chat/turns", json=payload)
+    image = _data_of(response.text, "character_image")
+    assert image["imageUrl"] == "https://cdn.manyak.app/parent.webp"
+    assert image["generatedImage"] == {
+        "name": "레이", "imageName": "레이_실시간_test", "imageBase64": "image-data",
+        "contentType": "image/webp", "error": None,
+    }
+    assert response.text.count("image-data") == 1
+    completed = _data_of(response.text, "completed")
+    assert completed["aiOutput"] == "*문이 열린다.*\n[[https://cdn.manyak.app/parent.webp]]\n\n레이: 안녕."
+    assert "generatedImage" not in completed["characterImages"][0]
+    child.assert_awaited_once()
+
+
+async def test_child_image_disabled_by_default(client, mock_events, monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+    from src.services import chat_child_image
+
+    child = AsyncMock()
+    monkeypatch.setattr(chat_child_image, "generate_child_image", child)
+    mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
+    response = await client.post("/api/v1/chat/turns", json=_payload())
+    assert response.status_code == 200
+    child.assert_not_awaited()
+    assert "generatedImage" not in response.text

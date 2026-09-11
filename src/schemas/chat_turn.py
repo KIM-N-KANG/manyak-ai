@@ -175,6 +175,8 @@ class ChatTurnRequest(BaseModel):
     # 개수 상한을 두지 않는다 — 인물당 표정별 다중 이미지가 오면 5개를 넘고, 인물 수
     # 상한은 백엔드가 관리한다(KNK-943 백엔드 리뷰 반영).
     character_images: list[CharacterImageMapping] = Field(default_factory=list)
+    # 자식 이미지 저장·본문 주소 교체를 지원하는 백엔드만 켠다(KNK-1266).
+    generate_child_image: bool = False
 
     @field_validator("user_source", mode="before")
     @classmethod
@@ -244,6 +246,16 @@ class CharacterImageData(BaseModel):
     name: str
     image_name: str = Field(serialization_alias="imageName")
     image_url: str = Field(serialization_alias="imageUrl")
+
+
+class GeneratedChildImageData(BaseModel):
+    """character_image 이벤트의 generatedImage. 바깥 URL은 저장 실패 시 쓸 부모다."""
+
+    name: str
+    image_name: str = Field(serialization_alias="imageName")
+    image_base64: str | None = Field(serialization_alias="imageBase64")
+    content_type: Literal["image/webp"] = Field(serialization_alias="contentType")
+    error: Literal["timeout", "rate_limited", "rejected", "generation_failed"] | None
 
 
 class TargetMainEventOut(BaseModel):

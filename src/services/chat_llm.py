@@ -200,6 +200,41 @@ def _insert_storage_markers(
     return _speaker_label_re(images).sub(replace, text), displayed
 
 
+def render_chat_images(
+    text: str, character_images: list[CharacterImageMapping]
+) -> tuple[list[dict], str, list[dict]]:
+    """완성된 본문에 부모 이미지 이벤트와 저장 마커를 같은 위치로 배치한다.
+
+    기본 이미지가 있으면 그것을 우선한다. 기본이 없는 레거시 인물은 기존 매핑을 쓴다.
+    전체 이름 목록을 유지해 기본 이미지 유무가 별칭 충돌 판정을 바꾸지 않는다.
+    """
+    parents = {
+        image.name: image for image in character_images
+        if image.name and image.image_name == f"{image.name}_기본" and image.image_url.strip()
+    }
+    mappings = [parents.get(image.name, image) for image in character_images]
+    images = _images_by_name(mappings)
+    normalized = _strip_speaker_bold(text)
+    stored, displayed = _insert_storage_markers(normalized, mappings)
+    if not images:
+        return [{"event": EVENT_TOKEN, "text": normalized}], stored, displayed
+    events: list[dict] = []
+    seen: set[str] = set()
+    offset = 0
+    for match in _speaker_label_re(images).finditer(normalized):
+        image = images[match.group(2)]
+        if image.name in seen:
+            continue
+        if match.start() > offset:
+            events.append({"event": EVENT_TOKEN, "text": normalized[offset:match.start()]})
+        events.append({"event": EVENT_CHARACTER_IMAGE, **_image_payload(image)})
+        seen.add(image.name)
+        offset = match.start()
+    if offset < len(normalized):
+        events.append({"event": EVENT_TOKEN, "text": normalized[offset:]})
+    return events, stored, displayed
+
+
 class _SpeakerLabelStreamParser:
     """LLM 델타를 줄 단위로 살펴 인물명 라벨을 찾고, 이미지 이벤트를 그 앞에 끼운다.
 
