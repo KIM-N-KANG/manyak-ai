@@ -61,7 +61,7 @@ async def test_chat_choices_returns_three_with_snake_meta(client, mock_choices) 
             input_tokens=30,
             output_tokens=12,
             retry_count=1,
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             # 일부러 "deepseek"이 아닌 값 — 상수와 구분하기 위함(KNK-674 리뷰 H1).
             provider="not-deepseek",
         )
@@ -79,7 +79,7 @@ async def test_chat_choices_returns_three_with_snake_meta(client, mock_choices) 
     assert meta["input_token_count"] == 30
     assert meta["output_token_count"] == 12
     assert meta["prompt_versions"]["NEXT_ACTIONS"] >= 1
-    assert meta["model"] == "deepseek-v4-flash"
+    assert meta["model"] == "deepseek-flash"
     assert "retryCount" not in resp.text  # camelCase 누출 없음
 
     # 서비스에는 요청 객체(턴 재료)와 ai_output이 분리되어 전달된다
@@ -97,7 +97,7 @@ async def test_chat_choices_fallback_result_is_still_200(client, mock_choices) -
             input_tokens=None,
             output_tokens=None,
             retry_count=2,
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             provider="deepseek",
         )
     )

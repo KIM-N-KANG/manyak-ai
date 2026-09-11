@@ -19,6 +19,20 @@
 
 ---
 
+## v0.3.2 — 2026-09-10 배포 완료
+
+- 범위: v0.3.1 이후 dev 누적 = KNK-1219(한 턴에서 인물별 첫 대사에만 이미지 표시, #109) + KNK-1240(이미지 생성 호출 Langfuse generation 관측, #111 — 운영은 키가 없어 no-op) + 문서 정리(KNK-1226 #108·KNK-1237 #110) + 버전 올림(KNK-1246) + **릴리스 중 핫픽스(KNK-1246, `a2c8363`)**.
+  - **외부 계약 변경 없음 — AI 단독 배포·단독 롤백 안전.** 새 env 없음.
+  - **핫픽스 = 운영 장애 복구.** DeepSeek가 2026-09-10부터 스토리라인 응답의 각 편에서 `id`를 빼고 답하기 시작했고(프롬프트 예시에 `id`가 있어도), `id`를 필수로 보던 `_validate_storylines`가 invalid 판정 → 재호출 2회 → 502를 냈다. 09:46 KST부터 스토리라인 요청 전부 실패(Sentry PYTHON-FASTAPI-C 25건, 요청 7건·사용자 4명·성공 0건, 어제 16:35에 1건 전조). `id`는 검증 뒤 `_normalize_storyline_ids`가 1·2·3으로 덮어쓰는 값이라 검증 대상에서 뺐다(D7). 재현 테스트 `test_storylines_missing_id_passes`.
+  - **QA가 장애를 잡았다.** 1차 `qa.sh`는 스토리라인 라이브 1건 실패(502)로 종료코드 1. 스토리라인 코드·프롬프트가 v0.3.1과 같아 회귀가 아님을 확인한 뒤 Sentry로 운영 동시 발생을 확인했다. 실패 이유는 Sentry로만 가고 로그엔 없어, 로컬 임시 로그로 pydantic 원인(`id` Field required)을 잡았다.
+- PR #112 `[KNK-1246] Release: v0.3.2 배포` → main 머지 `06fc5a3`(Merge Commit, 사용자 직접 실행) → 운영 워크플로 run `34488326322` 전 잡 success. 태그 `v0.3.2` → `06fc5a3`.
+- 검증: ECS `manyak-prod` 실행 태스크의 `ai` 컨테이너 imageDigest가 ECR `06fc5a3` 태그와 일치, 태스크·컨테이너 HEALTHY(23:28 KST 기동). `prod-health.sh`는 EC2 경로라 실행하지 않음(v0.3.0 이력 참조). 검증 명령: `aws ecs list-tasks --cluster manyak-prod --desired-status RUNNING` → `describe-tasks`의 `containers[?name==\`ai\`].imageDigest` vs `aws ecr describe-images --repository-name manyak-ai --image-ids imageTag=<sha>`.
+- QA(핫픽스 반영 후 재실행): `qa.sh` 유닛·API 820 passed·8 skipped, 라이브 `tests/integration` 10 passed(126.36초), 종료코드 0. `infra-check.sh` 실패 2건은 EC2·SSM 옛 경로(예상됨).
+- 배포 전 적대적 리뷰 3관점(계약·환경변수/기동·런타임) — 차단 요인 없음.
+- `watch-deploy.sh` 대신 `gh run watch <run id> --exit-status`를 백그라운드로 돌렸다(v0.3.1과 같은 우회). Deploy to ECS (prod) 약 5분.
+- 역류 PR(#113)을 main 머지 전에 미리 만들어 두고 배포 뒤 Merge Commit으로 머지(dev `7d0cb6a`).
+- 후속 사안(다른 티켓): 부분 재호출(`_merge_storylines`)도 `id`로 자리를 찾는다 — 거기서 `id`가 빠지면 재호출 결과가 버려지고 원본이 그대로 나간다(502는 아님). invalid 판정 이유를 info 로그에 남기면 다음 장애 분석이 빨라진다.
+
 ## v0.3.1 — 2026-09-04 배포 완료
 
 - 범위: v0.3.0 이후 dev 누적 = KNK-1102(스토리라인 이름 검증 소진 시 502 대신 결과 반환 + Sentry 경고, 빈 본문 재호출은 원본 유지) + KNK-1086(#102 이력 문서, 이미지 무관) + 버전 올림(KNK-1182, #104).

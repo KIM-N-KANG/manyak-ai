@@ -64,7 +64,7 @@ class _Usage:
 class _Resp:
     def __init__(self, content, usage=None):
         self.choices = [_Choice(content)]
-        self.model = "deepseek-v4-flash"
+        self.model = "deepseek-flash"
         self.usage = usage
 
 

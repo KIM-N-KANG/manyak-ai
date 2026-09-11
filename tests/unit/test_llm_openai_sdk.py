@@ -36,7 +36,7 @@ from src.services.llm.base import (
 from src.services.llm.registry import ProviderCredentials
 
 _FLASH = ResolvedModel(
-    model="deepseek-v4-flash",
+    model="deepseek-flash",
     provider=PROVIDER_DEEPSEEK,
     adapter=ADAPTER_OPENAI_SDK,
     use_thinking=False,
@@ -105,14 +105,14 @@ def _openai_usage(prompt=100, completion=20, cache_hit=64, cache_write=16):
     )
 
 
-def _response(content="본문", model="deepseek-v4-flash", usage=None, finish_reason="stop"):
+def _response(content="본문", model="deepseek-flash", usage=None, finish_reason="stop"):
     choice = SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice], model=model, usage=usage or _usage())
 
 
 def _req(**overrides) -> LlmRequest:
     values = {
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
     }
     return LlmRequest(**(values | overrides))
@@ -164,7 +164,7 @@ async def test_complete_sends_exact_kwargs(monkeypatch) -> None:
     )
 
     assert completions.captured == {
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "messages": messages,
         "response_format": {"type": "json_object"},
         "temperature": 0.75,
@@ -172,6 +172,54 @@ async def test_complete_sends_exact_kwargs(monkeypatch) -> None:
         "timeout": 88.5,
         "extra_body": {"thinking": {"type": "disabled"}},
     }
+
+
+async def test_deepseek_call_carries_pricing_window_only_when_langfuse_is_on(
+    monkeypatch,
+) -> None:
+    """Langfuse가 켜져 있을 때만 DeepSeek 호출에 `metadata={"pricing_window": ...}`를 싣는다(KNK-1195).
+
+    `metadata`는 Langfuse 래퍼가 걷어내는 전용 인자다. 래퍼가 없는 상태(비활성)에서 붙이면
+    DeepSeek API로 그대로 흘러가므로, 꺼져 있으면 아예 넣지 않아야 한다.
+    """
+    completions = _FakeCompletions(result=_response())
+    _install(monkeypatch, completions)
+
+    monkeypatch.setattr(openai_sdk.langfuse, "is_enabled", lambda: False)
+    await openai_sdk.complete(_req(), _FLASH)
+    assert "metadata" not in completions.captured
+
+    monkeypatch.setattr(openai_sdk.langfuse, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        openai_sdk.deepseek_pricing, "pricing_metadata", lambda: {"pricing_window": "peak"}
+    )
+    await openai_sdk.complete(_req(), _FLASH)
+    assert completions.captured["metadata"] == {"pricing_window": "peak"}
+
+
+async def test_pricing_window_is_not_attached_to_other_providers(monkeypatch) -> None:
+    """시간대 단가는 DeepSeek만의 규칙이라 GPT 호출에는 붙이지 않는다."""
+    completions = _FakeCompletions(result=_response(model="gpt-5.6-terra"))
+    _install(monkeypatch, completions)
+    monkeypatch.setattr(openai_sdk.langfuse, "is_enabled", lambda: True)
+
+    await openai_sdk.complete(_req(model="gpt-5.6-terra"), _GPT)
+
+    assert "metadata" not in completions.captured
+
+
+async def test_stream_carries_pricing_window_too(monkeypatch) -> None:
+    """스트리밍 호출도 같은 조립기를 쓰므로 꼬리표가 같이 실린다."""
+    completions = _FakeCompletions(result=_agen([_chunk("가")]))
+    _install(monkeypatch, completions)
+    monkeypatch.setattr(openai_sdk.langfuse, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        openai_sdk.deepseek_pricing, "pricing_metadata", lambda: {"pricing_window": "off_peak"}
+    )
+
+    [ev async for ev in openai_sdk.stream(_req(), _FLASH)]
+
+    assert completions.captured["metadata"] == {"pricing_window": "off_peak"}
 
 
 async def test_complete_omits_absent_values(monkeypatch) -> None:
@@ -259,10 +307,10 @@ async def test_complete_drops_unsupported_temperature(monkeypatch) -> None:
 
 async def test_complete_omits_thinking_when_model_uses_it(monkeypatch) -> None:
     """추론을 쓰는 모델에는 끄는 문법을 붙이지 않는다."""
-    completions = _FakeCompletions(result=_response(model="deepseek-v4-flash"))
+    completions = _FakeCompletions(result=_response(model="deepseek-flash"))
     _install(monkeypatch, completions)
     thinking_on = ResolvedModel(
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         provider=PROVIDER_DEEPSEEK,
         adapter=ADAPTER_OPENAI_SDK,
         use_thinking=True,
@@ -317,7 +365,7 @@ async def test_complete_maps_result_fields(monkeypatch) -> None:
     result = await openai_sdk.complete(_req(), _FLASH)
 
     assert result.text == "안녕"
-    assert result.model == "deepseek-v4-flash"
+    assert result.model == "deepseek-flash"
     assert result.provider == PROVIDER_DEEPSEEK
     assert result.finish_reason == "stop"
 
@@ -363,8 +411,8 @@ async def test_usage_missing_stays_none(monkeypatch) -> None:
     [
         # 목록 자리에 목록이 아닌 것 / 글 자리에 글자가 아닌 것 — 모양을 나열해 막지 않고
         # "못 꺼내면 빈 글" 한 규칙으로 덮는다(경우가 끝이 없다).
-        SimpleNamespace(choices={"0": "이상함"}, model="deepseek-v4-flash", usage=None),
-        SimpleNamespace(choices=1, model="deepseek-v4-flash", usage=None),
+        SimpleNamespace(choices={"0": "이상함"}, model="deepseek-flash", usage=None),
+        SimpleNamespace(choices=1, model="deepseek-flash", usage=None),
         SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -372,18 +420,18 @@ async def test_usage_missing_stays_none(monkeypatch) -> None:
                     finish_reason=None,
                 )
             ],
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             usage=None,
         ),
-        SimpleNamespace(choices=[], model="deepseek-v4-flash", usage=None),
+        SimpleNamespace(choices=[], model="deepseek-flash", usage=None),
         SimpleNamespace(
             choices=[SimpleNamespace(message=None, finish_reason=None)],
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             usage=None,
         ),
         SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=None), finish_reason=None)],
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             usage=None,
         ),
     ],
@@ -404,9 +452,9 @@ async def test_model_falls_back_to_requested_name(monkeypatch) -> None:
     """응답에 모델명이 비어 오면 요청에 쓴 이름으로 채운다(빈 값은 meta 조립에서 터진다)."""
     _install(monkeypatch, _FakeCompletions(result=_response(model=None)))
 
-    result = await openai_sdk.complete(_req(model="deepseek-v4-flash"), _FLASH)
+    result = await openai_sdk.complete(_req(model="deepseek-flash"), _FLASH)
 
-    assert result.model == "deepseek-v4-flash"
+    assert result.model == "deepseek-flash"
 
 
 # ── 예외 번역 ────────────────────────────────────────────────────────────────
@@ -434,7 +482,7 @@ async def test_translates_sdk_errors(monkeypatch, kind: str, expected: type) -> 
 
     # 실패 경로엔 결과가 없으므로 예외가 provider·model의 유일한 출처다.
     assert exc_info.value.provider == PROVIDER_DEEPSEEK
-    assert exc_info.value.model == "deepseek-v4-flash"
+    assert exc_info.value.model == "deepseek-flash"
 
 
 async def test_timeout_is_checked_before_connection_error(monkeypatch) -> None:
@@ -446,7 +494,7 @@ async def test_timeout_is_checked_before_connection_error(monkeypatch) -> None:
 
 
 # ── 스트리밍 ─────────────────────────────────────────────────────────────────
-def _chunk(content=None, model="deepseek-v4-flash", usage=None, finish_reason=None):
+def _chunk(content=None, model="deepseek-flash", usage=None, finish_reason=None):
     choices = []
     if content is not None or finish_reason is not None:
         choices = [SimpleNamespace(delta=SimpleNamespace(content=content), finish_reason=finish_reason)]
@@ -796,7 +844,7 @@ async def test_gateway_complete_routes_to_adapter(monkeypatch) -> None:
     result = await llm.complete(_req(json_mode=True))
 
     assert result.provider == PROVIDER_DEEPSEEK
-    assert completions.captured["model"] == "deepseek-v4-flash"
+    assert completions.captured["model"] == "deepseek-flash"
 
 
 async def test_gateway_stream_routes_to_adapter(monkeypatch) -> None:

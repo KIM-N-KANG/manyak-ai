@@ -180,7 +180,7 @@ async def test_chat_stream_error_keeps_ai_tags_after_logging_dedup(install_llm_s
     ],
 )
 def test_classify_neutral_llm_errors(exc_class: type[LlmError], expected: str) -> None:
-    exc = exc_class("실패", provider="deepseek", model="deepseek-v4-flash")
+    exc = exc_class("실패", provider="deepseek", model="deepseek-flash")
 
     assert classify_error_code(exc) == expected
 
@@ -191,7 +191,7 @@ def test_classify_unknown_neutral_error_falls_back_to_unavailable() -> None:
     class _FutureLlmError(LlmError):
         pass
 
-    exc = _FutureLlmError("실패", provider="deepseek", model="deepseek-v4-flash")
+    exc = _FutureLlmError("실패", provider="deepseek", model="deepseek-flash")
 
     assert classify_error_code(exc) == "provider_unavailable"
 
@@ -275,7 +275,7 @@ def test_capture_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
         # 둘 다 deepseek이면 통과해 버린다(KNK-674 리뷰 H2).
         provider="not-deepseek",
         error_code="unexpected_error",
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         prompt_versions={"SAFETY": 1, "CORE": 2},
         retry_count=1,
     )
@@ -284,7 +284,7 @@ def test_capture_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
     assert scope.tags["error_code"] == "unexpected_error"
     # provider는 이제 설정 전역값이 아니라 호출부가 넘긴 값이다(KNK-674).
     assert scope.tags["provider"] == "not-deepseek"
-    assert scope.tags["model"] == "deepseek-v4-flash"
+    assert scope.tags["model"] == "deepseek-flash"
     # prompt_versions는 dict 그대로 context에 싣는다(KNK-246 계약과 일치)
     assert scope.contexts["ai"]["prompt_versions"] == {"SAFETY": 1, "CORE": 2}
     assert scope.contexts["ai"]["retry_count"] == 1
