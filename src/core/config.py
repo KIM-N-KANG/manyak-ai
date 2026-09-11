@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     # 옛 LLM_PROVIDER env가 남아 있어도 무시된다(model_config의 extra="ignore").
 
     # 이미지 생성(KNK-938). 텍스트 LLM과 별도 모듈(src/services/image/).
-    # API 키는 공급자별 기존 키를 재사용한다(gpt-image-2 → openai_api_key).
-    image_model: str = "gpt-image-2-2026-04-21"  # 컴파일 인물 이미지 전용 (스냅샷 고정)
+    # API 키는 공급자별 기존 키를 재사용한다(OpenAI 이미지 → openai_api_key).
+    image_model: str = "gpt-image-2.5-flare"  # 부모·자식·표지 이미지 공통
     image_quality: str = "low"  # 이미지 화질 (low / medium / high)
     image_size: str = "1024x768"  # 이미지 크기 (가로 4:3)
     image_timeout: float = 60.0  # 이미지 1장 생성 제한 시간(초)

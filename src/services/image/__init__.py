@@ -36,6 +36,8 @@ __all__ = [
 
 # 모델 이름 → 어댑터 매핑. 모델이 늘면 여기에 추가한다.
 _MODEL_ADAPTERS: dict[str, str] = {
+    "gpt-image-2.5-flare": ADAPTER_OPENAI_IMAGE,
+    "gpt-image-2.5-flare-2026-09-08": ADAPTER_OPENAI_IMAGE,
     "gpt-image-2": ADAPTER_OPENAI_IMAGE,
     "gpt-image-2-low": ADAPTER_OPENAI_IMAGE,
     "gpt-image-2-2026-04-21": ADAPTER_OPENAI_IMAGE,

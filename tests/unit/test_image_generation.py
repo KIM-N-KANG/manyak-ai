@@ -175,16 +175,20 @@ async def test_openai_generate_malformed_base64(monkeypatch: pytest.MonkeyPatch)
 
 # ── 공개 함수(generate_image) 테스트 ─────────────────────────────────────────
 
-async def test_generate_image_routes_to_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("model", [
+    "gpt-image-2-low", "gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08",
+])
+async def test_generate_image_routes_to_openai(monkeypatch: pytest.MonkeyPatch, model: str) -> None:
     """generate_image()가 모델 이름을 보고 OpenAI 어댑터로 분기한다."""
     from src.core.config import settings
-    monkeypatch.setattr(settings, "image_model", "gpt-image-2-low")
+    monkeypatch.setattr(settings, "image_model", model)
     monkeypatch.setattr(settings, "image_timeout", 30.0)
-    _mock_client(monkeypatch)
+    mock = _mock_client(monkeypatch)
 
     result = await generate_image("test prompt", purpose="character")
     assert result.image_bytes == _FAKE_PNG
     assert result.provider == "openai"
+    assert mock.images.generate.call_args.kwargs["model"] == model
 
 
 async def test_generate_image_uses_settings_size_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -264,7 +268,7 @@ def test_registered_models_have_adapters() -> None:
 def _valid_image_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.core.config import settings
 
-    monkeypatch.setattr(settings, "image_model", "gpt-image-2-2026-04-21")
+    monkeypatch.setattr(settings, "image_model", "gpt-image-2.5-flare")
     monkeypatch.setattr(settings, "openai_api_key", "openai-test-key")
     monkeypatch.setattr(settings, "openai_api_url", None)
     monkeypatch.setattr(settings, "image_quality", "low")
@@ -513,6 +517,7 @@ async def test_generate_image_requires_purpose() -> None:
 
 @pytest.mark.parametrize("has_usage", [True, False])
 async def test_child_edit_records_usage_once_without_image_data(monkeypatch, has_usage) -> None:
+    from src.core.config import settings
     from unittest.mock import Mock
     from src.services.image.base import ImageReference
 
@@ -526,11 +531,13 @@ async def test_child_edit_records_usage_once_without_image_data(monkeypatch, has
     edit = AsyncMock(return_value=_FakeResponseWithUsage(usage=usage))
     client.with_options.return_value.images.edit = edit
     monkeypatch.setattr(openai_api, "_client", lambda *a, **kw: client)
-    await openai_api.generate(ImageRequest(
-        model="gpt-image-2", purpose="child", prompt="test prompt",
+    monkeypatch.setattr(settings, "image_model", "gpt-image-2.5-flare")
+    await generate_image(
+        "test prompt", purpose="child",
         reference=ImageReference(_FAKE_PNG, "image/png", "private-parent.png"),
-    ))
+    )
     edit.assert_awaited_once()
+    assert edit.call_args.kwargs["model"] == "gpt-image-2.5-flare"
     assert rec.started["name"] == "이미지 생성:자식"
     assert "private-parent" not in str(rec.started)
     assert _FAKE_B64 not in str(rec.finished)
