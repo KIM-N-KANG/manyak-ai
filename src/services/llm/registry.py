@@ -36,10 +36,14 @@ from src.services.llm.base import (
 # 모아두면 한 모델의 설정을 고칠 때 다른 모델이 같이 바뀐다. 그리고 여기 적는 것은 **뜻**뿐이고
 # 회사별 문법은 어댑터가 만든다 — 공급자가 늘어도 이 표를 고치지 않는다.
 _REGISTRY: dict[str, ResolvedModel] = {
-    # 스토리 컴파일 전용(STORY_COMPILE_MODEL). 비추론 호출 — 창작 태스크에서 추론 모드가
+    # 스토리라인·채팅(STORYLINES_MODEL·CHAT_MODEL). 비추론 호출 — 창작 태스크에서 추론 모드가
     # 출력 외국어 오염·평면화를 일으켜 비추론이 더 안정적이었다(KNK-208 벤치).
-    "deepseek-v4-pro": ResolvedModel(
-        model="deepseek-v4-pro",
+    #
+    # DeepSeek은 2026-09-10에 `deepseek-v4-flash`를 `deepseek-flash`(V4.1 Flash)로 바꿨다(KNK-1195).
+    # 옛 이름은 alias로 남아 호출은 되지만 응답 모델명이 `deepseek-flash`로 돌아와 요청·응답 이름이
+    # 어긋나므로 등록하지 않는다. `deepseek-v4-pro`도 2026-09-14부터 V4.1 Flash로 라우팅돼 지웠다.
+    "deepseek-flash": ResolvedModel(
+        model="deepseek-flash",
         provider=PROVIDER_DEEPSEEK,
         adapter=ADAPTER_OPENAI_SDK,
         use_thinking=False,
@@ -49,48 +53,19 @@ _REGISTRY: dict[str, ResolvedModel] = {
         reasoning_effort=None,
         supported_reasoning_efforts=frozenset({"high", "max"}),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
-        capabilities_verified_on=date(2026, 7, 29),
+        capabilities_verified_on=date(2026, 9, 11),
         capabilities_source_urls=(
             "https://api-docs.deepseek.com/quick_start/pricing",
         ),
         snapshot_model=None,
         pricing=(
             ModelPricing(
-                input_usd_per_1m_tokens=Decimal("0.435"),
-                cache_read_input_usd_per_1m_tokens=Decimal("0.003625"),
-                output_usd_per_1m_tokens=Decimal("0.87"),
+                input_usd_per_1m_tokens=Decimal("0.30"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.006"),
+                output_usd_per_1m_tokens=Decimal("1.20"),
                 source_url="https://api-docs.deepseek.com/quick_start/pricing",
-                verified_on=date(2026, 7, 29),
-                effective_from=date(2026, 4, 24),
-            ),
-        ),
-    ),
-    # 스토리라인·채팅(STORYLINES_MODEL·CHAT_MODEL). 같은 비추론 정책이지만 따로 적는다 —
-    # 첫 토큰 지연이 작아야 하는 경로라 나중에 이 모델만 조정할 여지를 남긴다(KNK-208).
-    "deepseek-v4-flash": ResolvedModel(
-        model="deepseek-v4-flash",
-        provider=PROVIDER_DEEPSEEK,
-        adapter=ADAPTER_OPENAI_SDK,
-        use_thinking=False,
-        supports_temperature=True,
-        context_window_tokens=1_000_000,
-        max_output_tokens=384_000,
-        reasoning_effort=None,
-        supported_reasoning_efforts=frozenset({"high", "max"}),
-        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
-        capabilities_verified_on=date(2026, 7, 29),
-        capabilities_source_urls=(
-            "https://api-docs.deepseek.com/quick_start/pricing",
-        ),
-        snapshot_model=None,
-        pricing=(
-            ModelPricing(
-                input_usd_per_1m_tokens=Decimal("0.14"),
-                cache_read_input_usd_per_1m_tokens=Decimal("0.0028"),
-                output_usd_per_1m_tokens=Decimal("0.28"),
-                source_url="https://api-docs.deepseek.com/quick_start/pricing",
-                verified_on=date(2026, 7, 29),
-                effective_from=date(2026, 4, 24),
+                verified_on=date(2026, 9, 11),
+                effective_from=date(2026, 9, 10),
             ),
         ),
     ),

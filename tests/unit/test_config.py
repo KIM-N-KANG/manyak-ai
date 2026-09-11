@@ -23,8 +23,8 @@ def test_model_defaults(monkeypatch) -> None:
     s = Settings(_env_file=None)
 
     assert s.story_compile_model == "gpt-5.6-terra"
-    assert s.storylines_model == "deepseek-v4-flash"
-    assert s.chat_model == "deepseek-v4-flash"
+    assert s.storylines_model == "deepseek-flash"
+    assert s.chat_model == "deepseek-flash"
 
 
 def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> None:
@@ -38,8 +38,8 @@ def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> Non
     env = tmp_path / ".env"
     env.write_text(
         "DEEPSEEK_API_KEY=test-key\n"
-        "DEEPSEEK_MODEL=deepseek-v4-pro\n"
-        "DEEPSEEK_CHAT_MODEL=deepseek-v4-flash\n",
+        "DEEPSEEK_MODEL=deepseek-v4-flash\n"
+        "DEEPSEEK_CHAT_MODEL=deepseek-flash\n",
         encoding="utf-8",
     )
 
@@ -47,7 +47,7 @@ def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> Non
 
     # 옛 키는 무시되고 기본값이 유지된다
     assert s.story_compile_model == "gpt-5.6-terra"
-    assert s.chat_model == "deepseek-v4-flash"
+    assert s.chat_model == "deepseek-flash"
 
 
 # ── 대체 공급자 접속 정보 (KNK-675, KNK-703) ────────────────────────────────

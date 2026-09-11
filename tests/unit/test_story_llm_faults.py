@@ -181,7 +181,7 @@ async def test_code_fenced_json_passes(monkeypatch, captures) -> None:
 # 결과(502 invalid_ai_response)는 같다. 이 테스트는 그 결과가 유지되는지를 고정한다.
 class _NoChoicesResp:
     choices: list = []
-    model = "deepseek-v4-pro"
+    model = "deepseek-flash"
     usage = _Usage()
 
 
@@ -191,7 +191,7 @@ class _NoneMsgChoice:
 
 class _NoneMsgResp:
     choices = [_NoneMsgChoice()]
-    model = "deepseek-v4-pro"
+    model = "deepseek-flash"
     usage = _Usage()
 
 
@@ -325,7 +325,7 @@ async def test_complete_json_call_contract_compile(monkeypatch) -> None:
 async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
     captured: dict = {}
     # 로컬 .env에서 새 GPT를 실측 중이어도 이 테스트는 이름대로 DeepSeek flash 계약만 검사한다.
-    monkeypatch.setattr(story_llm.settings, "storylines_model", "deepseek-v4-flash")
+    monkeypatch.setattr(story_llm.settings, "storylines_model", "deepseek-flash")
     # storylines 경로는 stories 계약 검증(_validate_storylines)을 타므로 유효한 결과를 돌려준다.
     _install(monkeypatch, _capture(captured, _VALID_STORYLINES_JSON))
     _result, usage = await story_llm.generate_storylines("SYS", "USER")

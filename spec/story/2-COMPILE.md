@@ -1,6 +1,6 @@
 ---
-version: 15
-updated: 2026-09-09
+version: 16
+updated: 2026-09-11
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -29,7 +29,7 @@ updated: 2026-09-09
 |---|---|---|
 | 입력 | 장르 태그 + 인물 설정 | 선택 스토리라인 + 추가정보 + 장르 태그 + 인물 설정 |
 | 출력 | 이야기 3편 + 추천정보 | 스토리 명세 1건(4테이블 + 주요 사건·엔딩) + 인물 외형·인물 이미지·표지 썸네일 + 로깅 메타 |
-| 모델 | `deepseek-v4-flash` | `gpt-5.6-terra` 또는 Gemini Flash(`STORY_COMPILE_MODEL` env) |
+| 모델 | `deepseek-flash` | `gpt-5.6-terra` 또는 Gemini Flash(`STORY_COMPILE_MODEL` env) |
 | 호출 | 단일 호출 | 본호출 + 문제 블록·인물 필드 부분 재호출(최대 2회) |
 
 프롬프트 템플릿은 모델 공급자에 따라 나뉩니다(KNK-958).
