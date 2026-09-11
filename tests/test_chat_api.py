@@ -759,3 +759,118 @@ async def test_child_image_disabled_by_default(client, mock_events, monkeypatch)
     assert response.status_code == 200
     child.assert_not_awaited()
     assert "generatedImage" not in response.text
+
+
+@pytest.mark.parametrize("first", ["image", "judgement"])
+async def test_child_and_judgement_run_concurrently(monkeypatch, mock_events, first) -> None:
+    from contextlib import aclosing
+    from src.services import chat_child_image
+    from src.services.image.generate_child import ChildImageResult
+
+    started_image, started_judgement = asyncio.Event(), asyncio.Event()
+    finish_image, finish_judgement = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def image(inputs):
+        started_image.set()
+        await finish_image.wait()
+        return ChildImageResult("레이", "레이_실시간_test", "data")
+    async def judgement(req, output, budget_seconds=None):
+        calls.append((output, budget_seconds))
+        started_judgement.set()
+        await finish_judgement.wait()
+        return JudgementResult(None, None, None, None, None)
+    monkeypatch.setattr(chat_child_image, "generate_child_image", image)
+    monkeypatch.setattr(chat_module, "generate_judgement", judgement)
+    monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(chat_module, "_JUDGEMENT_PING_INTERVAL_SECONDS", 0.01)
+    mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
+    payload = _payload()
+    payload.update(generate_child_image=True, character_images=[{
+        "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp",
+    }])
+    async with aclosing(chat_module._event_stream(ChatTurnRequest(**payload), {})) as stream:
+        pending = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(asyncio.gather(started_image.wait(), started_judgement.wait()), 1)
+        assert len(calls) == 1 and calls[0][0] == "레이: 안녕."
+        assert 100 < calls[0][1] <= 105
+        if first == "image":
+            finish_image.set()
+            event = await pending
+            while "event: character_image" not in event:
+                event = await anext(stream)
+            assert "event: token" in await anext(stream)
+            assert "event: ping" in await anext(stream)
+            finish_judgement.set()
+        else:
+            finish_judgement.set()
+            assert "event: ping" in await pending
+            finish_image.set()
+        rest = "".join([e async for e in stream])
+        assert "event: completed" in rest
+        assert len(calls) == 1
+
+
+async def test_disconnect_cancels_both_parallel_calls(monkeypatch, mock_events) -> None:
+    from contextlib import aclosing
+    from src.services import chat_child_image
+
+    stopped_image, stopped_judgement = asyncio.Event(), asyncio.Event()
+    async def image(inputs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped_image.set()
+    async def judgement(req, output, budget_seconds=None):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped_judgement.set()
+    monkeypatch.setattr(chat_child_image, "generate_child_image", image)
+    monkeypatch.setattr(chat_module, "generate_judgement", judgement)
+    monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.01)
+    mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
+    payload = _payload()
+    payload.update(generate_child_image=True, character_images=[{
+        "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp",
+    }])
+    async with aclosing(chat_module._event_stream(ChatTurnRequest(**payload), {})) as stream:
+        assert "event: ping" in await anext(stream)
+    assert stopped_image.is_set() and stopped_judgement.is_set()
+
+
+@pytest.mark.parametrize("during_send", [False, True])
+async def test_http_disconnect_waits_for_both_cleanup(monkeypatch, mock_events, during_send) -> None:
+    from src.services import chat_child_image
+
+    stopped = set()
+    async def work(name):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.01)
+            stopped.add(name)
+    async def image(inputs):
+        return await work("image")
+    async def judgement(req, output, budget_seconds=None):
+        return await work("judgement")
+    monkeypatch.setattr(chat_child_image, "generate_child_image", image)
+    monkeypatch.setattr(chat_module, "generate_judgement", judgement)
+    monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.01)
+    mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
+    payload = _payload()
+    payload.update(generate_child_image=True, character_images=[{
+        "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp",
+    }])
+    disconnect = asyncio.Event()
+    async def receive():
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+    async def send(message):
+        if message["type"] == "http.response.body" and b"event: ping" in message.get("body", b""):
+            disconnect.set()
+            if during_send:
+                # 전송 도중 끊기면 다음 anext()가 호출되지 않는다.
+                await asyncio.Event().wait()
+    response = await chat_module.chat_turn(ChatTurnRequest(**payload))
+    await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send), 1)
+    assert stopped == {"image", "judgement"}

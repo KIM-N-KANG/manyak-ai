@@ -85,13 +85,12 @@ async def test_text_failure_does_not_generate(monkeypatch, request_data) -> None
     generate.assert_not_awaited()
 
 
-async def test_deadline_skips_image_and_preserves_parent(monkeypatch, request_data) -> None:
+async def test_expired_deadline_returns_error_without_generation(monkeypatch, request_data) -> None:
     generate = AsyncMock()
     monkeypatch.setattr(service, "generate_child_image", generate)
     result = [e async for e in service.stream_with_child_image(events("라떼: 안녕."), request_data, deadline=0)]
     generate.assert_not_awaited()
-    assert result[0]["generated_image"]["error"] == "timeout"
-    assert result[-1]["event"] == "completed"
+    assert result == [{"event": "error", "code": "LLM_ERROR", "message": "채팅 응답 대기 시간이 초과됐습니다."}]
 
 
 async def test_timeout_cancels_generation(monkeypatch, request_data) -> None:
@@ -153,3 +152,61 @@ async def test_parallel_requests_do_not_share_selected_character(monkeypatch, re
     first, second = await asyncio.gather(run(request_data, "라떼: 안녕."), run(request_data, "모카: 안녕."))
     assert first[0]["generated_image"]["name"] == "라떼"
     assert second[0]["generated_image"]["name"] == "모카"
+
+
+async def test_image_cap_includes_download_and_ignores_late_result(monkeypatch, request_data) -> None:
+    cancelled = asyncio.Event()
+    async def stubborn(inputs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            return ChildImageResult("라떼", "late", "late-data")
+    monkeypatch.setattr(service, "_IMAGE_BUDGET_SECONDS", 0.01)
+    monkeypatch.setattr(service, "generate_child_image", stubborn)
+    result = await run(request_data, "라떼: 안녕.")
+    assert cancelled.is_set()
+    assert result[0]["generated_image"]["error"] == "timeout"
+    assert "late-data" not in str(result)
+    assert result[-1]["event"] == "completed"
+
+
+async def test_body_timeout_closes_source_without_starting_judgement(monkeypatch, request_data) -> None:
+    from unittest.mock import Mock
+    closed = asyncio.Event()
+    async def slow():
+        try:
+            await asyncio.Event().wait()
+            yield {}
+        finally:
+            closed.set()
+    callback = Mock()
+    result = [e async for e in service.stream_with_child_image(
+        slow(), request_data, deadline=time.monotonic()+0.01, on_body_completed=callback,
+    )]
+    assert closed.is_set()
+    assert result[-1]["event"] == "error"
+    callback.assert_not_called()
+
+
+async def test_on_time_image_survives_delayed_delivery(monkeypatch, request_data) -> None:
+    from types import SimpleNamespace
+
+    now = [100.0]
+    finished = asyncio.Event()
+    async def generate(inputs):
+        finished.set()
+        return ChildImageResult("라떼", "라떼_실시간_test", "valid-data")
+    monkeypatch.setattr(service, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(service, "generate_child_image", generate)
+    async with aclosing(service.stream_with_child_image(
+        events("*문이 열린다.*\n라떼: 안녕."), request_data, deadline=205.0,
+    )) as stream:
+        assert (await anext(stream))["event"] == "token"
+        await asyncio.wait_for(finished.wait(), 1)
+        # 생성은 100초에 끝났지만, 앞 지문 전송 후 이미지 차례는 131초에 온다.
+        now[0] = 131.0
+        result = await anext(stream)
+        assert result["event"] == "character_image"
+        assert result["generated_image"]["image_base64"] == "valid-data"
+        assert result["generated_image"]["error"] is None
