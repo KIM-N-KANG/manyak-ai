@@ -86,7 +86,7 @@ class _Usage:
 class _Resp:
     def __init__(self, content, usage=None):
         self.choices = [_Choice(content)]
-        self.model = "deepseek-v4-flash"
+        self.model = "deepseek-flash"
         self.usage = usage
 
 
@@ -209,7 +209,7 @@ async def test_target_in_prior_occurred_nullified(install_llm_sdk) -> None:
 # ── 흡수: 응답 형태 이상(빈 choices·message None)도 턴을 깨지 않는다(F2) ────────
 class _NoChoicesResp:
     choices: list = []
-    model = "deepseek-v4-flash"
+    model = "deepseek-flash"
     usage = None
 
 
@@ -219,7 +219,7 @@ class _NoneMsgChoice:
 
 class _NoneMsgResp:
     choices = [_NoneMsgChoice()]
-    model = "deepseek-v4-flash"
+    model = "deepseek-flash"
     usage = None
 
 

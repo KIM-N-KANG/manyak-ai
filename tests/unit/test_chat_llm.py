@@ -578,8 +578,8 @@ class _MetaChunk:
 async def test_stream_captures_model_and_usage(install_llm_sdk) -> None:
     # 본문 청크 + (choices 빈) usage 전용 마지막 청크에서 model·토큰을 취득해 completed에 싣는다.
     chunks = [
-        _MetaChunk(content="본문", model="deepseek-v4-flash"),
-        _MetaChunk(content=None, model="deepseek-v4-flash", usage=_FakeUsage(11, 22)),
+        _MetaChunk(content="본문", model="deepseek-flash"),
+        _MetaChunk(content=None, model="deepseek-flash", usage=_FakeUsage(11, 22)),
     ]
 
     async def _create(**kwargs):
@@ -590,7 +590,7 @@ async def test_stream_captures_model_and_usage(install_llm_sdk) -> None:
 
     events = [e async for e in stream_chat_turn([])]
     completed = next(e for e in events if e["event"] == "completed")
-    assert completed["model"] == "deepseek-v4-flash"
+    assert completed["model"] == "deepseek-flash"
     assert completed["input_tokens"] == 11
     assert completed["output_tokens"] == 22
     # provider는 응답에 없는 값이라 모델 이름을 등록부로 해석해 싣는다(KNK-674).
@@ -619,8 +619,8 @@ async def test_stream_keeps_usage_without_token_fields_as_null(install_llm_sdk) 
         pass
 
     chunks = [
-        _MetaChunk(content="본문", model="deepseek-v4-flash"),
-        _MetaChunk(content=None, model="deepseek-v4-flash", usage=_FieldlessUsage()),
+        _MetaChunk(content="본문", model="deepseek-flash"),
+        _MetaChunk(content=None, model="deepseek-flash", usage=_FieldlessUsage()),
     ]
 
     async def _create(**kwargs):

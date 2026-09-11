@@ -1,6 +1,6 @@
 ---
-version: 9
-updated: 2026-09-09
+version: 10
+updated: 2026-09-11
 ---
 
 # 스토리라인 생성 시스템 명세
@@ -203,7 +203,7 @@ POST /api/v1/story/storylines
     }
   ],
   "meta": {
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "prompt_versions": { "STORYLINES": 4 },
     "provider": "deepseek",
     "input_token_count": 2100,

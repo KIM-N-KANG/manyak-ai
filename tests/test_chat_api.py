@@ -85,7 +85,7 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
             {"event": "token", "text": "안녕"},
             # provider는 일부러 "deepseek"이 아닌 값을 넣는다 — 둘 다 deepseek이면
             # "제대로 옮긴 값"과 "코드에 박아둔 상수"를 구분할 수 없다(KNK-674 리뷰 H1).
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
              "provider": "not-deepseek"},
         ]
     )
@@ -147,7 +147,7 @@ async def test_chat_turn_serializes_character_image_event(client, mock_events) -
                         "image_url": "https://cdn.example.com/serin.webp",
                     }
                 ],
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "provider": "deepseek",
             },
         ]
@@ -187,7 +187,7 @@ async def test_chat_turn_meta_body_tokens_and_fixed_retry(client, mock_events) -
     # 선택지 분리 후 토큰 합산은 본문(+판정)만이고, retryCount는 0 고정이다 —
     # 선택지 몫(토큰·재호출 횟수)이 completed meta에 섞이지 않는지 고정하는 회귀 그물.
     mock_events(
-        [{"event": "completed", "ai_output": "장면", "model": "deepseek-v4-flash",
+        [{"event": "completed", "ai_output": "장면", "model": "deepseek-flash",
           "provider": "deepseek", "input_tokens": 100, "output_tokens": 40}]
     )
     resp = await client.post("/api/v1/chat/turns", json=_payload())
@@ -211,7 +211,7 @@ async def test_chat_turn_completed_serializes_judgement_meta(
 ) -> None:
     # 재료가 실린 턴: 판정 3필드가 completed까지 camelCase로 직렬화되고, meta.promptVersions에
     # JUDGEMENT 키가 실리며, 판정 토큰이 합산되는지 엔드포인트 전체 흐름으로 확인한다(#3 리뷰 반영).
-    mock_events([{"event": "completed", "ai_output": "장면", "model": "deepseek-v4-flash",
+    mock_events([{"event": "completed", "ai_output": "장면", "model": "deepseek-flash",
                   "provider": "deepseek"}])
     mock_judgement(
         JudgementResult(
@@ -280,7 +280,7 @@ async def test_chat_turn_trace_receives_connection_metadata(
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
              "provider": "deepseek"},
         ]
     )
@@ -364,7 +364,7 @@ async def test_concurrent_chat_turn_streams_keep_connection_metadata_isolated(
         yield {
             "event": "completed",
             "ai_output": "응답",
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-flash",
             "provider": "deepseek",
         }
 
@@ -447,7 +447,7 @@ async def test_chat_turn_does_not_paper_over_an_empty_provider(client, mock_even
             {
                 "event": "completed",
                 "ai_output": "장면",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "provider": "",
             }
         ]
@@ -478,7 +478,7 @@ async def test_chat_turn_pings_while_judgement_is_slow(
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
              "provider": "deepseek"},
         ]
     )
@@ -504,7 +504,7 @@ async def test_chat_turn_does_not_ping_when_judgement_is_fast(
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
              "provider": "deepseek"},
         ]
     )
@@ -538,7 +538,7 @@ async def test_closing_the_stream_cancels_the_judgement_call(
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
              "provider": "deepseek"},
         ]
     )
@@ -576,7 +576,7 @@ async def test_judgement_budget_subtracts_the_time_the_body_took(
     async def _slow_body(messages):
         yield {"event": "token", "text": "안녕"}
         await asyncio.sleep(_BODY_DELAY_SECONDS)  # 본문이 이만큼 걸린 셈
-        yield {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+        yield {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
                "provider": "deepseek"}
 
     async def _capture(req, ai_output, budget_seconds=None):
@@ -613,7 +613,7 @@ async def test_real_constants_still_give_a_fast_turn_the_full_cap(
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
              "provider": "deepseek"},
         ]
     )
@@ -643,7 +643,7 @@ async def test_no_budget_left_still_completes_the_turn(
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
              "provider": "deepseek"},
         ]
     )
@@ -667,7 +667,7 @@ async def test_skipped_judgement_sends_the_target_back_on_the_wire(
     mock_events(
         [
             {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
              "provider": "deepseek"},
         ]
     )
@@ -706,7 +706,7 @@ async def test_ping_payload_comes_from_the_schema(
 
     async def _events(messages):
         yield {"event": "token", "text": "안녕"}
-        yield {"event": "completed", "ai_output": "안녕", "model": "deepseek-v4-flash",
+        yield {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
                "provider": "deepseek"}
 
     monkeypatch.setattr(

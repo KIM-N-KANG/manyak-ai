@@ -57,9 +57,9 @@ def _settings(**overrides: str) -> Settings:
 
 
 # ── 모델 해석 ────────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("model", ["deepseek-v4-pro", "deepseek-v4-flash"])
+@pytest.mark.parametrize("model", ["deepseek-flash"])
 def test_resolve_deepseek_models(model: str) -> None:
-    """실사용 DeepSeek 2종은 deepseek 공급자 + OpenAI SDK 어댑터로 해석된다."""
+    """실사용 DeepSeek 모델은 deepseek 공급자 + OpenAI SDK 어댑터로 해석된다."""
     resolved = registry.resolve(model)
 
     assert resolved.model == model
@@ -104,7 +104,7 @@ def test_resolve_claude_sonnet_5() -> None:
 
 def test_registry_holds_meaning_not_provider_syntax() -> None:
     """호출 특성을 **뜻**으로 담는다 — 회사 문법(extra_body 등)은 등록부에 없고 어댑터가 만든다."""
-    resolved = registry.resolve("deepseek-v4-flash")
+    resolved = registry.resolve("deepseek-flash")
 
     assert resolved.use_thinking is False  # DeepSeek은 비추론으로 부른다(KNK-208 벤치)
     assert resolved.supports_temperature is True
@@ -116,18 +116,16 @@ def test_each_model_declares_its_own_settings() -> None:
 
     두 모델을 각각 단언한다. 나중에 한쪽만 조정해도 다른 쪽 값이 이 테스트로 고정된다.
     """
-    pro = registry.resolve("deepseek-v4-pro")
-    flash = registry.resolve("deepseek-v4-flash")
+    flash = registry.resolve("deepseek-flash")
+    terra = registry.resolve("gpt-5.6-terra")
 
-    assert (pro.use_thinking, pro.supports_temperature) == (False, True)
     assert (flash.use_thinking, flash.supports_temperature) == (False, True)
+    assert (terra.use_thinking, terra.supports_temperature) == (True, False)
 
 
 @pytest.mark.parametrize(
     ("model", "input_price", "cache_read_price", "output_price"),
     [
-        ("deepseek-v4-pro", "0.435", "0.003625", "0.87"),
-        ("deepseek-v4-flash", "0.14", "0.0028", "0.28"),
         ("gpt-5.6-terra", "2.50", "0.25", "15.00"),
         ("gpt-5.6-luna", "1.00", "0.10", "6.00"),
         ("gpt-5.4-mini", "0.75", "0.075", "4.50"),
@@ -158,8 +156,6 @@ def test_every_registered_model_has_pricing() -> None:
 @pytest.mark.parametrize(
     ("model", "context_window", "max_output", "reasoning_effort", "structured_modes"),
     [
-        ("deepseek-v4-pro", 1_000_000, 384_000, None, {STRUCTURED_OUTPUT_JSON_OBJECT}),
-        ("deepseek-v4-flash", 1_000_000, 384_000, None, {STRUCTURED_OUTPUT_JSON_OBJECT}),
         (
             "gpt-5.6-terra",
             1_050_000,
@@ -229,8 +225,7 @@ def test_available_pinned_snapshots_are_recorded() -> None:
     assert registry.resolve("claude-sonnet-5").snapshot_model == "claude-sonnet-5"
     assert registry.resolve("gpt-5.6-terra").snapshot_model is None
     assert registry.resolve("gpt-5.6-luna").snapshot_model is None
-    assert registry.resolve("deepseek-v4-pro").snapshot_model is None
-    assert registry.resolve("deepseek-v4-flash").snapshot_model is None
+    assert registry.resolve("deepseek-flash").snapshot_model is None
 
 
 def test_claude_sonnet_5_pricing_switches_after_introductory_period() -> None:
@@ -252,6 +247,40 @@ def test_claude_sonnet_5_pricing_switches_after_introductory_period() -> None:
         standard.cache_read_input_usd_per_1m_tokens,
         standard.output_usd_per_1m_tokens,
     ) == (Decimal("3.00"), Decimal("3.75"), Decimal("0.30"), Decimal("15.00"))
+
+
+def test_deepseek_flash_pricing_and_capabilities() -> None:
+    """V4.1 Flash로 바뀐 뒤(2026-09-10) 피크 단가·한도를 고정한다(KNK-1195).
+
+    단가표는 시간대 구간이 없어 피크 값을 적는다 — 오프피크(절반) 계산은 Langfuse가
+    `pricing_window` metadata로 한다. 바뀌기 전 날짜에는 단가가 없어야 한다(옛 단가를 물려받지 않음).
+    """
+    flash = registry.resolve("deepseek-flash")
+
+    price = flash.pricing_on(date(2026, 9, 11))
+    assert (
+        price.input_usd_per_1m_tokens,
+        price.cache_read_input_usd_per_1m_tokens,
+        price.output_usd_per_1m_tokens,
+    ) == (Decimal("0.30"), Decimal("0.006"), Decimal("1.20"))
+    assert price.verified_on == date(2026, 9, 11)
+    assert price.effective_from == date(2026, 9, 10)
+    assert price.source_url == "https://api-docs.deepseek.com/quick_start/pricing"
+    with pytest.raises(ValueError):
+        flash.pricing_on(date(2026, 9, 9))
+
+    assert flash.context_window_tokens == 1_000_000
+    assert flash.max_output_tokens == 384_000
+    assert flash.reasoning_effort is None
+    assert flash.structured_output_modes == frozenset({STRUCTURED_OUTPUT_JSON_OBJECT})
+    assert flash.capabilities_verified_on == date(2026, 9, 11)
+
+
+@pytest.mark.parametrize("legacy", ["deepseek-v4-flash", "deepseek-v4-pro"])
+def test_legacy_deepseek_names_are_not_registered(legacy: str) -> None:
+    """옛 이름은 alias라 호출은 되지만 응답 모델명이 달라지므로 등록부에서 뺐다(KNK-1195)."""
+    with pytest.raises(LlmConfigError):
+        registry.resolve(legacy)
 
 
 def test_gpt_5_6_pricing_includes_cache_write_and_long_context_rules() -> None:
@@ -287,7 +316,7 @@ def test_resolve_unknown_model_lists_known_models() -> None:
 
     message = str(exc_info.value)
     assert "deepseek-v9-imaginary" in message
-    assert "deepseek-v4-flash" in message
+    assert "deepseek-flash" in message
 
 
 # ── 공급자 접속 정보 ──────────────────────────────────────────────────────────
@@ -383,7 +412,7 @@ def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypa
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(openai_api_key="", story_compile_model="deepseek-v4-pro"),
+        _settings(openai_api_key="", story_compile_model="deepseek-flash"),
     )
     registry.validate_selected_models()
 
@@ -392,7 +421,7 @@ def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypa
         "settings",
         _settings(
             openai_api_key="",
-            story_compile_model="deepseek-v4-pro",
+            story_compile_model="deepseek-flash",
             storylines_model="gpt-5.6-terra",
         ),
     )
@@ -407,7 +436,7 @@ def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypa
         "settings",
         _settings(
             openai_api_key="openai-key",
-            story_compile_model="deepseek-v4-pro",
+            story_compile_model="deepseek-flash",
             storylines_model="gpt-5.6-terra",
         ),
     )
@@ -419,9 +448,9 @@ def test_selected_models_covers_three_env_vars(monkeypatch) -> None:
     monkeypatch.setattr(registry, "settings", _settings())
 
     assert registry.selected_models() == (
-        ("STORYLINES_MODEL", "deepseek-v4-flash"),
+        ("STORYLINES_MODEL", "deepseek-flash"),
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
-        ("CHAT_MODEL", "deepseek-v4-flash"),
+        ("CHAT_MODEL", "deepseek-flash"),
     )
 
 
@@ -551,10 +580,10 @@ def test_config_error_is_not_a_provider_error() -> None:
 
 def test_provider_error_carries_provider_and_model() -> None:
     """전송 오류는 provider·model을 싣고 다닌다 — 실패 경로엔 결과 객체가 없어 예외가 유일한 출처다."""
-    exc = LlmTimeout("응답 시간 초과", provider=PROVIDER_DEEPSEEK, model="deepseek-v4-flash")
+    exc = LlmTimeout("응답 시간 초과", provider=PROVIDER_DEEPSEEK, model="deepseek-flash")
 
     assert exc.provider == PROVIDER_DEEPSEEK
-    assert exc.model == "deepseek-v4-flash"
+    assert exc.model == "deepseek-flash"
     assert isinstance(exc, LlmError)
 
 
@@ -566,7 +595,7 @@ def test_provider_of_follows_the_model_not_a_fixed_value(other_provider_model) -
     other_provider_model()
 
     assert llm.provider_of("not-deepseek-model") == "not-deepseek"
-    assert llm.provider_of("deepseek-v4-flash") == PROVIDER_DEEPSEEK
+    assert llm.provider_of("deepseek-flash") == PROVIDER_DEEPSEEK
 
 
 def test_provider_of_rejects_unregistered_model() -> None:

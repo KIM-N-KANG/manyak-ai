@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from src.schemas.response_meta import ChatResponseMeta, StoryResponseMeta
 
 _STORY_META_WITHOUT_PROVIDER = {
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "prompt_versions": {"STORYLINES": 1},
     "input_token_count": 10,
     "output_token_count": 20,
@@ -23,7 +23,7 @@ _STORY_META_WITHOUT_PROVIDER = {
 }
 
 _CHAT_META_WITHOUT_PROVIDER = {
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "prompt_versions": {"CORE": 1},
     "input_token_count": 10,
     "output_token_count": 20,

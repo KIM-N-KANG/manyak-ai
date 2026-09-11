@@ -130,6 +130,15 @@ def init_langfuse() -> None:
     logger.info("Langfuse 활성 — host=%s env=%s", host, settings.sentry_environment)
 
 
+def is_enabled() -> bool:
+    """Langfuse 계측이 켜져 있는지. 켜져 있을 때만 openai 호출이 `langfuse.openai` 래퍼를 지난다.
+
+    LLM 어댑터가 Langfuse 전용 인자(`metadata`)를 호출에 붙일지 결정할 때 쓴다 — 래퍼가 없으면
+    그 인자가 공급자 API로 그대로 흘러가므로(KNK-1195), 꺼져 있을 때는 붙이면 안 된다.
+    """
+    return _state.enabled
+
+
 def dimension_tags(
     *,
     genre_tags: list[str] | None = None,
