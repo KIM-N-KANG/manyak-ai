@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     image_quality: str = "low"  # 이미지 화질 (low / medium / high)
     image_size: str = "1024x768"  # 이미지 크기 (가로 4:3)
     image_timeout: float = 60.0  # 이미지 1장 생성 제한 시간(초)
+    # 부모 이미지 다운로드는 관리하는 CDN만 허용한다(JSON 배열 환경변수).
+    image_parent_allowed_hosts: list[str] = ["cdn.manyak.app", "dev-cdn.manyak.app"]
 
     # Sentry 오류 수집 (KNK-262). DSN이 비면 비활성(no-op) — 로컬·CI는 끈다.
     # environment·표본율은 server(SENTRY_ENVIRONMENT/SENTRY_TRACES_SAMPLE_RATE) 규약을 미러링한다.
