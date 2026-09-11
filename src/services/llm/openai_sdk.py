@@ -44,7 +44,8 @@ from src.services.llm.base import (
 # 모듈째 가져온다(`from ... import credentials` 아님). 이름을 직접 묶어두면 테스트가
 # `registry.credentials`를 갈아끼워도 어댑터에는 반영되지 않아, 가짜를 세운 줄 알고 실제 주소로
 # 호출이 나갈 수 있다.
-from src.services.llm import registry
+from src.core import langfuse
+from src.services.llm import deepseek_pricing, registry
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,12 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         kwargs["timeout"] = req.timeout
     provider_kwargs = _provider_kwargs(resolved)
     kwargs.update(provider_kwargs)
+    if resolved.provider == PROVIDER_DEEPSEEK and langfuse.is_enabled():
+        # DeepSeek은 시간대별 단가가 둘이라 Langfuse가 구간을 고를 수 있게 꼬리표를 싣는다
+        # (KNK-1195, `deepseek_pricing` 모듈 docstring). `metadata`는 Langfuse 래퍼 전용 인자다 —
+        # 래퍼가 걷어내고 공급자에는 보내지 않는다. 래퍼가 없을 때(비활성) 붙이면 DeepSeek API로
+        # 그대로 흘러가므로 활성일 때만 붙인다.
+        kwargs["metadata"] = deepseek_pricing.pricing_metadata()
     return kwargs
 
 

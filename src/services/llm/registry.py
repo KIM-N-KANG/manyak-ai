@@ -58,6 +58,10 @@ _REGISTRY: dict[str, ResolvedModel] = {
             "https://api-docs.deepseek.com/quick_start/pricing",
         ),
         snapshot_model=None,
+        # 단가는 시간대에 따라 둘이다 — 피크(UTC 월~금 01:00~04:00·06:00~10:00)와 그 절반인 오프피크.
+        # 이 표는 날짜 구간만 담으므로 **피크 값**을 적는다(비용을 적게 잡는 것보다 안전). 실제 시간대별
+        # 비용 계산은 Langfuse가 한다 — 호출마다 `deepseek_pricing`이 붙인 metadata를 보고
+        # 단가표의 피크·오프피크 구간을 고른다(KNK-1195).
         pricing=(
             ModelPricing(
                 input_usd_per_1m_tokens=Decimal("0.30"),

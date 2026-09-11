@@ -173,6 +173,55 @@ async def test_complete_sends_exact_kwargs(monkeypatch) -> None:
         "extra_body": {"thinking": {"type": "disabled"}},
     }
 
+
+async def test_deepseek_call_carries_pricing_window_only_when_langfuse_is_on(
+    monkeypatch,
+) -> None:
+    """Langfuse가 켜져 있을 때만 DeepSeek 호출에 `metadata={"pricing_window": ...}`를 싣는다(KNK-1195).
+
+    `metadata`는 Langfuse 래퍼가 걷어내는 전용 인자다. 래퍼가 없는 상태(비활성)에서 붙이면
+    DeepSeek API로 그대로 흘러가므로, 꺼져 있으면 아예 넣지 않아야 한다.
+    """
+    completions = _FakeCompletions(result=_response())
+    _install(monkeypatch, completions)
+
+    monkeypatch.setattr(openai_sdk.langfuse, "is_enabled", lambda: False)
+    await openai_sdk.complete(_req(), _FLASH)
+    assert "metadata" not in completions.captured
+
+    monkeypatch.setattr(openai_sdk.langfuse, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        openai_sdk.deepseek_pricing, "pricing_metadata", lambda: {"pricing_window": "peak"}
+    )
+    await openai_sdk.complete(_req(), _FLASH)
+    assert completions.captured["metadata"] == {"pricing_window": "peak"}
+
+
+async def test_pricing_window_is_not_attached_to_other_providers(monkeypatch) -> None:
+    """시간대 단가는 DeepSeek만의 규칙이라 GPT 호출에는 붙이지 않는다."""
+    completions = _FakeCompletions(result=_response(model="gpt-5.6-terra"))
+    _install(monkeypatch, completions)
+    monkeypatch.setattr(openai_sdk.langfuse, "is_enabled", lambda: True)
+
+    await openai_sdk.complete(_req(model="gpt-5.6-terra"), _GPT)
+
+    assert "metadata" not in completions.captured
+
+
+async def test_stream_carries_pricing_window_too(monkeypatch) -> None:
+    """스트리밍 호출도 같은 조립기를 쓰므로 꼬리표가 같이 실린다."""
+    completions = _FakeCompletions(result=_agen([_chunk("가")]))
+    _install(monkeypatch, completions)
+    monkeypatch.setattr(openai_sdk.langfuse, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        openai_sdk.deepseek_pricing, "pricing_metadata", lambda: {"pricing_window": "off_peak"}
+    )
+
+    [ev async for ev in openai_sdk.stream(_req(), _FLASH)]
+
+    assert completions.captured["metadata"] == {"pricing_window": "off_peak"}
+
+
 async def test_complete_omits_absent_values(monkeypatch) -> None:
     """값이 없는 인자는 아예 넣지 않는다 — SDK 기본값에 맡긴다."""
     completions = _FakeCompletions(result=_response())
