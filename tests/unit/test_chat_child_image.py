@@ -65,6 +65,29 @@ async def test_generation_failure_keeps_parent_and_completes(monkeypatch, reques
     assert result[-1]["character_images"][0]["image_name"] == "라떼_기본"
 
 
+@pytest.mark.parametrize("exception", [RuntimeError, ValueError])
+async def test_unexpected_image_error_keeps_parent_and_completes(monkeypatch, request_data, exception) -> None:
+    monkeypatch.setattr(service, "generate_child_image", AsyncMock(side_effect=exception("private-error-detail")))
+    observation = service.ChildImageObservation()
+    result = [event async for event in service.stream_with_child_image(
+        events("라떼: 안녕.\n모카: 반가워."), request_data,
+        deadline=time.monotonic()+5, observation=observation,
+    )]
+    images = [event for event in result if event["event"] == "character_image"]
+    assert images[0]["image_name"] == "라떼_기본"
+    assert images[0]["image_url"] == request_data.character_images[0].image_url
+    assert images[0]["generated_image"]["error"] == "generation_failed"
+    assert images[0]["generated_image"]["image_base64"] is None
+    assert "generated_image" not in images[1]
+    assert result[-1]["event"] == "completed"
+    assert "라떼: 안녕." in result[-1]["ai_output"]
+    assert "모카: 반가워." in result[-1]["ai_output"]
+    assert result[-1]["character_images"][0]["image_name"] == "라떼_기본"
+    assert (observation.status, observation.reason) == ("failed", "unexpected_error")
+    assert observation.duration_ms is not None and observation.parent_fallback
+    assert "private-error-detail" not in str(result) + str(observation)
+
+
 @pytest.mark.parametrize("text", ["*아무도 말하지 않는다.*", "행인: 안녕."])
 async def test_no_eligible_speaker_does_not_generate(monkeypatch, request_data, text) -> None:
     generate = AsyncMock()

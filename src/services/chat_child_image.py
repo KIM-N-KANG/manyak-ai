@@ -80,9 +80,13 @@ async def _generate_before_deadline(
         observation.status, observation.reason = "cancelled", "cancelled"
         raise
     except Exception:
-        # 본작업 예외는 그대로 전파하며 원문 대신 고정된 분류만 기록한다.
+        # 이미지 내부 오류도 채팅 완료를 막지 않는다. 원문 대신 고정된 분류만 기록한다.
         observation.status, observation.reason = "failed", "unexpected_error"
-        raise
+        return ChildImageResult(
+            name=inputs.parent_image.name,
+            image_name=f"{inputs.parent_image.name}_실시간_{uuid4()}",
+            error="generation_failed",
+        )
     finally:
         observation.duration_ms = round((time.monotonic() - started) * 1000, 2)
 
