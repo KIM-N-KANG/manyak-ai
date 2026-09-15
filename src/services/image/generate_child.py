@@ -33,6 +33,7 @@ class ChildImageResult:
     image_base64: str | None = None
     content_type: str = "image/webp"
     error: str | None = None
+    image_url: str | None = None
 
 
 def _reference(data: bytes) -> ImageReference:

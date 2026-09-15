@@ -30,6 +30,19 @@ def _image_slots() -> list[dict]:
              "public_url": "https://cdn.manyak.app/chat-images/test/turn-1.webp"}]
 
 
+@pytest.fixture(autouse=True)
+def uploaded_child(monkeypatch):
+    from src.services import chat_child_image
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "image_upload_allowed_hosts", ["bucket.s3.amazonaws.com"])
+
+    async def upload(child, slot):
+        return child
+
+    monkeypatch.setattr(chat_child_image, "upload_child_image", upload)
+
+
 def _payload() -> dict:
     return {
         "genre": "판타지",

@@ -22,7 +22,7 @@ def request_data() -> ChatTurnRequest:
     return ChatTurnRequest(
         genre="판타지", story_settings=dict(world_setting="", character_setting="", user_role_setting="", rule_setting=""),
         start_settings=dict(name="", prologue="", start_situation=""), summary="",
-        user_input="안녕", generate_child_image=True,
+        user_input="안녕", image_slots=[dict(key="test.webp", upload_url="https://bucket.s3.amazonaws.com/test.webp", public_url="https://cdn.manyak.app/test.webp")],
         character_images=[image("라떼"), image("모카"), image("라떼", "웃음")],
     )
 
@@ -32,8 +32,39 @@ async def events(text: str):
     yield {"event": "completed", "ai_output": text, "character_images": [], "model": "test", "provider": "openai"}
 
 
+@pytest.fixture(autouse=True)
+def uploaded(monkeypatch):
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "image_upload_allowed_hosts", ["bucket.s3.amazonaws.com"])
+    async def upload(child, slot):
+        return child
+    monkeypatch.setattr(service, "upload_child_image", upload)
+
+
 async def run(req: ChatTurnRequest, text: str) -> list[dict]:
     return [event async for event in service.stream_with_child_image(events(text), req, deadline=time.monotonic() + 5)]
+
+
+@pytest.mark.parametrize("allowed_hosts", [[], ["other.s3.amazonaws.com"]])
+async def test_invalid_upload_target_skips_generation_and_keeps_parent(monkeypatch, request_data, allowed_hosts):
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "image_upload_allowed_hosts", allowed_hosts)
+    generate, upload = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(service, "generate_child_image", generate)
+    monkeypatch.setattr(service, "upload_child_image", upload)
+    observation = service.ChildImageObservation()
+    result = [event async for event in service.stream_with_child_image(
+        events("라떼: 안녕."), request_data, deadline=time.monotonic() + 5, observation=observation,
+    )]
+    generate.assert_not_awaited()
+    upload.assert_not_awaited()
+    assert result[0]["image_url"] == request_data.character_images[0].image_url
+    assert result[-1]["event"] == "completed"
+    assert request_data.character_images[0].image_url in result[-1]["ai_output"]
+    assert result[-1]["character_images"][0]["image_name"] == "라떼_기본"
+    assert observation.reason == "invalid_upload_url" and observation.parent_fallback
 
 
 async def test_child_once_at_first_eligible_speaker_and_full_current_turn(monkeypatch, request_data) -> None:
@@ -63,6 +94,39 @@ async def test_generation_failure_keeps_parent_and_completes(monkeypatch, reques
     assert result[0]["generated_image"]["error"] == error
     assert result[-1]["event"] == "completed"
     assert result[-1]["character_images"][0]["image_name"] == "라떼_기본"
+
+
+@pytest.mark.parametrize("status", [204, 403, 500])
+async def test_real_upload_result_reaches_chat_completion(monkeypatch, request_data, status) -> None:
+    import base64
+    import httpx
+    from src.core.config import settings
+    from src.services.image import upload_child
+
+    requests = []
+    def send(request):
+        requests.append(request)
+        return httpx.Response(status)
+
+    monkeypatch.setattr(settings, "image_upload_allowed_hosts", ["bucket.s3.amazonaws.com"])
+    monkeypatch.setattr(upload_child.httpx, "AsyncHTTPTransport", lambda **kwargs: httpx.MockTransport(send))
+    monkeypatch.setattr(service, "upload_child_image", upload_child.upload_child_image)
+    monkeypatch.setattr(service, "generate_child_image", AsyncMock(return_value=ChildImageResult(
+        "라떼", "라떼_실시간_test", base64.b64encode(b"image-bytes").decode(),
+    )))
+    result = await run(request_data, "라떼: 안녕.")
+    assert len(requests) == 1
+    assert result[-1]["event"] == "completed"
+    child = result[0]["generated_image"]
+    if status == 204:
+        assert child["image_url"] == request_data.image_slots[0].public_url
+        assert child["error"] is None
+    else:
+        assert child["error"] == "generation_failed"
+        assert child["image_base64"] is None
+        assert result[0]["image_url"] == request_data.character_images[0].image_url
+        assert result[-1]["character_images"][0]["image_name"] == "라떼_기본"
+        assert request_data.character_images[0].image_url in result[-1]["ai_output"]
 
 
 @pytest.mark.parametrize("exception", [RuntimeError, ValueError])

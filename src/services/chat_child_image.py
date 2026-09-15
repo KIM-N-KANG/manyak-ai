@@ -7,16 +7,18 @@ from contextlib import aclosing
 from dataclasses import asdict, dataclass
 from uuid import uuid4
 
+import httpx
 from anyio import CancelScope
 
 from src.schemas.chat_turn import (
-    EVENT_CHARACTER_IMAGE, EVENT_COMPLETED, EVENT_ERROR, EVENT_PING, ChatTurnRequest,
+    EVENT_CHARACTER_IMAGE, EVENT_COMPLETED, EVENT_ERROR, EVENT_PING, ChatImageSlot, ChatTurnRequest,
 )
 from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.chat_llm import render_chat_images
 from src.services.image.child_input import ChildImageInput, build_child_image_input
 from src.services.image.child_prompt import CHILD_IMAGE_VERSION
 from src.services.image.generate_child import ChildImageResult, generate_child_image
+from src.services.image.upload_child import upload_child_image, validate_upload_url
 
 _PING_INTERVAL_SECONDS = 10.0
 _IMAGE_BUDGET_SECONDS = 30.0
@@ -56,10 +58,13 @@ async def _pings_until_done(task: asyncio.Task) -> AsyncIterator[dict]:
 
 
 async def _generate_before_deadline(
-    inputs: ChildImageInput, deadline: float, observation: ChildImageObservation,
+    inputs: ChildImageInput, deadline: float, observation: ChildImageObservation, slot: ChatImageSlot,
 ) -> ChildImageResult:
     async def generate() -> ChildImageResult:
         result = await generate_child_image(inputs)
+        if time.monotonic() > deadline:
+            raise TimeoutError("자식 이미지 생성 시간 초과")
+        result = await upload_child_image(result, slot)
         # 완료 시각을 검사해 취소를 무시하고 늦게 반환한 결과도 거른다.
         if time.monotonic() > deadline:
             raise TimeoutError("자식 이미지 생성 시간 초과")
@@ -68,6 +73,15 @@ async def _generate_before_deadline(
     started = time.monotonic()
     observation.status, observation.reason = "running", None
     try:
+        try:
+            validate_upload_url(slot)
+        except (ValueError, httpx.InvalidURL):
+            observation.status, observation.reason = "skipped", "invalid_upload_url"
+            return ChildImageResult(
+                name=inputs.parent_image.name,
+                image_name=f"{inputs.parent_image.name}_실시간_{uuid4()}",
+                error="generation_failed",
+            )
         result = await asyncio.wait_for(generate(), timeout=deadline - started)
         observation.status = "failed" if result.error else "success"
         observation.reason = result.error
@@ -138,7 +152,7 @@ async def stream_with_child_image(
     image_deadline = min(deadline, time.monotonic() + _IMAGE_BUDGET_SECONDS)
     if inputs is not None and image_deadline > time.monotonic():
         generating = asyncio.create_task(
-            _generate_before_deadline(inputs, image_deadline, observation),
+            _generate_before_deadline(inputs, image_deadline, observation, req.image_slots[0]),
         )
     try:
         for event in rendered:
