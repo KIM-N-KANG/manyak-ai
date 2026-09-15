@@ -30,6 +30,35 @@ def _image_slots() -> list[dict]:
              "public_url": "https://cdn.manyak.app/chat-images/test/turn-1.webp"}]
 
 
+@pytest.mark.parametrize("endpoint", ["turns", "choices"])
+@pytest.mark.parametrize("invalid", ["missing_key", "too_many", "bad_url", "missing_genre"])
+async def test_validation_error_hides_signed_url(client, endpoint, invalid) -> None:
+    payload = {**_payload(), "image_slots": _image_slots(), "ai_output": "test"}
+    if invalid == "missing_key":
+        del payload["image_slots"][0]["key"]
+    elif invalid == "too_many":
+        payload["image_slots"] *= 2
+    elif invalid == "bad_url":
+        payload["image_slots"][0]["upload_url"] += "#invalid"
+    else:
+        del payload["genre"]
+    response = await client.post(f"/api/v1/chat/{endpoint}", json=payload)
+    assert response.status_code == 422
+    assert "signature=test" not in response.text
+    errors = response.json()["detail"]
+    assert errors
+    assert all(set(error) == {"type", "loc", "msg"} for error in errors)
+    assert errors[0]["loc"][:2] == ["body", "genre" if invalid == "missing_genre" else "image_slots"]
+    assert errors[0]["type"] == {"missing_key": "missing", "too_many": "too_long",
+                                 "bad_url": "value_error", "missing_genre": "missing"}[invalid]
+
+
+async def test_non_chat_validation_keeps_default_error_format(client) -> None:
+    response = await client.post("/api/v1/story/storylines", json={})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["input"] == {}
+
+
 @pytest.fixture(autouse=True)
 def uploaded_child(monkeypatch):
     from src.services import chat_child_image
