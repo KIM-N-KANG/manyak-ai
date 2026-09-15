@@ -41,7 +41,6 @@ from src.schemas.chat_turn import (
     EVENT_PING,
     EVENT_TOKEN,
     CharacterImageData,
-    GeneratedChildImageData,
     ChatTurnRequest,
     CompletedData,
     ErrorData,
@@ -157,10 +156,6 @@ async def _event_stream(
                             image_name=ev["image_name"],
                             image_url=ev["image_url"],
                         ).model_dump(by_alias=True)
-                        if "generated_image" in ev:
-                            payload["generatedImage"] = GeneratedChildImageData(
-                                **ev["generated_image"]
-                            ).model_dump(by_alias=True)
                         yield _sse(name, payload)
                     elif name == EVENT_PING:
                         yield _sse(name, PingData().model_dump())

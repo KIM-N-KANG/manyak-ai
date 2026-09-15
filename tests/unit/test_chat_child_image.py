@@ -38,7 +38,8 @@ def uploaded(monkeypatch):
 
     monkeypatch.setattr(settings, "image_upload_allowed_hosts", ["bucket.s3.amazonaws.com"])
     async def upload(child, slot):
-        return child
+        from dataclasses import replace
+        return child if child.error else replace(child, image_url=slot.public_url)
     monkeypatch.setattr(service, "upload_child_image", upload)
 
 
@@ -73,13 +74,13 @@ async def test_child_once_at_first_eligible_speaker_and_full_current_turn(monkey
     monkeypatch.setattr(service, "generate_child_image", generate)
     result = await run(request_data, text)
     assert result[0] == {"event": "token", "text": "*문이 열린다.*\n행인: 안녕.\n"}
-    assert result[1]["generated_image"]["image_base64"] == "base64"
-    assert result[1]["image_name"] == "라떼_기본"
+    assert "generated_image" not in result[1]
+    assert result[1]["image_name"] == "라떼_실시간_test"
     assert result[2]["text"].startswith("라떼:")
     images = [e for e in result if e["event"] == "character_image"]
     assert [e["name"] for e in images] == ["라떼", "모카"]
     assert "generated_image" not in images[1]
-    assert result[-1]["ai_output"].count("[[https://cdn.manyak.app/라떼_기본.webp]]") == 1
+    assert result[-1]["ai_output"].count(f"[[{request_data.image_slots[0].public_url}]]") == 1
     assert "base64" not in str(result[-1])
     generate.assert_awaited_once()
     assert generate.call_args.args[0].current_turn.ai_response == text
@@ -91,7 +92,7 @@ async def test_generation_failure_keeps_parent_and_completes(monkeypatch, reques
     monkeypatch.setattr(service, "generate_child_image", AsyncMock(return_value=ChildImageResult("라떼", "라떼_실시간_test", error=error)))
     result = await run(request_data, "라떼: 안녕.")
     assert result[0]["image_name"] == "라떼_기본"
-    assert result[0]["generated_image"]["error"] == error
+    assert "generated_image" not in result[0]
     assert result[-1]["event"] == "completed"
     assert result[-1]["character_images"][0]["image_name"] == "라떼_기본"
 
@@ -117,13 +118,12 @@ async def test_real_upload_result_reaches_chat_completion(monkeypatch, request_d
     result = await run(request_data, "라떼: 안녕.")
     assert len(requests) == 1
     assert result[-1]["event"] == "completed"
-    child = result[0]["generated_image"]
+    child = result[0]
     if status == 204:
         assert child["image_url"] == request_data.image_slots[0].public_url
-        assert child["error"] is None
+        assert "generated_image" not in child
     else:
-        assert child["error"] == "generation_failed"
-        assert child["image_base64"] is None
+        assert "generated_image" not in child
         assert result[0]["image_url"] == request_data.character_images[0].image_url
         assert result[-1]["character_images"][0]["image_name"] == "라떼_기본"
         assert request_data.character_images[0].image_url in result[-1]["ai_output"]
@@ -140,8 +140,7 @@ async def test_unexpected_image_error_keeps_parent_and_completes(monkeypatch, re
     images = [event for event in result if event["event"] == "character_image"]
     assert images[0]["image_name"] == "라떼_기본"
     assert images[0]["image_url"] == request_data.character_images[0].image_url
-    assert images[0]["generated_image"]["error"] == "generation_failed"
-    assert images[0]["generated_image"]["image_base64"] is None
+    assert "generated_image" not in images[0]
     assert "generated_image" not in images[1]
     assert result[-1]["event"] == "completed"
     assert "라떼: 안녕." in result[-1]["ai_output"]
@@ -190,7 +189,7 @@ async def test_timeout_cancels_generation(monkeypatch, request_data) -> None:
     monkeypatch.setattr(service, "generate_child_image", slow)
     result = [e async for e in service.stream_with_child_image(events("라떼: 안녕."), request_data, deadline=time.monotonic()+0.02)]
     assert cancelled.is_set()
-    assert result[0]["generated_image"]["error"] == "timeout"
+    assert result[0]["image_name"] == "라떼_기본"
     assert result[-1]["event"] == "completed"
 
 
@@ -237,8 +236,29 @@ async def test_parallel_requests_do_not_share_selected_character(monkeypatch, re
         return ChildImageResult(name, f"{name}_실시간_test", "data")
     monkeypatch.setattr(service, "generate_child_image", generate)
     first, second = await asyncio.gather(run(request_data, "라떼: 안녕."), run(request_data, "모카: 안녕."))
-    assert first[0]["generated_image"]["name"] == "라떼"
-    assert second[0]["generated_image"]["name"] == "모카"
+    assert first[0]["name"] == "라떼"
+    assert second[0]["name"] == "모카"
+
+
+async def test_child_replaces_only_selected_character_with_shared_parent_url(monkeypatch, request_data):
+    shared = "https://cdn.manyak.app/shared.webp"
+    request_data.character_images = [
+        CharacterImageMapping(name=name, image_name=f"{name}_기본", image_url=shared)
+        for name in ("라떼", "모카")
+    ]
+    original = request_data.model_dump()
+    monkeypatch.setattr(service, "generate_child_image", AsyncMock(return_value=ChildImageResult(
+        "라떼", "라떼_실시간_test", "private-base64",
+    )))
+    result = await run(request_data, "*문이 열린다.*\n라떼: 안녕.\n모카: 반가워.\n라떼: 들어와.")
+    images = [event for event in result if event["event"] == "character_image"]
+    completed = result[-1]
+    assert [item["image_url"] for item in images] == [request_data.image_slots[0].public_url, shared]
+    assert completed["character_images"] == [{key: value for key, value in event.items() if key != "event"} for event in images]
+    assert completed["ai_output"].count(f"[[{shared}]]") == 1
+    assert completed["ai_output"].count(f"[[{request_data.image_slots[0].public_url}]]") == 1
+    assert "private-base64" not in str(result) and "generated_image" not in str(result)
+    assert request_data.model_dump() == original
 
 
 async def test_image_cap_includes_download_and_ignores_late_result(monkeypatch, request_data) -> None:
@@ -253,7 +273,7 @@ async def test_image_cap_includes_download_and_ignores_late_result(monkeypatch, 
     monkeypatch.setattr(service, "generate_child_image", stubborn)
     result = await run(request_data, "라떼: 안녕.")
     assert cancelled.is_set()
-    assert result[0]["generated_image"]["error"] == "timeout"
+    assert result[0]["image_name"] == "라떼_기본"
     assert "late-data" not in str(result)
     assert result[-1]["event"] == "completed"
 
@@ -295,8 +315,8 @@ async def test_on_time_image_survives_delayed_delivery(monkeypatch, request_data
         now[0] = 131.0
         result = await anext(stream)
         assert result["event"] == "character_image"
-        assert result["generated_image"]["image_base64"] == "valid-data"
-        assert result["generated_image"]["error"] is None
+        assert result["image_url"] == request_data.image_slots[0].public_url
+        assert "generated_image" not in result
 
 
 @pytest.mark.parametrize("text,reason", [("행인: 안녕.", "no_parent"), ("*조용하다.*", "no_parent")])
