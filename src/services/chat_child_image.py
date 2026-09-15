@@ -4,19 +4,21 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from uuid import uuid4
 
+import httpx
 from anyio import CancelScope
 
 from src.schemas.chat_turn import (
-    EVENT_CHARACTER_IMAGE, EVENT_COMPLETED, EVENT_ERROR, EVENT_PING, ChatTurnRequest,
+    EVENT_CHARACTER_IMAGE, EVENT_COMPLETED, EVENT_ERROR, EVENT_PING, CharacterImageMapping, ChatImageSlot, ChatTurnRequest,
 )
 from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.chat_llm import render_chat_images
 from src.services.image.child_input import ChildImageInput, build_child_image_input
 from src.services.image.child_prompt import CHILD_IMAGE_VERSION
 from src.services.image.generate_child import ChildImageResult, generate_child_image
+from src.services.image.upload_child import upload_child_image, validate_upload_url
 
 _PING_INTERVAL_SECONDS = 10.0
 _IMAGE_BUDGET_SECONDS = 30.0
@@ -56,10 +58,13 @@ async def _pings_until_done(task: asyncio.Task) -> AsyncIterator[dict]:
 
 
 async def _generate_before_deadline(
-    inputs: ChildImageInput, deadline: float, observation: ChildImageObservation,
+    inputs: ChildImageInput, deadline: float, observation: ChildImageObservation, slot: ChatImageSlot,
 ) -> ChildImageResult:
     async def generate() -> ChildImageResult:
         result = await generate_child_image(inputs)
+        if time.monotonic() > deadline:
+            raise TimeoutError("자식 이미지 생성 시간 초과")
+        result = await upload_child_image(result, slot)
         # 완료 시각을 검사해 취소를 무시하고 늦게 반환한 결과도 거른다.
         if time.monotonic() > deadline:
             raise TimeoutError("자식 이미지 생성 시간 초과")
@@ -68,6 +73,15 @@ async def _generate_before_deadline(
     started = time.monotonic()
     observation.status, observation.reason = "running", None
     try:
+        try:
+            validate_upload_url(slot)
+        except (ValueError, httpx.InvalidURL):
+            observation.status, observation.reason = "skipped", "invalid_upload_url"
+            return ChildImageResult(
+                name=inputs.parent_image.name,
+                image_name=f"{inputs.parent_image.name}_실시간_{uuid4()}",
+                error="generation_failed",
+            )
         result = await asyncio.wait_for(generate(), timeout=deadline - started)
         observation.status = "failed" if result.error else "success"
         observation.reason = result.error
@@ -98,8 +112,8 @@ async def stream_with_child_image(
 ) -> AsyncIterator[dict]:
     """본문 전체를 확보한 뒤 앞 지문 → 이미지 → 대사 → completed 순서로 전달한다.
 
-    generated_image는 이미지 이벤트에만 한 번 싣는다. 저장 URL을 모르는 AI는 부모 URL로
-    본문과 목록을 완성하며, 백엔드가 저장 성공 시 해당 인물의 마커와 목록을 함께 바꾼다.
+    업로드 성공 시 해당 인물의 이벤트·본문·목록에 자식 주소를 반영한다.
+    실패 시 부모를 유지하며 이미지 데이터는 응답에 싣지 않는다.
     """
     if observation is None:
         observation = ChildImageObservation()
@@ -138,7 +152,7 @@ async def stream_with_child_image(
     image_deadline = min(deadline, time.monotonic() + _IMAGE_BUDGET_SECONDS)
     if inputs is not None and image_deadline > time.monotonic():
         generating = asyncio.create_task(
-            _generate_before_deadline(inputs, image_deadline, observation),
+            _generate_before_deadline(inputs, image_deadline, observation, req.image_slots[0]),
         )
     try:
         for event in rendered:
@@ -161,8 +175,17 @@ async def stream_with_child_image(
                         name=inputs.parent_image.name,
                         image_name=f"{inputs.parent_image.name}_실시간_{uuid4()}", error="timeout",
                     )
-                observation.parent_fallback = child.error is not None
-                event = {**event, "generated_image": asdict(child)}
+                observation.parent_fallback = child.error is not None or not child.image_url
+                if not observation.parent_fallback:
+                    event = {**event, "image_name": child.image_name, "image_url": child.image_url}
+                    # URL 전체 치환은 같은 부모 URL을 쓰는 다른 인물까지 바꾼다.
+                    # 대상 인물의 매핑만 교체해 기존 마커 생성 규칙으로 본문을 다시 만든다.
+                    mappings = [
+                        CharacterImageMapping(name=item.name, image_name=child.image_name, image_url=child.image_url)
+                        if item.name == inputs.parent_image.name else item
+                        for item in req.character_images
+                    ]
+                    _, stored, displayed = render_chat_images(text, mappings)
             yield event
         yield {**completed, "ai_output": stored, "character_images": displayed}
     finally:

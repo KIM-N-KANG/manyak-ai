@@ -1,7 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from starlette.responses import Response
 
 from src.api.router import api_router
 from src.core.config import settings
@@ -50,6 +53,18 @@ app = FastAPI(
     debug=settings.debug,
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def chat_validation_error(request: Request, exc: RequestValidationError) -> Response:
+    """채팅 검증 실패 시 서명 URL이 포함될 수 있는 입력값을 응답에서 제외한다."""
+    if request.url.path in ("/api/v1/chat/turns", "/api/v1/chat/choices"):
+        # 필수 필드 누락은 슬롯이 아닌 요청 본문 전체를 input에 담을 수 있다.
+        errors = [{key: error[key] for key in ("type", "loc", "msg") if key in error}
+                  for error in exc.errors()]
+        exc = RequestValidationError(errors)
+    return await request_validation_exception_handler(request, exc)
+
 
 # 백엔드가 헤더로 넘긴 요청 상관관계 식별자를 요청 단위 context로 옮긴다(KNK-266).
 app.add_middleware(RequestContextMiddleware)

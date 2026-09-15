@@ -24,6 +24,55 @@ from src.services.chat_judgement import JudgementResult
 from tests.conftest import FakeStream
 
 
+def _image_slots() -> list[dict]:
+    return [{"key": "chat-images/test/turn-1.webp",
+             "upload_url": "https://bucket.s3.amazonaws.com/chat-images/test/turn-1.webp?signature=test",
+             "public_url": "https://cdn.manyak.app/chat-images/test/turn-1.webp"}]
+
+
+@pytest.mark.parametrize("endpoint", ["turns", "choices"])
+@pytest.mark.parametrize("invalid", ["missing_key", "too_many", "bad_url", "missing_genre"])
+async def test_validation_error_hides_signed_url(client, endpoint, invalid) -> None:
+    payload = {**_payload(), "image_slots": _image_slots(), "ai_output": "test"}
+    if invalid == "missing_key":
+        del payload["image_slots"][0]["key"]
+    elif invalid == "too_many":
+        payload["image_slots"] *= 2
+    elif invalid == "bad_url":
+        payload["image_slots"][0]["upload_url"] += "#invalid"
+    else:
+        del payload["genre"]
+    response = await client.post(f"/api/v1/chat/{endpoint}", json=payload)
+    assert response.status_code == 422
+    assert "signature=test" not in response.text
+    errors = response.json()["detail"]
+    assert errors
+    assert all(set(error) == {"type", "loc", "msg"} for error in errors)
+    assert errors[0]["loc"][:2] == ["body", "genre" if invalid == "missing_genre" else "image_slots"]
+    assert errors[0]["type"] == {"missing_key": "missing", "too_many": "too_long",
+                                 "bad_url": "value_error", "missing_genre": "missing"}[invalid]
+
+
+async def test_non_chat_validation_keeps_default_error_format(client) -> None:
+    response = await client.post("/api/v1/story/storylines", json={})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["input"] == {}
+
+
+@pytest.fixture(autouse=True)
+def uploaded_child(monkeypatch):
+    from src.services import chat_child_image
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "image_upload_allowed_hosts", ["bucket.s3.amazonaws.com"])
+
+    async def upload(child, slot):
+        from dataclasses import replace
+        return child if child.error else replace(child, image_url=slot.public_url)
+
+    monkeypatch.setattr(chat_child_image, "upload_child_image", upload)
+
+
 def _payload() -> dict:
     return {
         "genre": "판타지",
@@ -311,7 +360,7 @@ async def test_chat_turn_trace_receives_connection_metadata(
     assert resp.status_code == 200
     assert captured["name"] == "채팅 턴"
     assert captured["input_data"] == ChatTurnRequest.model_validate(payload).model_dump(
-        mode="json"
+        mode="json", exclude={"image_slots"}
     )
     assert captured["metadata"] == {
         "creation_id": "11111111-1111-1111-1111-111111111111",
@@ -729,7 +778,8 @@ async def test_ping_payload_comes_from_the_schema(
     assert _data_of(body, "ping") == PingData().model_dump() == {}
 
 
-async def test_child_image_opt_in_emits_data_once_and_parent_storage(client, mock_events, monkeypatch) -> None:
+@pytest.mark.parametrize("legacy_flag", [None, False, True])
+async def test_child_image_slot_emits_uploaded_url_without_image_data(client, mock_events, monkeypatch, legacy_flag) -> None:
     from unittest.mock import AsyncMock
     from src.services import chat_child_image
     from src.services.image.generate_child import ChildImageResult
@@ -741,33 +791,48 @@ async def test_child_image_opt_in_emits_data_once_and_parent_storage(client, moc
         {"event": "completed", "ai_output": "*문이 열린다.*\n레이: 안녕."},
     ])
     payload = _payload()
-    payload["generate_child_image"] = True
+    payload["image_slots"] = _image_slots()
+    if legacy_flag is not None:
+        payload["generate_child_image"] = legacy_flag
     payload["character_images"] = [{"name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp"}]
     response = await client.post("/api/v1/chat/turns", json=payload)
     image = _data_of(response.text, "character_image")
-    assert image["imageUrl"] == "https://cdn.manyak.app/parent.webp"
-    assert image["generatedImage"] == {
-        "name": "레이", "imageName": "레이_실시간_test", "imageBase64": "image-data",
-        "contentType": "image/webp", "error": None,
-    }
-    assert response.text.count("image-data") == 1
+    assert image["imageUrl"] == payload["image_slots"][0]["public_url"]
+    assert image["imageName"] == "레이_실시간_test"
+    assert "generatedImage" not in response.text and "image-data" not in response.text
     completed = _data_of(response.text, "completed")
-    assert completed["aiOutput"] == "*문이 열린다.*\n[[https://cdn.manyak.app/parent.webp]]\n\n레이: 안녕."
-    assert "generatedImage" not in completed["characterImages"][0]
+    assert completed["characterImages"] == [image]
+    assert f'[[{image["imageUrl"]}]]' in completed["aiOutput"]
+    assert "parent.webp" not in completed["aiOutput"]
     child.assert_awaited_once()
 
 
-async def test_child_image_disabled_by_default(client, mock_events, monkeypatch) -> None:
+@pytest.mark.parametrize("legacy_flag", [False, True])
+@pytest.mark.parametrize("slots", [None, []])
+async def test_child_image_disabled_without_slots(client, mock_events, monkeypatch, legacy_flag, slots) -> None:
     from unittest.mock import AsyncMock
     from src.services import chat_child_image
 
     child = AsyncMock()
     monkeypatch.setattr(chat_child_image, "generate_child_image", child)
-    mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
-    response = await client.post("/api/v1/chat/turns", json=_payload())
+    parent = {"name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp"}
+    mock_events([
+        {"event": "character_image", **parent},
+        {"event": "token", "text": "레이: 안녕."},
+        {"event": "completed", "ai_output": "[[https://cdn.manyak.app/parent.webp]]\n레이: 안녕.",
+         "character_images": [parent]},
+    ])
+    payload = {**_payload(), "generate_child_image": legacy_flag, "character_images": [parent]}
+    if slots is not None:
+        payload["image_slots"] = slots
+    response = await client.post("/api/v1/chat/turns", json=payload)
     assert response.status_code == 200
     child.assert_not_awaited()
     assert "generatedImage" not in response.text
+    assert _data_of(response.text, "character_image")["imageUrl"] == parent["image_url"]
+    completed = _data_of(response.text, "completed")
+    assert parent["image_url"] in completed["aiOutput"]
+    assert completed["characterImages"][0]["imageUrl"] == parent["image_url"]
 
 
 @pytest.mark.parametrize("first", ["image", "judgement"])
@@ -794,7 +859,7 @@ async def test_child_and_judgement_run_concurrently(monkeypatch, mock_events, fi
     monkeypatch.setattr(chat_module, "_JUDGEMENT_PING_INTERVAL_SECONDS", 0.01)
     mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
     payload = _payload()
-    payload.update(generate_child_image=True, character_images=[{
+    payload.update(image_slots=_image_slots(), character_images=[{
         "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp",
     }])
     async with aclosing(chat_module._event_stream(ChatTurnRequest(**payload), {})) as stream:
@@ -839,7 +904,7 @@ async def test_disconnect_cancels_both_parallel_calls(monkeypatch, mock_events) 
     monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.01)
     mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
     payload = _payload()
-    payload.update(generate_child_image=True, character_images=[{
+    payload.update(image_slots=_image_slots(), character_images=[{
         "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp",
     }])
     async with aclosing(chat_module._event_stream(ChatTurnRequest(**payload), {})) as stream:
@@ -867,7 +932,7 @@ async def test_http_disconnect_waits_for_both_cleanup(monkeypatch, mock_events, 
     monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.01)
     mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
     payload = _payload()
-    payload.update(generate_child_image=True, character_images=[{
+    payload.update(image_slots=_image_slots(), character_images=[{
         "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp",
     }])
     disconnect = asyncio.Event()
@@ -894,8 +959,10 @@ async def test_child_image_trace_records_result_without_raw_data(monkeypatch, mo
     from src.services.image.generate_child import ChildImageResult
 
     trace = _Trace()
+    captured = {}
     @contextmanager
     def observe(*args, **kwargs):
+        captured.update(kwargs)
         yield trace
     monkeypatch.setattr(chat_module, "observe_request", observe)
     monkeypatch.setattr(chat_child_image, "generate_child_image", AsyncMock(return_value=ChildImageResult(
@@ -903,11 +970,14 @@ async def test_child_image_trace_records_result_without_raw_data(monkeypatch, mo
     )))
     mock_events([{"event": "completed", "ai_output": "레이: private-dialogue"}])
     payload = _payload()
-    payload.update(generate_child_image=True, character_images=[{
+    payload.update(image_slots=_image_slots(), character_images=[{
         "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/private-parent.webp",
     }])
     result = [event async for event in chat_module._event_stream(ChatTurnRequest(**payload), {})]
     assert "event: completed" in result[-1]
+    assert "image_slots" not in captured["input_data"]
+    assert payload["image_slots"][0]["upload_url"] not in str(captured)
+    assert captured["input_data"]["user_input"] == payload["user_input"]
     record = trace._metadata["child_image"]
     assert record["status"] == ("failed" if error else "success")
     assert record["reason"] == error
@@ -987,7 +1057,7 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
             "AsyncClient": lambda **kwargs: client_type(transport=httpx.MockTransport(download), **kwargs),
         }))
         payload = _payload()
-        payload.update(generate_child_image=True, character_images=[{
+        payload.update(image_slots=_image_slots(), character_images=[{
             "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.png",
         }])
         payload["history"] = [{"role": "ASSISTANT", "content": "오프닝"}]
@@ -1002,27 +1072,23 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
             response = await client.post("/api/v1/chat/turns", json=payload)
             assert response.status_code == 200
             image = _data_of(response.text, "character_image")
-            generated = image["generatedImage"]
-            names.append(generated["imageName"])
-            expected_error = {
-                "success": None, "download_failed": "generation_failed", "rate_limited": "rate_limited",
-                "timeout": "timeout", "invalid_image": "generation_failed",
-            }[outcome]
-            assert generated["error"] == expected_error
-            assert generated["imageBase64"] == (child_base64 if outcome == "success" else None)
-            assert generated["contentType"] == "image/webp"
-            assert image["name"] == generated["name"] == "레이"
-            assert image["imageName"] == "레이_기본"
-            assert image["imageUrl"] == "https://cdn.manyak.app/parent.png"
+            names.append(image["imageName"])
+            assert image["name"] == "레이"
+            expected_url = payload["image_slots"][0]["public_url"] if outcome == "success" else "https://cdn.manyak.app/parent.png"
+            assert image["imageUrl"] == expected_url
+            if outcome != "success":
+                assert image["imageName"] == "레이_기본"
+            assert "generatedImage" not in response.text
             assert response.text.count("event: character_image") == 1
             assert response.text.index("event: character_image") < response.text.index("레이: 들어와")
             completed = _data_of(response.text, "completed")
             assert completed["characterImages"] == [{k: v for k, v in image.items() if k != "generatedImage"}]
-            assert completed["aiOutput"].count("[[https://cdn.manyak.app/parent.png]]") == 1
+            assert completed["aiOutput"].count(f"[[{expected_url}]]") == 1
             assert "generatedImage" not in json.dumps(completed)
-            assert response.text.count(child_base64) == (1 if outcome == "success" else 0)
+            assert child_base64 not in response.text
             assert "event: error" not in response.text
-        assert names[0] != names[1]
+        if outcome == "success":
+            assert names[0] != names[1]
         assert json.dumps(payload, ensure_ascii=False) == original
         assert len(downloads) == 2
         assert len(edits) == (0 if outcome == "download_failed" else 2)  # SDK 자동 재시도 없음

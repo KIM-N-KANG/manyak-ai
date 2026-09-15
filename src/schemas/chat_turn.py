@@ -11,6 +11,7 @@ spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
 
 import logging
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -137,6 +138,39 @@ class CharacterImageMapping(BaseModel):
         return "" if value is None else value
 
 
+class ChatImageSlot(BaseModel):
+    """백엔드가 발급하는 자식 이미지 한 장의 저장 위치."""
+
+    key: str = Field(min_length=1)
+    upload_url: str = Field(repr=False)
+    public_url: str
+
+    @field_validator("key")
+    @classmethod
+    def _nonblank_key(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("이미지 저장 키는 비어 있을 수 없습니다.")
+        return value
+
+    @field_validator("upload_url", "public_url")
+    @classmethod
+    def _https_url(cls, value: str) -> str:
+        # 서명된 URL은 정규화하지 않고 전달받은 문자열을 그대로 보존한다.
+        try:
+            parsed = urlsplit(value)
+            valid = (
+                parsed.scheme == "https" and bool(parsed.hostname)
+                and parsed.username is None and parsed.password is None
+                and parsed.port in (None, 443) and not parsed.fragment
+                and not any(char.isspace() for char in value)
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("이미지 주소는 사용자 정보와 fragment가 없는 HTTPS 주소여야 합니다.")
+        return value
+
+
 class ChatTurnRequest(BaseModel):
     """채팅 턴 API 입력 (매 턴, 완전 stateless).
 
@@ -175,8 +209,10 @@ class ChatTurnRequest(BaseModel):
     # 개수 상한을 두지 않는다 — 인물당 표정별 다중 이미지가 오면 5개를 넘고, 인물 수
     # 상한은 백엔드가 관리한다(KNK-943 백엔드 리뷰 반영).
     character_images: list[CharacterImageMapping] = Field(default_factory=list)
-    # 자식 이미지 저장·본문 주소 교체를 지원하는 백엔드만 켠다(KNK-1266).
-    generate_child_image: bool = False
+    # 슬롯 없음 = 자식 생성 안 함. 턴당 최대 한 장(KNK-1285).
+    image_slots: list[ChatImageSlot] = Field(default_factory=list, max_length=1)
+    # 이전 요청을 수신하기 위한 필드. 생성 여부는 image_slots로만 결정한다.
+    generate_child_image: bool = Field(default=False, deprecated=True)
 
     @field_validator("user_source", mode="before")
     @classmethod
@@ -246,16 +282,6 @@ class CharacterImageData(BaseModel):
     name: str
     image_name: str = Field(serialization_alias="imageName")
     image_url: str = Field(serialization_alias="imageUrl")
-
-
-class GeneratedChildImageData(BaseModel):
-    """character_image 이벤트의 generatedImage. 바깥 URL은 저장 실패 시 쓸 부모다."""
-
-    name: str
-    image_name: str = Field(serialization_alias="imageName")
-    image_base64: str | None = Field(serialization_alias="imageBase64")
-    content_type: Literal["image/webp"] = Field(serialization_alias="contentType")
-    error: Literal["timeout", "rate_limited", "rejected", "generation_failed"] | None
 
 
 class TargetMainEventOut(BaseModel):

@@ -41,7 +41,6 @@ from src.schemas.chat_turn import (
     EVENT_PING,
     EVENT_TOKEN,
     CharacterImageData,
-    GeneratedChildImageData,
     ChatTurnRequest,
     CompletedData,
     ErrorData,
@@ -116,7 +115,8 @@ async def _event_stream(
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
     with observe_request(
         "채팅 턴",
-        input_data=req.model_dump(mode="json"),
+        # 업로드 슬롯에는 임시 쓰기 권한이 담긴 서명 URL이 있어 관측에서 제외한다.
+        input_data=req.model_dump(mode="json", exclude={"image_slots"}),
         metadata={
             **connection_metadata,
             "prompt_versions": {**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
@@ -127,7 +127,7 @@ async def _event_stream(
         turn_started = time.monotonic()
         messages = assemble(req)
         judging = None
-        image_observation = ChildImageObservation() if req.generate_child_image else None
+        image_observation = ChildImageObservation() if req.image_slots else None
 
         def start_judgement(ai_output: str) -> None:
             nonlocal judging
@@ -137,7 +137,7 @@ async def _event_stream(
             )
 
         events = stream_chat_turn(messages, character_images=req.character_images)
-        if req.generate_child_image:
+        if req.image_slots:
             events = stream_with_child_image(
                 events, req,
                 deadline=turn_started + _TURN_BUDGET_SECONDS - _SAFETY_MARGIN_SECONDS,
@@ -156,10 +156,6 @@ async def _event_stream(
                             image_name=ev["image_name"],
                             image_url=ev["image_url"],
                         ).model_dump(by_alias=True)
-                        if "generated_image" in ev:
-                            payload["generatedImage"] = GeneratedChildImageData(
-                                **ev["generated_image"]
-                            ).model_dump(by_alias=True)
                         yield _sse(name, payload)
                     elif name == EVENT_PING:
                         yield _sse(name, PingData().model_dump())
@@ -275,7 +271,7 @@ async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
     with observe_request(
         "채팅 선택지",
-        input_data=request.model_dump(mode="json", exclude={"user_source"}),
+        input_data=request.model_dump(mode="json", exclude={"user_source", "image_slots"}),
         metadata={
             **select_connection_metadata(
                 "creation_id",

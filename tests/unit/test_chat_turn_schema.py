@@ -42,6 +42,51 @@ _MAIN_EVENT = {
 }
 
 
+_IMAGE_SLOT = {
+    "key": "chat-images/test/turn-1.webp",
+    "upload_url": "https://bucket.s3.amazonaws.com/chat-images/test/turn-1.webp?signature=a%2Fb&part=1",
+    "public_url": "https://cdn.manyak.app/chat-images/test/turn-1.webp",
+}
+
+
+def test_image_slot_preserves_signed_url() -> None:
+    req = ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "image_slots": [_IMAGE_SLOT]})
+    assert req.image_slots[0].model_dump() == _IMAGE_SLOT
+    assert _IMAGE_SLOT["upload_url"] not in repr(req)
+    assert ChatTurnRequest.model_validate(_BASE_PAYLOAD).image_slots == []
+
+
+@pytest.mark.parametrize("slots", [None, [_IMAGE_SLOT, _IMAGE_SLOT], [{}]])
+def test_invalid_image_slot_collection_rejected(slots) -> None:
+    with pytest.raises(ValidationError):
+        ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "image_slots": slots})
+
+
+@pytest.mark.parametrize("field", ["key", "upload_url", "public_url"])
+def test_image_slot_requires_all_fields(field) -> None:
+    slot = {key: value for key, value in _IMAGE_SLOT.items() if key != field}
+    with pytest.raises(ValidationError):
+        ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "image_slots": [slot]})
+
+
+@pytest.mark.parametrize("key", ["", "   "])
+def test_image_slot_requires_nonblank_key(key) -> None:
+    with pytest.raises(ValidationError):
+        ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "image_slots": [{**_IMAGE_SLOT, "key": key}]})
+
+
+@pytest.mark.parametrize("field", ["upload_url", "public_url"])
+@pytest.mark.parametrize("url", [
+    "", "not-a-url", "http://example.com/image", "https:///image",
+    "https://user:password@example.com/image", "https://example.com:444/image",
+    "https://example.com/image#fragment", "https://example.com/im age",
+    "https://example.com:invalid/image",
+])
+def test_image_slot_rejects_invalid_urls(field, url) -> None:
+    with pytest.raises(ValidationError):
+        ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "image_slots": [{**_IMAGE_SLOT, field: url}]})
+
+
 # ── 하위호환: 재료 없는 기존 요청 ───────────────────────────────────────────
 def test_request_without_event_materials_passes_with_defaults() -> None:
     req = ChatTurnRequest.model_validate(_BASE_PAYLOAD)

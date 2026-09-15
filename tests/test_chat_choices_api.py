@@ -165,6 +165,11 @@ async def test_chat_choices_trace_receives_connection_metadata(
                       output_tokens=1, retry_count=0, model="m", provider="deepseek")
     )
     payload = {**_payload(), "user_source": "typed"}
+    payload["image_slots"] = [{
+        "key": "chat-images/test/turn-1.webp",
+        "upload_url": "https://bucket.s3.amazonaws.com/image.webp?signature=private-test",
+        "public_url": "https://cdn.manyak.app/image.webp",
+    }]
     resp = await client.post(
         "/api/v1/chat/choices",
         json=payload,
@@ -182,9 +187,11 @@ async def test_chat_choices_trace_receives_connection_metadata(
     assert resp.status_code == 200
     assert captured["name"] == "채팅 선택지"
     assert captured["input_data"] == ChatChoicesRequest.model_validate(payload).model_dump(
-        mode="json", exclude={"user_source"}
+        mode="json", exclude={"user_source", "image_slots"}
     )
     assert "user_source" not in captured["input_data"]
+    assert "image_slots" not in captured["input_data"]
+    assert payload["image_slots"][0]["upload_url"] not in str(captured)
     assert captured["metadata"] == {
         "creation_id": "11111111-1111-1111-1111-111111111111",
         "story_id": "22222222-2222-2222-2222-222222222222",

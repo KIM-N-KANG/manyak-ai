@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     image_timeout: float = 60.0  # 이미지 1장 생성 제한 시간(초)
     # 부모 이미지 다운로드는 관리하는 CDN만 허용한다(JSON 배열 환경변수).
     image_parent_allowed_hosts: list[str] = ["cdn.manyak.app", "dev-cdn.manyak.app"]
+    # 백엔드가 presigned PUT을 발급하는 S3 호스트만 지정한다. 미설정 시 업로드 거부.
+    image_upload_allowed_hosts: list[str] = []
 
     # Sentry 오류 수집 (KNK-262). DSN이 비면 비활성(no-op) — 로컬·CI는 끈다.
     # environment·표본율은 server(SENTRY_ENVIRONMENT/SENTRY_TRACES_SAMPLE_RATE) 규약을 미러링한다.
