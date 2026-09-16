@@ -16,6 +16,14 @@ PROVIDER_OPENAI = "openai"
 # 장수·실패율을 따로 봐야 하므로 호출부가 요청에 실어 보낸다.
 IMAGE_PURPOSE_CHARACTER = "character"
 IMAGE_PURPOSE_THUMBNAIL = "thumbnail"
+IMAGE_PURPOSE_CHILD = "child"
+
+
+@dataclass(frozen=True)
+class ImageReference:
+    image_bytes: bytes
+    content_type: str
+    filename: str
 
 
 @dataclass(frozen=True)
@@ -28,6 +36,7 @@ class ImageRequest:
     size: str = "1024x1024"
     quality: str = "low"
     timeout: float = 60.0
+    reference: ImageReference | None = None
 
 
 @dataclass(frozen=True)

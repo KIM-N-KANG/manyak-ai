@@ -27,6 +27,7 @@ from openai import (
 from src.core.langfuse import observe_generation
 from src.services.image.base import (
     IMAGE_PURPOSE_CHARACTER,
+    IMAGE_PURPOSE_CHILD,
     IMAGE_PURPOSE_THUMBNAIL,
     PROVIDER_OPENAI,
     ImageBadRequest,
@@ -51,6 +52,7 @@ _OUTPUT_FORMAT = "webp"
 # 용도 → Langfuse 관측 이름. 기존 트레이스 이름("스토리 컴파일" 등)처럼 한국어로 짓는다.
 _OBSERVATION_NAMES: dict[str, str] = {
     IMAGE_PURPOSE_CHARACTER: "이미지 생성:인물",
+    IMAGE_PURPOSE_CHILD: "이미지 생성:자식",
     IMAGE_PURPOSE_THUMBNAIL: "이미지 생성:썸네일",
 }
 
@@ -137,7 +139,16 @@ async def generate(req: ImageRequest) -> ImageResult:
         input_data=req.prompt,
     ) as generation:
         try:
-            response = await client.images.generate(
+            # 부모 첨부 편집만 재시도를 끈다. 컴파일 생성의 기존 설정은 유지한다.
+            call = client.images.generate
+            reference_args = {}
+            if req.reference is not None:
+                call = client.with_options(max_retries=0).images.edit
+                reference_args = {"image": (
+                    req.reference.filename, req.reference.image_bytes, req.reference.content_type,
+                )}
+            response = await call(
+                **reference_args,
                 model=req.model,
                 prompt=req.prompt,
                 n=1,

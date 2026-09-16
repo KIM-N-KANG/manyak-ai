@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
-    app_version: str = "0.3.3"
+    app_version: str = "0.4.0"
     debug: bool = False
 
     deepseek_api_key: str
@@ -40,11 +40,15 @@ class Settings(BaseSettings):
     # 옛 LLM_PROVIDER env가 남아 있어도 무시된다(model_config의 extra="ignore").
 
     # 이미지 생성(KNK-938). 텍스트 LLM과 별도 모듈(src/services/image/).
-    # API 키는 공급자별 기존 키를 재사용한다(gpt-image-2 → openai_api_key).
-    image_model: str = "gpt-image-2-2026-04-21"  # 컴파일 인물 이미지 전용 (스냅샷 고정)
+    # API 키는 공급자별 기존 키를 재사용한다(OpenAI 이미지 → openai_api_key).
+    image_model: str = "gpt-image-2.5-flare"  # 부모·자식·표지 이미지 공통
     image_quality: str = "low"  # 이미지 화질 (low / medium / high)
     image_size: str = "1024x768"  # 이미지 크기 (가로 4:3)
     image_timeout: float = 60.0  # 이미지 1장 생성 제한 시간(초)
+    # 부모 이미지 다운로드는 관리하는 CDN만 허용한다(JSON 배열 환경변수).
+    image_parent_allowed_hosts: list[str] = ["cdn.manyak.app", "dev-cdn.manyak.app"]
+    # 백엔드가 presigned PUT을 발급하는 S3 호스트만 지정한다. 미설정 시 업로드 거부.
+    image_upload_allowed_hosts: list[str] = []
 
     # Sentry 오류 수집 (KNK-262). DSN이 비면 비활성(no-op) — 로컬·CI는 끈다.
     # environment·표본율은 server(SENTRY_ENVIRONMENT/SENTRY_TRACES_SAMPLE_RATE) 규약을 미러링한다.
