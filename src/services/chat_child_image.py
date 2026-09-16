@@ -11,7 +11,7 @@ import httpx
 from anyio import CancelScope
 
 from src.schemas.chat_turn import (
-    EVENT_CHARACTER_IMAGE, EVENT_COMPLETED, EVENT_ERROR, EVENT_PING, CharacterImageMapping, ChatImageSlot, ChatTurnRequest,
+    EVENT_CHARACTER_IMAGE, EVENT_COMPLETED, EVENT_ERROR, EVENT_PING, EVENT_TOKEN, CharacterImageMapping, ChatImageSlot, ChatTurnRequest,
 )
 from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.chat_llm import render_chat_images
@@ -22,6 +22,36 @@ from src.services.image.upload_child import upload_child_image, validate_upload_
 
 _PING_INTERVAL_SECONDS = 10.0
 _IMAGE_BUDGET_SECONDS = 30.0
+_TEXT_CHUNK_CHARACTERS = 12
+_TEXT_CHUNK_INTERVAL_SECONDS = 0.03
+_TEXT_REPLAY_BUDGET_SECONDS = 8.0
+
+
+async def _stream_rendered(events: list[dict], *, deadline: float) -> AsyncIterator[dict]:
+    """이미지 위치를 보존하며 완성된 글을 나눠 보낸다. 완료 여유 시간은 쓰지 않는다."""
+    chunks = sum(
+        (len(event["text"]) + _TEXT_CHUNK_CHARACTERS - 1) // _TEXT_CHUNK_CHARACTERS
+        for event in events if event["event"] == EVENT_TOKEN
+    )
+    # 긴 본문도 고정 속도로 보내다 턴 상한을 넘기지 않게 남은 시간 절반 이내로 잡는다.
+    interval = min(
+        _TEXT_CHUNK_INTERVAL_SECONDS,
+        _TEXT_REPLAY_BUDGET_SECONDS / max(chunks, 1),
+        max(0.0, deadline - time.monotonic()) / (2 * max(chunks, 1)),
+    )
+    for event in events:
+        parts = (
+            [{**event, "text": event["text"][offset:offset + _TEXT_CHUNK_CHARACTERS]}
+             for offset in range(0, len(event["text"]), _TEXT_CHUNK_CHARACTERS)]
+            if event["event"] == EVENT_TOKEN else [event]
+        )
+        for part in parts:
+            if part["event"] == EVENT_TOKEN:
+                await asyncio.sleep(interval)
+            if time.monotonic() >= deadline:
+                yield {"event": EVENT_ERROR, "code": "LLM_ERROR", "message": "채팅 응답 대기 시간이 초과됐습니다."}
+                return
+            yield part
 
 
 @dataclass
@@ -110,7 +140,7 @@ async def stream_with_child_image(
     on_body_completed: Callable[[str], None] | None = None,
     observation: ChildImageObservation | None = None,
 ) -> AsyncIterator[dict]:
-    """본문 전체를 확보한 뒤 앞 지문 → 이미지 → 대사 → completed 순서로 전달한다.
+    """본문·이미지 결과를 확보한 뒤 지문 → 이미지 → 대사를 순차 스트리밍한다.
 
     업로드 성공 시 해당 인물의 이벤트·본문·목록에 자식 주소를 반영한다.
     실패 시 부모를 유지하며 이미지 데이터는 응답에 싣지 않는다.
@@ -123,7 +153,10 @@ async def stream_with_child_image(
         await events.aclose()
         yield {"event": EVENT_ERROR, "code": "LLM_ERROR", "message": "채팅 응답 대기 시간이 초과됐습니다."}
         return
-    collecting = asyncio.create_task(asyncio.wait_for(_collect(events), timeout=remaining))
+    # 이미지 시간 초과 후에도 부모 이미지와 글을 순차 전송할 시간을 남긴다.
+    replay_reserve = min(_TEXT_REPLAY_BUDGET_SECONDS, remaining / 4)
+    work_deadline = deadline - replay_reserve
+    collecting = asyncio.create_task(asyncio.wait_for(_collect(events), timeout=remaining - replay_reserve))
     async with aclosing(_pings_until_done(collecting)) as waiting:
         async for ping in waiting:
             yield ping
@@ -149,26 +182,26 @@ async def stream_with_child_image(
         observation.status, observation.reason = "skipped", "no_parent"
     rendered, stored, displayed = render_chat_images(text, req.character_images)
     generating = None
-    image_deadline = min(deadline, time.monotonic() + _IMAGE_BUDGET_SECONDS)
+    image_deadline = min(work_deadline, time.monotonic() + _IMAGE_BUDGET_SECONDS)
     if inputs is not None and image_deadline > time.monotonic():
         generating = asyncio.create_task(
             _generate_before_deadline(inputs, image_deadline, observation, req.image_slots[0]),
         )
     try:
+        child = None
+        if generating is not None:
+            async with aclosing(_pings_until_done(generating)) as waiting:
+                async for ping in waiting:
+                    yield ping
+            try:
+                child = generating.result()
+            except TimeoutError:
+                child = None
         for event in rendered:
             if (
                 inputs is not None and event["event"] == EVENT_CHARACTER_IMAGE
                 and event["name"] == inputs.parent_image.name
             ):
-                child = None
-                if generating is not None:
-                    async with aclosing(_pings_until_done(generating)) as waiting:
-                        async for ping in waiting:
-                            yield ping
-                    try:
-                        child = generating.result()
-                    except TimeoutError:
-                        child = None  # 부모 대체용 timeout 결과로 만든다.
                 if child is None:
                     observation.status, observation.reason = "failed", "timeout"
                     child = ChildImageResult(
@@ -177,7 +210,7 @@ async def stream_with_child_image(
                     )
                 observation.parent_fallback = child.error is not None or not child.image_url
                 if not observation.parent_fallback:
-                    event = {**event, "image_name": child.image_name, "image_url": child.image_url}
+                    event.update(image_name=child.image_name, image_url=child.image_url)
                     # URL 전체 치환은 같은 부모 URL을 쓰는 다른 인물까지 바꾼다.
                     # 대상 인물의 매핑만 교체해 기존 마커 생성 규칙으로 본문을 다시 만든다.
                     mappings = [
@@ -186,7 +219,11 @@ async def stream_with_child_image(
                         for item in req.character_images
                     ]
                     _, stored, displayed = render_chat_images(text, mappings)
-            yield event
+        async with aclosing(_stream_rendered(rendered, deadline=deadline)) as replay:
+            async for event in replay:
+                yield event
+                if event["event"] == EVENT_ERROR:
+                    return
         yield {**completed, "ai_output": stored, "character_images": displayed}
     finally:
         if generating is not None:
