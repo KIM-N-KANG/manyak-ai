@@ -27,8 +27,10 @@
   - 백엔드 Java 프로세스 기동 시간은 이전 정상 약 81초, 첫 실패 약 96초, 두 번째 시도 약 77초, 복구 약 76초였다. 기동 지연과 ALB 정상 판정 여유 부족이 의심되지만 개별 ALB 검사 기록·컨테이너별 CPU 계측이 없어 근본 원인은 미확정이다. 300초 변경용 인프라 PR #49는 사용자 요청으로 닫았고 적용하지 않았다. 인프라 후속 변경은 별도 티켓으로 관리한다.
 - 운영 검증: ECS 배포 COMPLETED, 태스크·ai·server HEALTHY, AI digest가 ECR `e81c034`와 일치(`sha256:320c7cf8…`). 외부 백엔드 `/actuator/health`는 UP. EC2 점검 스크립트 대신 ECS로 검증했다.
 - QA: 도커 유닛·API 1017 passed·8 skipped, 라이브 통합 10 passed(99.79초), `qa.sh` 종료코드 0. 최초 라이브의 `Event loop is closed` 3건은 통합 테스트마다 SDK 연결을 닫고 캐시를 비우도록 수정한 뒤 해소했다.
-- 계약·기동·런타임 리뷰에서 코드 차단 결함은 발견하지 못했다. `image_slots` 없는 요청은 기존 스트리밍을 유지한다. **새 이미지 기능 활성화는 별도**: 확인 시 운영 태스크 정의 `manyak-prod:13`에 `IMAGE_UPLOAD_ALLOWED_HOSTS`가 없어 부모 이미지로 대체한다. 인프라 PR #48의 운영 apply와 #47의 저장 권한 적용 확인, 백엔드 슬롯 발급 연동이 필요하다. 실제 S3·CDN·백엔드 저장·화면 표시 및 자식 이미지 품질은 이번 자동 QA에서 실측하지 않았다.
-- release→dev 역류는 PR #124, Merge Commit `a98af80`으로 완료했다. Jira 완료 처리는 사용자 몫이다.
+- 계약·기동·런타임 리뷰에서 코드 차단 결함은 발견하지 못했다. `image_slots` 없는 요청은 기존 스트리밍을 유지한다. 최초 배포 시 운영 태스크 정의 `manyak-prod:13`에는 `IMAGE_UPLOAD_ALLOWED_HOSTS`가 없어 부모 이미지로 대체했다.
+- 후속 운영 Terraform apply 완료: 인프라 dev `ac9376f`의 검토된 계획을 `scripts/tf-apply.sh prod`로 적용했다. 태스크 정의 교체와 서비스 갱신만 수행했고, 데이터 저장소와 기동 유예 120초는 변경하지 않았다. 새 정의 `manyak-prod:14`의 업로드 허용 호스트, 기존 `chat-images/*` 저장 권한, AI·백엔드 HEALTHY, ALB 정상, ECS COMPLETED, 외부 API UP을 확인했다. 적용 후 plan은 `No changes`였다. 개발 환경은 이미 같은 설정이 반영돼 있어 추가 apply가 필요 없었다.
+- 실제 S3 업로드·CDN 서빙·백엔드 저장·화면 표시와 자식 이미지 품질은 이번 배포에서 실측하지 않았다. 인프라 적용·상태 검사 성공과 기능 전체 검증을 구분한다.
+- release→dev 반영은 PR #124, Merge Commit `a98af80`으로 완료했다. 태그 `v0.4.0`은 보존하고 원격 `release/v0.4.0` 브랜치는 삭제했다.
 
 ## v0.3.3 — 2026-09-11 배포 완료
 
