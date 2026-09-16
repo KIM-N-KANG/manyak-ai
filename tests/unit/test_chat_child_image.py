@@ -73,10 +73,11 @@ async def test_child_once_at_first_eligible_speaker_and_full_current_turn(monkey
     generate = AsyncMock(return_value=ChildImageResult("라떼", "라떼_실시간_test", "base64"))
     monkeypatch.setattr(service, "generate_child_image", generate)
     result = await run(request_data, text)
-    assert result[0] == {"event": "token", "text": "*문이 열린다.*\n행인: 안녕.\n"}
-    assert "generated_image" not in result[1]
-    assert result[1]["image_name"] == "라떼_실시간_test"
-    assert result[2]["text"].startswith("라떼:")
+    first_image = next(i for i, event in enumerate(result) if event["event"] == "character_image")
+    assert "".join(event["text"] for event in result[:first_image]) == "*문이 열린다.*\n행인: 안녕.\n"
+    assert "generated_image" not in result[first_image]
+    assert result[first_image]["image_name"] == "라떼_실시간_test"
+    assert result[first_image + 1]["text"].startswith("라떼:")
     images = [e for e in result if e["event"] == "character_image"]
     assert [e["name"] for e in images] == ["라떼", "모카"]
     assert "generated_image" not in images[1]
@@ -187,7 +188,8 @@ async def test_timeout_cancels_generation(monkeypatch, request_data) -> None:
         finally:
             cancelled.set()
     monkeypatch.setattr(service, "generate_child_image", slow)
-    result = [e async for e in service.stream_with_child_image(events("라떼: 안녕."), request_data, deadline=time.monotonic()+0.02)]
+    monkeypatch.setattr(service, "_IMAGE_BUDGET_SECONDS", 0.02)
+    result = [e async for e in service.stream_with_child_image(events("라떼: 안녕."), request_data, deadline=time.monotonic()+5)]
     assert cancelled.is_set()
     assert result[0]["image_name"] == "라떼_기본"
     assert result[-1]["event"] == "completed"
@@ -395,3 +397,106 @@ async def test_user_cancellation_stays_cancelled_after_deadline(monkeypatch, req
     assert (observation.status, observation.reason) == ("cancelled", "cancelled")
     assert observation.duration_ms == 31000.0
     assert not observation.parent_fallback
+
+
+@pytest.mark.parametrize("failure", [None, "generation_failed", "upload_failed", "timeout"])
+async def test_waits_for_image_before_scene_then_streams_in_order(monkeypatch, request_data, failure):
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    async def generate(inputs):
+        try:
+            await release.wait()
+            return ChildImageResult("라떼", "라떼_실시간_test", "data", error=(
+                "generation_failed" if failure == "generation_failed" else None
+            ))
+        finally:
+            finished.set()
+    monkeypatch.setattr(service, "generate_child_image", generate)
+    monkeypatch.setattr(service, "_PING_INTERVAL_SECONDS", 0.01)
+    if failure == "timeout":
+        monkeypatch.setattr(service, "_IMAGE_BUDGET_SECONDS", 0.05)
+    if failure == "upload_failed":
+        monkeypatch.setattr(service, "upload_child_image", AsyncMock(return_value=ChildImageResult(
+            "라떼", "라떼_실시간_test", error="generation_failed",
+        )))
+    text = "*문이 열리고 조용한 방 안으로 들어선다.*\n라떼: 어서 와. 여기 앉아서 이야기해.\n*바람이 창문을 두드린다.*"
+    received = []
+    async with aclosing(service.stream_with_child_image(
+        events(text), request_data, deadline=time.monotonic()+5,
+    )) as stream:
+        # 본문은 이미 완성됐지만 이미지 대기 중에는 첫 장면도 보내면 안 된다.
+        assert (await anext(stream))["event"] == "ping"
+        assert not finished.is_set()
+        if failure != "timeout":
+            release.set()
+        async for event in stream:
+            if event["event"] != "ping":
+                assert finished.is_set()
+                received.append((time.monotonic(), event))
+    tokens = [(at, e) for at, e in received if e["event"] == "token"]
+    assert len(tokens) >= 5
+    assert all(0 < len(e["text"]) <= service._TEXT_CHUNK_CHARACTERS for _, e in tokens)
+    assert all(b[0] - a[0] >= 0.02 for a, b in zip(tokens, tokens[1:]))
+    assert "".join(e["text"] for _, e in tokens) == text
+    output = [e for _, e in received]
+    index = next(i for i, e in enumerate(output) if e["event"] == "character_image")
+    assert "".join(e["text"] for e in output[:index]) == text.split("라떼:")[0]
+    assert output[index + 1]["text"].startswith("라떼:")
+    expected_url = request_data.character_images[0].image_url if failure else request_data.image_slots[0].public_url
+    assert output[index]["image_url"] == expected_url
+    assert output[-1]["event"] == "completed"
+    assert expected_url in output[-1]["ai_output"]
+
+
+async def test_replay_deadline_does_not_flush_remaining_text():
+    result = [e async for e in service._stream_rendered(
+        [{"event": "token", "text": "아직 보내지 않은 글"}], deadline=time.monotonic()-1,
+    )]
+    assert [e["event"] for e in result] == ["error"]
+
+
+async def test_image_timeout_leaves_time_for_parent_and_text(monkeypatch, request_data):
+    cancelled = asyncio.Event()
+    async def generate(inputs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+    monkeypatch.setattr(service, "generate_child_image", generate)
+    deadline = time.monotonic() + 0.4
+    result = [e async for e in service.stream_with_child_image(
+        events("*문이 열린다.*\n라떼: 반가워."), request_data, deadline=deadline,
+    )]
+    assert cancelled.is_set()
+    assert result[-1]["event"] == "completed"
+    assert time.monotonic() < deadline
+    assert next(e for e in result if e["event"] == "character_image")["image_name"] == "라떼_기본"
+
+
+async def test_replay_respects_total_pacing_budget(monkeypatch):
+    from types import SimpleNamespace
+
+    now, waits = [0.0], []
+    async def sleep(delay):
+        waits.append(delay)
+        now[0] += delay
+    monkeypatch.setattr(service, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(service.asyncio, "sleep", sleep)
+    text = "가" * 12000
+    result = [e async for e in service._stream_rendered(
+        [{"event": "token", "text": text}], deadline=100,
+    )]
+    assert "".join(e["text"] for e in result) == text
+    assert 0 < sum(waits) <= service._TEXT_REPLAY_BUDGET_SECONDS + 0.00001
+
+
+async def test_disconnect_during_replay_stops_delivery(monkeypatch, request_data):
+    monkeypatch.setattr(service, "generate_child_image", AsyncMock(return_value=ChildImageResult(
+        "라떼", "라떼_실시간_test", "data",
+    )))
+    async with aclosing(service.stream_with_child_image(
+        events("*긴 장면이 이어진다.*\n라떼: 안녕."), request_data, deadline=time.monotonic()+5,
+    )) as stream:
+        assert (await anext(stream))["event"] == "token"
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
