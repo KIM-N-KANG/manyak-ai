@@ -185,6 +185,9 @@ def build_refill_prompt(
             instructions.append(
                 "인물 카드는 원래 입력의 인원수와 인물 구성 규칙에 맞춰 다시 작성하라. "
                 "입력 인물이 있으면 각 input_character_id에 카드 하나씩만 반환하라."
+                " 이름 미정 입력도 선택 스토리라인 속 인물에 연결하고 그 관계·역할을 유지하라."
+                " 직전 결과에 새 인물이 잘못 추가됐다면 그 카드를 기준으로 삼지 말고,"
+                " 원래 선택 스토리라인의 인물로 바로잡아라."
             )
     if character_fields:
         targets = "; ".join(

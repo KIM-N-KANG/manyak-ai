@@ -51,6 +51,29 @@ def test_count_rules_reach_compile_and_refill(provider: str, count: int) -> None
     assert "각 input_character_id에 카드 하나씩만" in refill_user
 
 
+@pytest.mark.parametrize("provider", ["openai", "google"])
+def test_unnamed_input_uses_storyline_character_in_compile_and_refill(provider: str) -> None:
+    """실측 결함의 입력으로 지시 전달을 고정한다. 실제 역할 보존은 라이브 검증 몫이다."""
+    storyline = "무영은 서린과 함께 살아 있는 아버지를 찾아가 비급을 훔친 이유를 묻는다."
+    system, user, _ = build_compile_prompt(
+        storyline, "", ["무협"], CharacterInput(name="무영"),
+        [CharacterInput(name="서린"), CharacterInput()], provider=provider,
+    )
+    assert storyline in user
+    assert "[input_character_id: input-2] 이름: (미정)" in user
+    assert "이름 미정 입력은 아직 연결되지 않은 이야기 속 인물에 연결한다" in system
+    assert "사용자 이름·성별·특징을 우선 적용한다" in system
+    assert "관계·역할·행적은 유지" in system
+    assert "두 번째 카드는 아버지다" in system
+    assert "대화·대면·갈등의 상대를 카드 밖에 따로 두지 않는다" in system
+    refill_system, refill_user = build_refill_prompt(
+        user, '{"character_setting": []}', ["character_setting"], provider=provider,
+    )
+    assert refill_system == system
+    assert storyline in refill_user
+    assert "원래 선택 스토리라인의 인물로 바로잡아라" in refill_user
+
+
 @pytest.mark.parametrize("count", [1, 2, 3, 4, 5])
 @pytest.mark.parametrize("input_present", [False, True])
 async def test_matching_or_freely_generated_count_needs_no_refill(
