@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException
 
 from src.core.langfuse import dimension_tags, observe_request
 from src.core.request_context import select_connection_metadata
-from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import StoryCompileRequest, StoryCompileResponse
 from src.core.config import settings
@@ -14,7 +13,6 @@ from src.services.prompt import (
     COMPILE_GEMINI_VERSION,
     COMPILE_VERSION,
     STORYLINES_VERSION,
-    build_storylines_prompt,
 )
 
 router = APIRouter()
@@ -35,35 +33,16 @@ async def generate_storylines(request: StorylinesRequest) -> StorylinesResponse:
             "retry_count": 0,
         },
     ) as trace:
-        system_prompt, user_prompt = build_storylines_prompt(
-            request.genre_tags,
-            request.protagonist,
-            request.supporting_characters,
-        )
         try:
-            result, usage = await story_llm.generate_storylines(
-                system_prompt,
-                user_prompt,
-                # 사용자가 이름 지은 주변 인물은 세 편 모두 등장해야 한다(KNK-833).
-                required_names=[c.name for c in request.supporting_characters if c.name],
-            )
+            response = await story_llm.generate_storylines(request)
         except HTTPException as e:
             # 실패한 요청도 실제 재호출 횟수를 기록한다 — 502 예외에 실려 온다(story_llm).
             trace.set_metadata(retry_count=getattr(e, "retry_count", 0))
             raise
         # 재호출 횟수는 호출 결과에서만 알 수 있어 사후에 싣는다(compile과 동일 패턴, KNK-312).
-        trace.set_metadata(retry_count=usage.retry_count)
-        meta = StoryResponseMeta(
-            model=usage.model,
-            prompt_versions={"STORYLINES": STORYLINES_VERSION},
-            provider=usage.provider,
-            input_token_count=usage.input_tokens,
-            output_token_count=usage.output_tokens,
-            retry_count=usage.retry_count,  # invalid 응답 재호출 횟수(0~2, KNK-312)
-        )
-        # LLM 원시 dict를 splat하지 않고 stories만 명시적으로 꺼낸다 — result에 'meta' 키가
-        # 섞여 와도 meta= 인자와 kwarg 충돌(500)이 나지 않게 한다.
-        return StorylinesResponse(stories=result["stories"], meta=meta)
+        if response.meta is not None:
+            trace.set_metadata(retry_count=response.meta.retry_count)
+        return response
 
 
 @router.post("/story/compile", response_model=StoryCompileResponse)
