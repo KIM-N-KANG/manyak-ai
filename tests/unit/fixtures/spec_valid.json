@@ -31,6 +31,7 @@
         "visual_identity": "왼쪽 관자놀이에서 턱까지 이어지는 오래된 칼자국"
       },
       {
+        "input_character_id": "input-2",
         "name": "세린",
         "gender": "여성",
         "personality": "냉철하고 계산적이며, 자신의 생존을 최우선한다.",
@@ -45,6 +46,7 @@
         "visual_identity": "오른손 손등에 새겨진 은빛 마법진 흉터"
       },
       {
+        "input_character_id": "input-3",
         "name": "칸",
         "gender": "남성",
         "personality": "거칠고 카리스마 있으며, 목적을 위해 수단을 가리지 않는다.",

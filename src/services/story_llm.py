@@ -716,21 +716,19 @@ def _input_character_id(index: int) -> str:
 
 
 def _input_character_ids_incomplete(data: dict, input_count: int) -> bool:
-    """입력 인물 표시가 각각 정확히 한 카드에 있는지 확인한다."""
+    """입력이 있으면 카드 수와 인물 표시가 입력 목록에 정확히 일대일인지 확인한다."""
     if input_count == 0:
         return False
     cards = _as_dict(data.get("prompt_settings")).get("character_setting")
-    if not isinstance(cards, list):
+    if not isinstance(cards, list) or len(cards) != input_count:
         return True
 
     expected = {_input_character_id(index) for index in range(input_count)}
     counts = {value: 0 for value in expected}
     for raw in cards:
         if not isinstance(raw, dict):
-            continue
+            return True
         value = raw.get(_INPUT_CHARACTER_ID_FIELD)
-        if value is None:
-            continue
         if not isinstance(value, str) or value not in expected:
             return True
         counts[value] += 1
@@ -752,7 +750,8 @@ def _inject_supporting_character_names(
     for raw in cards:
         if not isinstance(raw, dict):
             continue
-        source = by_id.get(raw.get(_INPUT_CHARACTER_ID_FIELD))
+        value = raw.get(_INPUT_CHARACTER_ID_FIELD)
+        source = by_id.get(value) if isinstance(value, str) else None
         if source is not None and source.name:
             raw["name"] = source.name
 
@@ -766,7 +765,9 @@ def _input_character_indexes(data: dict, input_count: int) -> set[int]:
     return {
         index
         for index, raw in enumerate(cards)
-        if isinstance(raw, dict) and raw.get(_INPUT_CHARACTER_ID_FIELD) in expected
+        if isinstance(raw, dict)
+        and isinstance(raw.get(_INPUT_CHARACTER_ID_FIELD), str)
+        and raw[_INPUT_CHARACTER_ID_FIELD] in expected
     }
 
 

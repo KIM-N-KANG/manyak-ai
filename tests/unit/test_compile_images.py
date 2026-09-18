@@ -238,6 +238,7 @@ def _request():
         protagonist={"name": "카일", "gender": "MALE", "features": ["신중한"]},
         supporting_characters=[
             {"name": "레이", "gender": "MALE", "features": ["충직한"]},
+            {}, {},
         ],
     )
 

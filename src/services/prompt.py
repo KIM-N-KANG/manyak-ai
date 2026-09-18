@@ -59,14 +59,14 @@ def _format_character(c: CharacterInput) -> str:
 def _format_supporting_characters(characters: list[CharacterInput]) -> str:
     """주변 인물 블록. 0명이면 구성 전체를 LLM에 맡긴다(0명 허용 계약, KNK-833)."""
     if not characters:
-        return "(미정 — 이야기에 어울리는 주변 인물을 직접 구성하라)"
+        return "(입력 없음)"
     return "\n".join(f"{i}) {_format_character(c)}" for i, c in enumerate(characters, 1))
 
 
 def _format_compile_supporting_characters(characters: list[CharacterInput]) -> str:
     """컴파일 입력 인물에 중간 JSON에서 되돌려 받을 내부 식별자를 붙인다."""
     if not characters:
-        return "(미정 — 이야기에 어울리는 주변 인물을 직접 구성하라)"
+        return "(입력 없음)"
     return "\n".join(
         f"[input_character_id: input-{i}] {_format_character(c)}"
         for i, c in enumerate(characters, 1)
@@ -83,6 +83,7 @@ def build_storylines_prompt(
         {
             "장르_태그": ", ".join(genre_tags),
             "주인공": _format_character(protagonist),
+            "주변_인물_수": str(len(supporting_characters)),
             "주변_인물": _format_supporting_characters(supporting_characters),
         },
     )
@@ -150,6 +151,7 @@ def build_compile_prompt(
             "추가정보": additional_info or "(없음)",
             "장르_태그": ", ".join(genre_tags),
             "주인공": _format_character(protagonist),
+            "주변_인물_수": str(len(supporting_characters)),
             "주변_인물": _format_compile_supporting_characters(supporting_characters),
             "로어북": _format_lorebooks(lorebooks or []),
         },
@@ -176,9 +178,17 @@ def build_refill_prompt(
     if missing_blocks:
         blocks_str = ", ".join(missing_blocks)
         instructions.append(
-            f"다음 블록이 비어 있거나 누락됐다: {blocks_str}. 이 블록들은 작성 규칙과 "
+            f"다음 블록이 비어 있거나 작성 규칙과 맞지 않는다: {blocks_str}. 이 블록들은 작성 규칙과 "
             f"스키마에 맞게 통째로 새로 채워서 같은 이름의 최상위 키로 반환하라."
         )
+        if "character_setting" in missing_blocks:
+            instructions.append(
+                "인물 카드는 원래 입력의 인원수와 인물 구성 규칙에 맞춰 다시 작성하라. "
+                "입력 인물이 있으면 각 input_character_id에 카드 하나씩만 반환하라."
+                " 이름 미정 입력도 선택 스토리라인 속 인물에 연결하고 그 관계·역할을 유지하라."
+                " 직전 결과에 새 인물이 잘못 추가됐다면 그 카드를 기준으로 삼지 말고,"
+                " 원래 선택 스토리라인의 인물로 바로잡아라."
+            )
     if character_fields:
         targets = "; ".join(
             f"index {index}: {', '.join(fields)}"
