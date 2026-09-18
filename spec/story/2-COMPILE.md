@@ -1,6 +1,6 @@
 ---
-version: 17
-updated: 2026-09-12
+version: 18
+updated: 2026-09-18
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -39,7 +39,7 @@ updated: 2026-09-12
 | OpenAI(기본) | `prompt/story/COMPILE-TEMPLATE.md` | `COMPILE` |
 | Google(Gemini) | `prompt/story/COMPILE-TEMPLATE-gemini.md` | `COMPILE_GEMINI` |
 
-두 템플릿 모두 `[SYSTEM]`·`[USER]` 두 블록으로 구성되며, 같은 6개 슬롯을 씁니다. 서버는 `STORY_COMPILE_MODEL` 환경변수로 정해진 모델의 공급자를 보고 템플릿을 선택합니다. refill·에러 캡처·응답 meta도 같은 공급자 기준을 따릅니다.
+두 템플릿 모두 `[SYSTEM]`·`[USER]` 두 블록으로 구성되며, 같은 7개 슬롯을 씁니다. 서버는 `STORY_COMPILE_MODEL` 환경변수로 정해진 모델의 공급자를 보고 템플릿을 선택합니다. refill·에러 캡처·응답 meta도 같은 공급자 기준을 따릅니다.
 
 ---
 
@@ -50,7 +50,7 @@ updated: 2026-09-12
 [2]  AI 서버  →  자리표시자 치환으로 완성된 프롬프트 생성
 [3]  AI 서버  →  LLM 호출  →  세분 JSON(StorySpec 구조) 수신
 [4]  AI 서버  →  meta.genre를 입력 태그로, 주인공 이름·성별을 입력값으로 덮어쓰기
-[5]  AI 서버  →  빈 필수 필드·입력 인물 카드 누락·인물 이름 중복·외형 누락 탐지
+[5]  AI 서버  →  빈 필수 필드·입력 인물 카드 불일치·인물 이름 중복·외형 누락 탐지
 [6]  AI 서버  →  문제 블록과 인물 이름·외형 필드를 한 번에 부분 재호출 — 최대 2회
 [7]  AI 서버  →  StorySpec(Pydantic) 파싱
 [8]  AI 서버  →  인물 카드의 외형 필드로 인물별 이미지 병렬 생성 + 표지 썸네일 1장 동시 생성(실패해도 계속)
@@ -86,6 +86,7 @@ updated: 2026-09-12
 | `{{추가정보}}` | additional_info 문자열 (비어 있으면 `(없음)`) |
 | `{{장르_태그}}` | genre_tags 배열 → 쉼표 구분 문자열 |
 | `{{주인공}}` | protagonist 세트 → 한 줄 인물 표기 |
+| `{{주변_인물_수}}` | supporting_characters 배열 길이(이름 미정 항목도 포함) |
 | `{{주변_인물}}` | supporting_characters 배열 → 번호 붙인 인물 목록 |
 | `{{로어북}}` | lorebooks 배열 → 항목별 `### name` + content 블록(`\n\n`으로 구분). 비어 있거나 미전달·null이면 `(없음)`. 세계관·용어 확장 재료로만 쓰고 원문을 출력에 노출하지 않음 |
 
@@ -105,7 +106,9 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 
 같은 원칙으로 주인공 이름·성별도 덮어씁니다(KNK-838). 입력 `protagonist.name`이 있으면 `user_role_setting.name`에, `protagonist.gender`가 있으면 `user_role_setting.gender`에 한국어(`남성`·`여성`)로 씁니다. 비운 항목은 LLM이 지은 값을 그대로 둡니다. 주인공 프로필 블록이 통째로 없거나 객체가 아니면 주입을 건너뜁니다 — 그 블록은 부분 재호출이 채우고, 재호출 뒤 주입이 다시 실행됩니다.
 
-입력 주변 인물에는 `input-1`부터 시작하는 내부 표시 `input_character_id`를 붙입니다. LLM은 입력 인물 카드에 같은 표시를 돌려주고 직접 만든 인물에는 `null`을 씁니다. 서버는 이 표시로 입력 인물 카드를 찾아 사용자가 정한 이름을 덮어씁니다. 표시가 빠지거나 중복되면 `character_setting` 블록을 다시 받으며, 이름이 겹치면 표시가 없는 생성 인물의 이름만 다시 받습니다. 내부 표시는 검증 후 제거하므로 백엔드 응답에는 포함되지 않습니다.
+입력 주변 인물에는 `input-1`부터 시작하는 내부 표시 `input_character_id`를 붙입니다. 입력이 1~5명이면 결과 카드 수가 입력 수와 같고 각 표시가 정확히 한 카드에 있어야 합니다. 이름 미정 항목도 한 명이며, 카드 순서는 달라도 됩니다. 입력이 0명이면 LLM이 스토리라인에 맞춰 1~5명을 자유롭게 구성하고 표시는 `null`로 둡니다. 이 경우 입력 목록과의 일치 검사는 생략하되 기존 필수 필드·이름·1~5명 스키마 검증은 유지합니다.
+
+서버는 이 표시로 입력 인물 카드를 찾아 사용자가 정한 이름을 덮어씁니다. 카드 수나 표시가 입력과 맞지 않으면 인물 카드 블록을 보완합니다. 내부 표시는 검증 후 제거하므로 백엔드 응답에는 포함되지 않습니다. 코드가 보장하는 것은 카드 수와 입력 ID 대응이며, 서술 본문에서의 실제 등장 여부는 프롬프트 지시와 라이브 실측으로 확인합니다.
 
 주입은 본호출과 각 재호출 직후에 적용합니다. 재호출이 블록을 통째로 갈아끼우므로, 그때 다시 덮어쓰지 않으면 재호출이 데려온 LLM 값이 입력값을 되덮습니다.
 
@@ -118,7 +121,7 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 - 블록 문제와 인물 필드 문제가 동시에 있으면 한 번의 재호출 응답에 모두 담아 고칩니다. 두 문제를 합쳐 **최대 2회**까지 재호출합니다.
 - `null`·빈 문자열·공백이나 개행만 있는 문자열을 모두 빈 필드로 판정합니다. 이름이 2회 후에도 비었거나 중복이면 502로 막습니다. 외형은 이미지 생성의 부가 입력이므로 2회 후에도 비어 있으면 컴파일은 성공시키고 `character_images`에서 해당 인물만 `appearance_missing`으로 처리합니다(표지 썸네일에는 그 인물이 첫 인물로 들어갈 수 있음, → 4-7).
 - 검증에서 제외하는 예외 필드: `meta.genre`(서버가 입력 태그로 덮어씀), `user_role_setting.preference`(선택 입력이라 비어 있어도 됨). 주인공 `name`·`gender`는 검증 대상이되, 입력값이 있으면 주입이 먼저 채우므로 재호출로 이어지지 않습니다.
-- **입력 인물 카드 누락도 재호출 대상입니다**(KNK-833). 요청한 `input_character_id`가 카드에 없거나 중복되면 `character_setting` 블록을 부분 재호출로 다시 받습니다. 스토리라인처럼 전체를 다시 부르지 않는 이유는 컴파일이 가장 비싼 호출이라, 잘 나온 나머지 블록을 보존하는 쪽이 싸기 때문입니다.
+- **입력 인물과 카드가 일대일로 맞지 않으면 재호출합니다**(KNK-1331). 입력이 있을 때 카드 수의 초과·부족, `input_character_id` 누락·중복·미등록 값·형식 오류를 검사합니다. 문제 있으면 `character_setting` 블록만 다시 받고, 매번 같은 검사를 적용합니다. 기존 최대 2회 보완 한도를 공유하며 소진 후에도 불일치하면 인물 이미지·표지를 생성하기 전에 502로 반환합니다. 다른 블록은 별도 문제가 없으면 보존하며, 서술 속 인물 언급을 자동으로 교정하지는 않습니다.
 - 엔딩은 **soft 블록**입니다(KNK-465). 정상 3개를 목표로, 3개가 아니거나 항목 필드(name·achievement_condition·epilogue)가 비었거나 min_turns가 1 이상의 정수가 아니면(0·음수 포함) 다른 빈 블록과 동일하게 `endings` 블록을 부분 재호출로 채웁니다. 다만 재호출 2회 후에도 온전한 3개를 못 채우면 502가 아니라 **빈 배열(`[]`)로 폴백하고 200을 반환**합니다 — 스토리 본체·주요 사건은 살리고 부가물인 엔딩만 비웁니다(선택지 폴백과 같은 원칙). 엔딩은 성취 유형(해피·노말·배드)을 출력하지 않으며 `name`으로 식별합니다.
 
 필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 6개 필드(name·gender·personality·tone·motivation·attitude_to_user), user_role_setting의 preference 제외 5개 필드(name·gender·role·background·personality)), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음), `main_events`(3~5개이며 각 항목의 name·description·key_sentence가 비어 있지 않음), `endings`(정상 3개이며 각 항목의 name·achievement_condition·epilogue가 비어 있지 않고 min_turns가 1 이상의 정수 — 단 재호출로도 못 채우면 빈 배열로 폴백).
@@ -133,7 +136,7 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 |---|---|
 | LLM API 호출 실패(타임아웃·rate limit·요청 거부·연동 오류) | 게이트웨이 오류(502) 반환 |
 | 빈 응답이거나 유효하지 않은 JSON | 파싱 실패로 간주하고 502 반환 |
-| 재호출 2회 후에도 필수 필드가 비거나 입력 인물 카드가 누락되거나 인물 이름이 비었거나 중복됨(엔딩 제외) | 502 반환 |
+| 재호출 2회 후에도 필수 필드가 비거나 입력 인물과 카드가 일대일로 맞지 않거나 인물 이름이 비었거나 중복됨(엔딩 제외) | 이미지 생성 전 502 반환 |
 | 재호출 2회 후에도 인물 외형 필드가 비어 있음 | 컴파일은 200 반환, `character_images`의 해당 인물은 `appearance_missing`(표지 썸네일은 별도 규칙, → 4-7) |
 | 표지 썸네일 생성 실패(시간 초과·rate limit·거부·기타) | 컴파일은 200 반환, `thumbnail_image`는 `image_base64: null` + 사유 코드(`timeout`·`rate_limited`·`rejected`·`generation_failed`) |
 | 표지 썸네일 로직 자체의 예상치 못한 예외 | 컴파일은 200 반환, `thumbnail_image.error`는 `generation_failed`, Sentry에 `unexpected_error`로 보고 |
@@ -320,7 +323,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | | rule_setting | 전개 속도·긴장 곡선 등 연출 규칙 |
 | | tone_setting | 장면 전체의 서술 톤 |
 | | length_ratio | 묘사와 대사의 비중(`묘사 N : 대사 M`) |
-| | character_setting | 주변 인물 카드 1~5명. 각 카드는 내부용 input_character_id + name·gender·personality·tone·motivation·attitude_to_user + 외형 6필드(age·body·face·hair·outfit·visual_identity). 입력한 주변 인물은 전원 카드가 되고, 남는 자리만 LLM이 채움. input_character_id는 사용자 이름 주입 후 제거되어 외부 응답에는 실리지 않음. 외형 필드는 이미지 생성 전용이며 통글에는 싣지 않음(KNK-937). 선택 필드라 비어 있어도 컴파일은 성공하고 `character_images`에서 해당 인물만 안 만들어짐(표지 썸네일 규칙은 4-7) |
+| | character_setting | 주변 인물 카드 1~5명. 각 카드는 내부용 input_character_id + name·gender·personality·tone·motivation·attitude_to_user + 외형 6필드(age·body·face·hair·outfit·visual_identity). 입력 인물이 있으면 정확히 일대일로 만들고, 입력이 0명이면 1~5명을 자유롭게 생성함. input_character_id는 사용자 이름 주입 후 제거되어 외부 응답에는 실리지 않음. 외형 필드는 이미지 생성 전용이며 통글에는 싣지 않음(KNK-937). 선택 필드라 비어 있어도 컴파일은 성공하고 `character_images`에서 해당 인물만 안 만들어짐(표지 썸네일 규칙은 4-7) |
 | | user_role_setting | 주인공 프로필. name·gender·role·background·personality·preference(선택). name·gender는 입력값이 있으면 서버가 덮어씀 |
 | start | name·prologue·start_situation | 시작 설정 이름·도입 나레이션·첫 장면 |
 | suggested_inputs | string[] | 첫 입력 추천 문구 3개 |
@@ -370,7 +373,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 - `meta.title`: 기존 웹소설처럼 자극적으로, 가장 센 한 방을 앞세워 짓는다(설명조 금지). 한 문장·공백 포함 25자 이내 권장.
 - `plot_setting.conflict`: 앞으로 일어날 수 있는 갈등·분기만 적고, 확정된 결과처럼 쓰지 않는다.
 - `length_ratio`: 묘사와 대사의 비중을 `묘사 N : 대사 M` 형식으로 적는다.
-- `character_setting`: **입력의 주변 인물은 빠짐없이 전원 카드로 만든다** — 이름은 준 그대로 쓰고, 성별·특징이 정해져 있으면 카드에 반영한다. 카드는 **최대 5명**이고, 입력 인물로 5명이 안 차면 이야기에 필요한 인물로 남는 자리를 채워도 되며 그 밖의 단역은 `world_setting` 배경으로 흡수한다. `gender`는 `남성`·`여성`으로만 쓴다. 인물마다 말투·성격이 서로 구분되게 한다.
+- `character_setting`: 인물 수와 구성은 4-3의 입력 기준을 따른다. 이름은 준 그대로 쓰고, 성별·특징이 정해져 있으면 카드에 반영한다. `gender`는 `남성`·`여성`으로만 쓴다. 인물마다 말투·성격이 서로 구분되게 한다. 모든 설정·서술도 같은 인물 구성을 따르도록 지시하며, 입력 인물이 있으면 스토리라인·추가정보·로어북에 다른 인물이 언급되어도 새 주변 인물을 추가하지 않는다.
 - `suggested_inputs`: 첫 입력 추천 문구 **정확히 3개**. 행동 묘사는 `*...*`로 감쌀 수 있다.
 - `main_events`: 주요 사건 3~5개(name·description·key_sentence). 이야기의 갈림길로 짜되 기본 순서만 두고 건너뛰기를 허용한다. `key_sentence`는 "사용자가 ~한다" 사용자 시점의 유도 문장으로, 사용자가 자연스럽게 떠올려 입력할 만하게 직관적으로 쓴다.
 - `endings`: 엔딩 3개. 성취 유형(해피·노말·배드)을 **내부 기준으로만** 삼아 하나씩 만들되 **유형은 출력하지 않고 `name`으로 식별**한다. 사건들의 조합·해결에 뿌리내리게 하되, 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 나눠 결말 상태를 빈틈없이 덮는다(상호배타+총망라, 노말이 중간대 흡수). 조건은 `min_turns`(최소 턴, 정수)와 `achievement_condition`(목적·거친 사건을 한 문장에 담되 특정 사건 경유 비강제)로 나누고, `epilogue`엔 완성 글이 아니라 방향을 담되 "사용자의 행적을 반드시 반영해 그 행동이 세계를 바꾼 결과로 마무리하라"는 지시를 포함한다.
@@ -391,6 +394,8 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | 필수 필드 | meta·story_settings·story_start_settings 슬롯이 비어 있지 않은지 확인 |
 | 인물 카드 | character_setting이 1~5명이고 각 카드 6필드가 채워졌는지 확인 |
 | 입력 인물 등장 | 이름 지은 주변 인물이 카드에 있는지, 없으면 카드 블록만 재호출하는지 확인 |
+| 입력 인물 수·ID | 1~5명·이름 미정 입력에 카드가 일대일 대응하는지, 초과·누락·중복·잘못된 ID는 최대 2회 보완 후에도 남으면 이미지·표지 호출 없이 502인지 확인 |
+| 자유 생성 | 입력이 0명이면 생성 카드 1~5명이 추가 보완 없이 통과하고 기존 필수 필드 검증은 유지되는지 확인 |
 | 추천 입력 | story_suggested_inputs가 정확히 3개인지 확인 |
 | genre 주입 | 노출 genre가 LLM 출력이 아니라 입력 태그로 채워졌는지 확인 |
 | 주인공 주입 | 입력한 주인공 이름·성별이 통글의 최종 값인지, 비운 항목은 LLM 값이 남는지, 재호출 뒤에도 유지되는지 확인 |

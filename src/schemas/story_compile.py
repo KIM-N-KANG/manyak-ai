@@ -96,7 +96,7 @@ class PromptSettings(BaseModel):
     rule_setting: str
     tone_setting: str
     length_ratio: str
-    # 주요 인물 1~5명 카드화 — 나머지는 world_setting 배경으로 흡수
+    # 입력 인물이 있으면 정확히 일대일로 카드화, 입력이 없으면 1~5명 자유 생성
     character_setting: list[CharacterSetting] = Field(min_length=1, max_length=5)
     user_role_setting: UserRoleSetting
 
