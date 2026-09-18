@@ -27,6 +27,7 @@ from src.core.sentry import (
     ERROR_PROVIDER_TIMEOUT,
     ERROR_PROVIDER_UNAVAILABLE,
 )
+from src.schemas.story import CharacterInput, StorylinesRequest
 from src.services import story_llm
 from src.services.llm import openai_sdk, registry
 from src.services.llm.base import (
@@ -328,11 +329,13 @@ async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
     monkeypatch.setattr(story_llm.settings, "storylines_model", "deepseek-flash")
     # storylines 경로는 stories 계약 검증(_validate_storylines)을 타므로 유효한 결과를 돌려준다.
     _install(monkeypatch, _capture(captured, _VALID_STORYLINES_JSON))
-    _result, usage = await story_llm.generate_storylines("SYS", "USER")
+    response = await story_llm.generate_storylines(
+        StorylinesRequest(genre_tags=["무협"], protagonist=CharacterInput())
+    )
 
     assert captured["model"] == story_llm.settings.storylines_model  # storylines = flash
     assert captured["max_tokens"] == story_llm._STORYLINES_MAX_TOKENS == 6_144
-    assert usage.model == story_llm.settings.storylines_model
+    assert response.meta.model == story_llm.settings.storylines_model
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
@@ -416,7 +419,9 @@ async def test_generate_storylines_retries_twice_on_invalid(monkeypatch, capture
     _install(monkeypatch, create)
 
     with pytest.raises(HTTPException) as ei:
-        await story_llm.generate_storylines("SYS", "USER")
+        await story_llm.generate_storylines(
+            StorylinesRequest(genre_tags=["무협"], protagonist=CharacterInput())
+        )
 
     assert ei.value.status_code == 502
     assert calls["count"] == 3
@@ -534,11 +539,13 @@ async def test_storylines_ids_normalized_to_sequence(monkeypatch, captures) -> N
     create, calls = _returns_sequence([weird_ids])
     _install(monkeypatch, create)
 
-    result, usage = await story_llm.generate_storylines("SYS", "USER")
+    response = await story_llm.generate_storylines(
+        StorylinesRequest(genre_tags=["무협"], protagonist=CharacterInput())
+    )
 
-    assert [s["id"] for s in result["stories"]] == [1, 2, 3]  # 순서대로 교정됨
+    assert [s.id for s in response.stories] == [1, 2, 3]  # 순서대로 교정됨
     assert calls["count"] == 1  # 재호출 없음(무해한 이탈)
-    assert usage.retry_count == 0
+    assert response.meta.retry_count == 0
     assert captures == []  # 실패 캡처 없음(200 경로)
 
 
@@ -558,11 +565,13 @@ async def test_storylines_missing_id_passes(monkeypatch, captures) -> None:
     create, calls = _returns_sequence([no_ids])
     _install(monkeypatch, create)
 
-    result, usage = await story_llm.generate_storylines("SYS", "USER")
+    response = await story_llm.generate_storylines(
+        StorylinesRequest(genre_tags=["무협"], protagonist=CharacterInput())
+    )
 
-    assert [s["id"] for s in result["stories"]] == [1, 2, 3]
+    assert [s.id for s in response.stories] == [1, 2, 3]
     assert calls["count"] == 1  # 재호출 없음
-    assert usage.retry_count == 0
+    assert response.meta.retry_count == 0
     assert captures == []
 
 
@@ -571,11 +580,13 @@ async def test_storylines_schema_mismatch_retries_then_succeeds(monkeypatch, cap
     create, calls = _returns_sequence([_SCHEMA_MISMATCH_JSON, _VALID_STORYLINES_JSON])
     _install(monkeypatch, create)
 
-    result, usage = await story_llm.generate_storylines("SYS", "USER")
+    response = await story_llm.generate_storylines(
+        StorylinesRequest(genre_tags=["무협"], protagonist=CharacterInput())
+    )
 
-    assert [s["id"] for s in result["stories"]] == [1, 2, 3]
+    assert [s.id for s in response.stories] == [1, 2, 3]
     assert calls["count"] == 2
-    assert usage.retry_count == 1
+    assert response.meta.retry_count == 1
     assert captures[-1]["error_code"] == ERROR_INVALID_AI_RESPONSE
 
 
@@ -618,7 +629,9 @@ async def test_storylines_contract_violation_exhausts_to_502(
     _install(monkeypatch, create)
 
     with pytest.raises(HTTPException) as ei:
-        await story_llm.generate_storylines("SYS", "USER")
+        await story_llm.generate_storylines(
+            StorylinesRequest(genre_tags=["무협"], protagonist=CharacterInput())
+        )
 
     assert ei.value.status_code == 502
     assert "올바른 형식" in ei.value.detail

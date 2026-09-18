@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from src.schemas.story import CharacterInput
+from src.schemas.story import CharacterInput, StorylinesRequest
 from src.services import story_llm
 from src.services.prompt import build_storylines_prompt, build_storylines_refill_prompt
 
@@ -23,9 +23,17 @@ def _stories(*storylines: str) -> dict:
     }
 
 
+def _request() -> StorylinesRequest:
+    return StorylinesRequest(
+        genre_tags=["무협"], protagonist=CharacterInput(),
+        supporting_characters=[CharacterInput(name="서린", gender="FEMALE")],
+    )
+
+
 def _prompts() -> tuple[str, str]:
+    request = _request()
     return build_storylines_prompt(
-        ["무협"], CharacterInput(), [CharacterInput(name="서린", gender="FEMALE")]
+        request.genre_tags, request.protagonist, request.supporting_characters,
     )
 
 
@@ -47,23 +55,23 @@ async def test_refills_only_missing_story(monkeypatch: pytest.MonkeyPatch) -> No
         return data, story_llm.LlmUsage("m", 100, 200, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
-    system, user = _prompts()
-    result, usage = await story_llm.generate_storylines(system, user, required_names=["서린"])
+    response = await story_llm.generate_storylines(_request())
+    assert response.meta is not None
 
     assert [label for label, _ in calls] == ["storylines", "storylines-refill#1"]
-    assert [s["storyline"] for s in result["stories"]] == [
+    assert [s.storyline for s in response.stories] == [
         "서린 1편",
         "서린이 돌아온 2편",
         "서린 3편",
     ]
-    assert [s["id"] for s in result["stories"]] == [1, 2, 3]  # id는 코드가 다시 박는다
+    assert [s.id for s in response.stories] == [1, 2, 3]  # id는 코드가 다시 박는다
     # 재호출 프롬프트는 어느 편을 다시 쓸지 지목하고, 나머지 편을 맥락으로 함께 준다.
     refill_user = calls[1][1]
     assert "2편" in refill_user
     assert "서린 3편" in refill_user
     # 토큰은 본호출+재호출 합산, retry_count는 부분 재호출 횟수를 포함한다.
-    assert (usage.input_tokens, usage.output_tokens) == (107, 209)
-    assert usage.retry_count == 1
+    assert (response.meta.input_token_count, response.meta.output_token_count) == (107, 209)
+    assert response.meta.retry_count == 1
 
 
 async def test_no_refill_when_all_stories_have_names(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,10 +84,10 @@ async def test_no_refill_when_all_stories_have_names(monkeypatch: pytest.MonkeyP
         )
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
-    system, user = _prompts()
-    _, usage = await story_llm.generate_storylines(system, user, required_names=["서린"])
+    response = await story_llm.generate_storylines(_request())
+    assert response.meta is not None
     assert calls == ["storylines"]  # 한 번에 통과
-    assert usage.retry_count == 0
+    assert response.meta.retry_count == 0
 
 
 async def test_returns_result_with_warning_after_two_refills(
@@ -113,17 +121,17 @@ async def test_returns_result_with_warning_after_two_refills(
     monkeypatch.setattr(
         story_llm, "capture_ai_exception", lambda exc, **kw: captured.append({"exc": exc, **kw})
     )
-    system, user = _prompts()
-    result, usage = await story_llm.generate_storylines(system, user, required_names=["서린"])
+    response = await story_llm.generate_storylines(_request())
+    assert response.meta is not None
 
     assert calls == ["storylines", "storylines-refill#1", "storylines-refill#2"]
     # 마지막 재호출 결과까지 병합된 세 편이 그대로 나간다.
-    assert [s["storyline"] for s in result["stories"]] == [
+    assert [s.storyline for s in response.stories] == [
         "서린 1편",
         "여전히 없는 2편(storylines-refill#2)",
         "서린 3편",
     ]
-    assert usage.retry_count == 2
+    assert response.meta.retry_count == 2
     # Sentry에는 경고 수준으로 1건만 보고한다.
     assert len(captured) == 1
     assert captured[0]["level"] == "warning"
@@ -152,11 +160,11 @@ async def test_refill_breaking_contract_falls_back_to_original(
     monkeypatch.setattr(
         story_llm, "capture_ai_exception", lambda exc, **kw: captured.append({"exc": exc, **kw})
     )
-    system, user = _prompts()
-    result, _usage = await story_llm.generate_storylines(system, user, required_names=["서린"])
+    response = await story_llm.generate_storylines(_request())
+    assert response.meta is not None
     # 깨진 재호출 편은 버려지고 계약이 유효한 원본이 그대로 나간다.
-    assert [s["storyline"] for s in result["stories"]] == ["서린 1편", "없는 2편", "서린 3편"]
-    assert all(len(s["recommended_infos"]) == 3 for s in result["stories"])
+    assert [s.storyline for s in response.stories] == ["서린 1편", "없는 2편", "서린 3편"]
+    assert all(len(s.recommended_infos) == 3 for s in response.stories)
     assert len(captured) == 1 and captured[0]["level"] == "warning"
 
 
@@ -181,10 +189,10 @@ async def test_empty_body_refill_restores_original(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         story_llm, "capture_ai_exception", lambda exc, **kw: captured.append({"exc": exc, **kw})
     )
-    system, user = _prompts()
-    result, _usage = await story_llm.generate_storylines(system, user, required_names=["서린"])
+    response = await story_llm.generate_storylines(_request())
+    assert response.meta is not None
     # 빈 편은 버려지고 본문이 있는 원본이 그대로 나간다.
-    assert [s["storyline"] for s in result["stories"]] == ["서린 1편", "없는 2편", "서린 3편"]
+    assert [s.storyline for s in response.stories] == ["서린 1편", "없는 2편", "서린 3편"]
     assert len(captured) == 1 and captured[0]["level"] == "warning"
 
 
