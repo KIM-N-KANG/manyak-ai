@@ -9,7 +9,7 @@ import pytest
 
 from src.schemas.story import CharacterInput
 from src.services import story_llm
-from src.services.prompt import build_storylines_prompt
+from src.services.prompt import build_storylines_prompt, build_storylines_refill_prompt
 
 
 def _stories(*storylines: str) -> dict:
@@ -41,19 +41,55 @@ def test_prompt_marks_empty_fields_as_undecided() -> None:
 
 def test_prompt_zero_supporting_characters_fallback() -> None:
     # 0명이면 주변 인물 구성 전체를 LLM에 맡긴다(0명 허용 계약).
-    _, user = build_storylines_prompt(["무협"], CharacterInput(), [])
-    assert "(미정 — 이야기에 어울리는 주변 인물을 직접 구성하라)" in user
+    system, user = build_storylines_prompt(["무협"], CharacterInput(), [])
+    assert "입력 주변 인물 수: 0명" in user
+    assert "(입력 없음)" in user
+    assert "0명이면 각 이야기에서 주변 인물 1~5명을 자유롭게 구성한다" in system
     assert "{{" not in user
 
 
-def test_prompt_placeholder_like_name_not_expanded() -> None:
+@pytest.mark.parametrize("count", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("unnamed", [False, True])
+def test_prompt_counts_all_input_characters(count: int, unnamed: bool) -> None:
+    characters = [
+        CharacterInput(name=None if unnamed else f"인물{i}")
+        for i in range(1, count + 1)
+    ]
+    system, user = build_storylines_prompt(["무협"], CharacterInput(), characters)
+
+    assert f"입력 주변 인물 수: {count}명" in user
+    for i, character in enumerate(characters, 1):
+        assert f"{i}) 이름: {character.name or '(미정)'} / " in user
+    assert f"{count + 1}) 이름:" not in user
+    assert "{{" not in user
+    assert "본문과 추천 추가 정보 모두에 적용" in system
+    assert "입력이 1명 이상이면 각 이야기의 주변 인물은 입력 목록과 정확히 일치해야 한다" in system
+    assert "이름이 미정인 항목도 각각 한 명" in system
+    assert "필요하면 인물을 더 만들어도" not in system
+
+
+def test_refill_preserves_character_count_and_unnamed_character() -> None:
+    system, user = build_storylines_prompt(
+        ["무협"], CharacterInput(), [CharacterInput(name="서린"), CharacterInput()],
+    )
+    refill_system, refill_user = build_storylines_refill_prompt(user, "{}", [2])
+
+    assert refill_system == system
+    assert refill_user.startswith(user)
+    assert "입력 주변 인물 수: 2명" in refill_user
+    assert "1) 이름: 서린 / " in refill_user
+    assert "2) 이름: (미정) / " in refill_user
+
+
+@pytest.mark.parametrize("placeholder", ["{{주변_인물}}", "{{주변_인물_수}}"])
+def test_prompt_placeholder_like_name_not_expanded(placeholder: str) -> None:
     # 이름에 자리표시자 모양 문자열이 들어와도 문자 그대로 남는다(단일 패스 치환).
     _, user = build_storylines_prompt(
         ["무협"],
-        CharacterInput(name="{{주변_인물}}"),
+        CharacterInput(name=placeholder),
         [CharacterInput(name="서린")],
     )
-    assert "이름: {{주변_인물}} / " in user  # 주인공 줄에 문자 그대로
+    assert f"이름: {placeholder} / " in user  # 주인공 줄에 문자 그대로
     assert user.count("1) 이름: 서린") == 1  # 주변 인물 블록은 제자리에 한 번만
 
 

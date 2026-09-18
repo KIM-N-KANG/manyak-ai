@@ -59,7 +59,7 @@ def _format_character(c: CharacterInput) -> str:
 def _format_supporting_characters(characters: list[CharacterInput]) -> str:
     """주변 인물 블록. 0명이면 구성 전체를 LLM에 맡긴다(0명 허용 계약, KNK-833)."""
     if not characters:
-        return "(미정 — 이야기에 어울리는 주변 인물을 직접 구성하라)"
+        return "(입력 없음)"
     return "\n".join(f"{i}) {_format_character(c)}" for i, c in enumerate(characters, 1))
 
 
@@ -83,6 +83,7 @@ def build_storylines_prompt(
         {
             "장르_태그": ", ".join(genre_tags),
             "주인공": _format_character(protagonist),
+            "주변_인물_수": str(len(supporting_characters)),
             "주변_인물": _format_supporting_characters(supporting_characters),
         },
     )
