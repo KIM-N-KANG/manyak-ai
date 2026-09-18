@@ -1,6 +1,6 @@
 ---
-version: 11
-updated: 2026-09-18
+version: 12
+updated: 2026-09-19
 ---
 
 # 스토리라인 생성 시스템 명세
@@ -55,6 +55,16 @@ LLM에게 전달할 지시문의 틀입니다. 별도 파일로 분리하는 이
 ---
 
 ## 3. 시스템 흐름과 각 단계의 이유
+
+백엔드는 `POST /api/v1/story/storylines`로 요청합니다. 라우터(`src/api/v1/story.py`)는
+요청 단위 관측을 시작하고 `story_llm.generate_storylines(request)`를 호출해 완성된 응답을
+반환합니다. 성공 시 응답 메타에서, 실패 시 HTTP 예외에서 재호출 횟수를 읽어 기록합니다.
+
+서비스(`src/services/story_llm.py`)는 `StorylinesRequest`를 받아 기존 프롬프트 빌더로
+프롬프트를 준비하고, 이름이 있는 주변 인물을 누락 검사 대상으로 추출합니다. 모델 호출·검증·
+전체 재호출·부분 보완을 마친 뒤 `StoryResponseMeta`를 포함한 `StorylinesResponse`를 반환합니다.
+개발 도구도 같은 요청 모델로 서비스를 직접 호출할 수 있습니다. HTTP 주소·요청 및 응답 필드·
+오류 계약은 §5-2와 §4-3을 따릅니다.
 
 ```
 [1] 클라이언트  →  장르·인물 입력 전송 (POST /api/v1/story/storylines)  →  AI 서버
