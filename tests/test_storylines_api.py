@@ -1,10 +1,15 @@
+import json
 from contextlib import contextmanager
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Request
+from openai import APITimeoutError
 
 from src.api.v1 import story as story_module
-from src.schemas.story import StorylinesRequest
+from src.schemas.story import StorylinesRequest, StorylinesResponse
+from src.services.prompt import STORYLINES_VERSION, build_storylines_prompt
 from src.services import story_llm
 
 # storylines 엔드포인트의 정상 요청 본문(장르 태그 + 인물 세트, KNK-833).
@@ -178,17 +183,124 @@ async def test_storylines_endpoint_reports_actual_retry_count(
     assert meta["output_token_count"] == 160
 
 
-async def test_storylines_endpoint_passes_named_supporting_characters(
+async def test_storylines_endpoint_passes_request_to_service(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """이름 지은 주변 인물만 등장 검증 대상(required_names)으로 넘긴다(KNK-836)."""
-    seen: dict = {}
+    seen: list[StorylinesRequest] = []
+    expected = StorylinesResponse.model_validate(_FAKE)
 
-    async def fake_generate(system: str, user: str, required_names: list[str] | None = None):
-        seen["required_names"] = required_names
-        return _FAKE, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
+    async def fake_generate(request: StorylinesRequest) -> StorylinesResponse:
+        seen.append(request)
+        return expected
 
-    monkeypatch.setattr(story_module.story_llm, "generate_storylines", fake_generate)
-    resp = await client.post("/api/v1/story/storylines", json=_REQUEST)
-    assert resp.status_code == 200
-    assert seen["required_names"] == ["서린"]  # 이름을 비운 인물은 검증 대상이 아니다
+    monkeypatch.setattr(story_llm, "generate_storylines", fake_generate)
+    response = await client.post("/api/v1/story/storylines", json=_REQUEST)
+    assert response.status_code == 200
+    assert seen == [StorylinesRequest.model_validate(_REQUEST)]
+    assert response.json() == expected.model_dump(mode="json")
+
+
+async def test_storylines_service_and_http_share_prompt_and_response(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HTTP 밖에서도 정규화된 입력으로 같은 프롬프트·완성 응답을 만든다."""
+    payload = deepcopy(_REQUEST)
+    payload["supporting_characters"][0]["name"] = "  서린  "
+    request = StorylinesRequest.model_validate(payload)
+    expected_prompts = build_storylines_prompt(
+        request.genre_tags, request.protagonist, request.supporting_characters,
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def fake_complete(system: str, user: str, **_kwargs: object):
+        calls.append((system, user))
+        return deepcopy(_FAKE), story_llm.LlmUsage(
+            "actual-model", 10, None, provider="actual-provider", retry_count=2,
+        )
+
+    monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
+    direct = await story_llm.generate_storylines(request)
+    http = await client.post("/api/v1/story/storylines", json=payload)
+    expected = {
+        **_FAKE,
+        "meta": {
+            "model": "actual-model", "provider": "actual-provider",
+            "prompt_versions": {"STORYLINES": STORYLINES_VERSION},
+            "input_token_count": 10, "output_token_count": None, "retry_count": 2,
+        },
+    }
+    assert http.status_code == 200
+    assert direct.model_dump(mode="json") == http.json() == expected
+    # 이름 미정 인물까지 필수 이름으로 취급하거나 빌더 입력을 바꾸면 깨진다.
+    assert calls == [expected_prompts, expected_prompts]
+
+
+@pytest.mark.parametrize("scenario", ["recovered", "exhausted", "timeout", "refilled"])
+async def test_storylines_http_preserves_retries_and_failure_metadata(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, install_llm_sdk, scenario: str,
+) -> None:
+    """SDK만 대체하고 라우터·서비스·검증·오류 변환·직렬화를 함께 실행한다."""
+    monkeypatch.setattr(story_llm.settings, "storylines_model", "deepseek-flash")
+    captured: dict = {}
+    errors: list[dict] = []
+    calls: list[dict] = []
+    monkeypatch.setattr(story_llm, "capture_ai_exception", lambda _exc, **kw: errors.append(kw))
+
+    @contextmanager
+    def observe(_name: str, **kwargs: object):
+        captured.update(kwargs["metadata"])
+
+        class Trace:
+            def set_metadata(self, **metadata: object) -> None:
+                captured.update(metadata)
+
+        yield Trace()
+
+    monkeypatch.setattr(story_module, "observe_request", observe)
+    valid = json.dumps(_FAKE)
+    missing = deepcopy(_FAKE)
+    missing["stories"][1]["storyline"] = "인물이 빠진 이야기"
+    refill = json.dumps({"stories": [_FAKE["stories"][1]]})
+    sequences = {
+        "recovered": [json.dumps({"stories": []}), valid],
+        "exhausted": [json.dumps({"stories": []})] * 3,
+        "refilled": ["{broken", json.dumps(missing), refill],
+        "timeout": [],
+    }
+
+    async def create(**kwargs: object):
+        index = len(calls)
+        calls.append(kwargs)
+        if scenario == "timeout":
+            raise APITimeoutError(request=Request("POST", "https://example.test"))
+        return SimpleNamespace(
+            model="actual-deepseek-model",
+            choices=[SimpleNamespace(message=SimpleNamespace(content=sequences[scenario][index]), finish_reason="stop")],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=20),
+        )
+
+    install_llm_sdk(create)
+    response = await client.post("/api/v1/story/storylines", json=_REQUEST)
+    expected_calls = {"recovered": 2, "exhausted": 3, "timeout": 1, "refilled": 3}[scenario]
+    assert len(calls) == expected_calls
+    assert captured["retry_count"] == expected_calls - 1
+    assert captured["prompt_versions"] == {"STORYLINES": STORYLINES_VERSION}
+    assert all(0 < call["timeout"] <= 90 for call in calls)
+    if scenario in {"recovered", "refilled"}:
+        assert response.status_code == 200
+        assert response.json() == {
+            **_FAKE,
+            "meta": {
+                "model": "actual-deepseek-model", "provider": "deepseek",
+                "prompt_versions": {"STORYLINES": STORYLINES_VERSION},
+                "input_token_count": 10 * expected_calls,
+                "output_token_count": 20 * expected_calls,
+                "retry_count": expected_calls - 1,
+            },
+        }
+    else:
+        assert response.status_code == 502
+        detail = ("LLM 응답 시간이 초과되었습니다." if scenario == "timeout"
+                  else "LLM이 올바른 형식의 응답을 반환하지 않았습니다.")
+        assert response.json() == {"detail": detail}
+    assert len(errors) == (3 if scenario == "exhausted" else 1)
