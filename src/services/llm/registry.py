@@ -152,6 +152,58 @@ _REGISTRY: dict[str, ResolvedModel] = {
                 source_url="https://developers.openai.com/api/docs/models/gpt-5.6-luna",
                 verified_on=date(2026, 7, 29),
                 effective_from=date(2026, 7, 9),
+                effective_until=date(2026, 7, 29),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+            # 2026-07-30부터 80% 인하(OpenAI changelog). KNK-1412에서 뒤늦게 확인해 반영했다.
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.20"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.02"),
+                output_usd_per_1m_tokens=Decimal("1.20"),
+                cache_write_input_usd_per_1m_tokens=Decimal("0.25"),
+                source_url="https://developers.openai.com/api/docs/pricing",
+                verified_on=date(2026, 9, 23),
+                effective_from=date(2026, 7, 30),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+        ),
+    ),
+    # 채팅 후보(CHAT_MODEL, KNK-1411). gpt-5.6-luna와 같이 비추론(none)으로 부른다. 공식 문서상
+    # temperature는 none일 때만 받지만, 추론 단계를 올리면 400이 나므로 받지 않는 것으로 적는다.
+    "gpt-6-luna": ResolvedModel(
+        model="gpt-6-luna",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=False,
+        context_window_tokens=1_050_000,
+        max_output_tokens=128_000,
+        reasoning_effort="none",
+        supported_reasoning_efforts=frozenset(
+            {"none", "low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 9, 23),
+        capabilities_source_urls=(
+            "https://developers.openai.com/api/docs/models/gpt-6-luna",
+        ),
+        # 공식 페이지의 스냅샷이 `gpt-6-luna` 하나뿐이라 이름과 다른 고정 스냅샷 ID가 없다.
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.10"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.01"),
+                output_usd_per_1m_tokens=Decimal("0.50"),
+                cache_write_input_usd_per_1m_tokens=Decimal("0.125"),
+                source_url="https://developers.openai.com/api/docs/models/gpt-6-luna",
+                verified_on=date(2026, 9, 23),
+                effective_from=date(2026, 9, 22),
                 long_context_threshold_tokens=272_000,
                 long_context_input_multiplier=Decimal("2"),
                 long_context_output_multiplier=Decimal("1.5"),
@@ -211,6 +263,8 @@ _REGISTRY: dict[str, ResolvedModel] = {
         ),
         # Claude 4.6+의 dateless canonical ID는 공식적으로 고정 스냅샷이다.
         snapshot_model="claude-sonnet-5",
+        # 출시 때 8/31까지의 할인가로 발표된 $2/$10이 정가로 바뀌었다. 예정됐던 9/1 인상($3/$15)은
+        # 취소됐다(공식 가격 페이지, 2026-09-23 재확인, KNK-1414).
         pricing=(
             ModelPricing(
                 input_usd_per_1m_tokens=Decimal("2.00"),
@@ -218,18 +272,8 @@ _REGISTRY: dict[str, ResolvedModel] = {
                 output_usd_per_1m_tokens=Decimal("10.00"),
                 cache_write_input_usd_per_1m_tokens=Decimal("2.50"),
                 source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-                verified_on=date(2026, 7, 29),
+                verified_on=date(2026, 9, 23),
                 effective_from=date(2026, 6, 30),
-                effective_until=date(2026, 8, 31),
-            ),
-            ModelPricing(
-                input_usd_per_1m_tokens=Decimal("3.00"),
-                cache_read_input_usd_per_1m_tokens=Decimal("0.30"),
-                output_usd_per_1m_tokens=Decimal("15.00"),
-                cache_write_input_usd_per_1m_tokens=Decimal("3.75"),
-                source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-                verified_on=date(2026, 7, 29),
-                effective_from=date(2026, 9, 1),
             ),
         ),
     ),
