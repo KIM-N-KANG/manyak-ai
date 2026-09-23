@@ -222,7 +222,7 @@ def _request():
         additional_info="",
         genre_tags=["다크 판타지"],
         protagonist={"name": "카일", "gender": "MALE", "features": ["신중한"]},
-        supporting_characters=[{"name": "레이", "gender": "MALE", "features": ["충직한"]}],
+        supporting_characters=[{"name": "레이", "gender": "MALE", "features": ["충직한"]}, {}, {}],
     )
 
 

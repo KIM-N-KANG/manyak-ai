@@ -30,7 +30,7 @@ def _request() -> StoryCompileRequest:
         additional_info="",
         genre_tags=["다크 판타지", "느와르"],
         protagonist={"features": ["신중한"]},
-        supporting_characters=[{"features": ["거친"]}],
+        supporting_characters=[{"features": ["거친"]}, {}, {}],
     )
 
 
@@ -354,7 +354,7 @@ async def test_compile_story_forwards_lorebooks_to_prompt(
         selected_storyline="x",
         genre_tags=["무협"],
         protagonist={"features": ["신중한"]},
-        supporting_characters=[{"features": ["거친"]}],
+        supporting_characters=[{"features": ["거친"]}, {}, {}],
         lorebooks=[LorebookItem(name="내공", content="기를 단전에 쌓아 다스리는 힘.")],
     )
     await story_llm.compile_story(req)
@@ -533,8 +533,10 @@ async def test_compile_story_schema_failure_captures(monkeypatch: pytest.MonkeyP
     calls: list = []
     monkeypatch.setattr(story_llm, "capture_ai_exception", lambda *a, **k: calls.append(k))
 
+    request = _request()
+    request.supporting_characters = []  # 자유 생성도 스키마의 5명 상한은 지켜야 한다.
     with pytest.raises(HTTPException) as exc:
-        await story_llm.compile_story(_request())
+        await story_llm.compile_story(request)
     assert exc.value.status_code == 502
     assert len(calls) == 1
     assert calls[0]["error_code"] == "schema_validation_failed"

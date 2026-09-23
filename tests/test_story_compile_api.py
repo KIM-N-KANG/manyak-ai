@@ -26,6 +26,7 @@ _REQUEST = {
     # 이름은 fixture(spec_valid.json) 카드에 있는 "레이" — 인물 카드 검증(KNK-837)을 통과해야 한다.
     "supporting_characters": [
         {"name": "레이", "gender": "MALE", "features": ["충직한", "거친"]},
+        {}, {},
     ],
 }
 

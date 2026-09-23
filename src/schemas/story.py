@@ -100,4 +100,4 @@ class StoryItem(BaseModel):
 
 class StorylinesResponse(BaseModel):
     stories: list[StoryItem]
-    meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). 엔드포인트가 항상 채운다.
+    meta: StoryResponseMeta | None = None  # 로깅 메타(KNK-243). 생성 서비스가 항상 채운다.

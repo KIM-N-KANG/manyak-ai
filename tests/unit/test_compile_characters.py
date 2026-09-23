@@ -99,7 +99,7 @@ async def test_compile_story_refills_when_input_character_id_missing(
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
     with pytest.raises(HTTPException) as ei:
-        await story_llm.compile_story(_request([{"name": "서린"}]))
+        await story_llm.compile_story(_request([{"name": "서린"}, {}, {}]))
 
     assert ei.value.status_code == 502
     assert [label for label, _ in calls] == ["compile", "refill#1", "refill#2"]
@@ -121,7 +121,7 @@ async def test_compile_story_overwrites_changed_input_character_name(
         return spec, story_llm.LlmUsage("m", 1, 1, provider="deepseek")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
-    res = await story_llm.compile_story(_request([{"name": "세린"}]))
+    res = await story_llm.compile_story(_request([{"name": "세린"}, {}, {}]))
     assert calls == ["compile"]  # refill 없이 한 번에 통과
     assert "세린" in res.story_settings.character_setting
     assert "제니" not in res.story_settings.character_setting
@@ -265,7 +265,7 @@ async def test_compile_story_gemini_uses_gemini_system_and_version(
     import src.services.llm as llm_mod
     monkeypatch.setattr(llm_mod, "provider_of", lambda model: PROVIDER_GOOGLE)
 
-    res = await story_llm.compile_story(_request([{"name": "레이"}]))
+    res = await story_llm.compile_story(_request([{"name": "레이"}, {}, {}]))
 
     # 첫 호출에 Gemini system prompt가 갔는지
     assert captured_systems[0] == _COMPILE_GEMINI_SYSTEM

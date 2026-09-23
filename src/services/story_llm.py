@@ -26,7 +26,7 @@ from src.core.sentry import (
     classify_error_code,
 )
 from src.schemas.response_meta import StoryResponseMeta
-from src.schemas.story import CharacterInput, StoryItem
+from src.schemas.story import CharacterInput, StoryItem, StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import (
     THUMBNAIL_ERROR_CODES,
     THUMBNAIL_IMAGE_NAME,
@@ -49,6 +49,7 @@ from src.services.prompt import (
     STORYLINES_VERSION,
     build_compile_prompt,
     build_refill_prompt,
+    build_storylines_prompt,
     build_storylines_refill_prompt,
 )
 from src.services.story_compile_render import spec_to_response
@@ -388,11 +389,9 @@ def _normalize_storyline_ids(data: dict) -> None:
 
 
 async def generate_storylines(
-    system_prompt: str,
-    user_prompt: str,
-    required_names: list[str] | None = None,
-) -> tuple[dict, LlmUsage]:
-    """스토리라인 생성 — (결과 dict, 사용 메타)를 반환한다. 메타 조립은 엔드포인트가 한다.
+    request: StorylinesRequest,
+) -> StorylinesResponse:
+    """요청에서 프롬프트를 준비하고 생성·검증·보완 후 메타를 포함한 응답을 반환한다.
 
     응답 속도가 사용자 체감에 직결돼 flash 모델을 쓴다(KNK-215, pro 대비 ~2배 빠름).
     label="storylines"로 진단 로깅을 구분한다(KNK-222).
@@ -407,13 +406,17 @@ async def generate_storylines(
     검증을 통과한 응답은 id를 순서대로 1·2·3으로 교정해 반환한다(_normalize_storyline_ids) —
     id 값 어긋남은 무해한 이탈이라 재호출·502로 벌하지 않고 코드가 정본 값을 박는다(D7).
 
-    required_names(사용자가 이름 지은 주변 인물, KNK-833)가 빠지면 **빠진 편만** 다시
+    사용자가 이름 지은 주변 인물(KNK-833)이 빠지면 **빠진 편만** 다시
     받는다(KNK-840, 최대 2회). 전체 재호출로 되돌리지 않는 이유는 잘 나온 편까지 버리게
     되고, 출력이 3배라 값과 대기 시간도 그만큼 늘기 때문이다(실측: 한 편만 빠지는 경우가
     나옴). 재호출을 소진해도 이름이 남아 있으면 502가 아니라 결과를 그대로 반환하고
     Sentry 경고만 남긴다(KNK-1102). meta의 retry_count는 전체 재호출과 부분 재호출을
     합한 수이고, 토큰도 합산한다.
     """
+    system_prompt, user_prompt = build_storylines_prompt(
+        request.genre_tags, request.protagonist, request.supporting_characters,
+    )
+    names = tuple(c.name for c in request.supporting_characters if c.name)
     result, usage = await _complete_json(
         system_prompt,
         user_prompt,
@@ -427,7 +430,6 @@ async def generate_storylines(
     )
     _normalize_storyline_ids(result)
 
-    names = tuple(required_names or ())
     input_tokens, output_tokens = usage.input_tokens, usage.output_tokens
     refills = 0
     missing = _missing_name_indexes(result, names)
@@ -469,14 +471,16 @@ async def generate_storylines(
         # 완성본 보증은 컴파일 쪽 인물 카드 검증(KNK-833)이 맡는다.
         _report_names_still_missing(missing, usage, refills)
 
-    total = LlmUsage(
-        usage.model,
-        input_tokens,
-        output_tokens,
+    meta = StoryResponseMeta(
+        model=usage.model,
+        prompt_versions={"STORYLINES": STORYLINES_VERSION},
         provider=usage.provider,
+        input_token_count=input_tokens,
+        output_token_count=output_tokens,
         retry_count=usage.retry_count + refills,
     )
-    return result, total
+    # LLM이 최상위 meta를 섞어 보내도 서버가 만든 메타와 충돌하지 않도록 stories만 꺼낸다.
+    return StorylinesResponse(stories=result["stories"], meta=meta)
 
 
 def _report_names_still_missing(missing: list[int], usage: LlmUsage, refills: int) -> None:
@@ -716,21 +720,19 @@ def _input_character_id(index: int) -> str:
 
 
 def _input_character_ids_incomplete(data: dict, input_count: int) -> bool:
-    """입력 인물 표시가 각각 정확히 한 카드에 있는지 확인한다."""
+    """입력이 있으면 카드 수와 인물 표시가 입력 목록에 정확히 일대일인지 확인한다."""
     if input_count == 0:
         return False
     cards = _as_dict(data.get("prompt_settings")).get("character_setting")
-    if not isinstance(cards, list):
+    if not isinstance(cards, list) or len(cards) != input_count:
         return True
 
     expected = {_input_character_id(index) for index in range(input_count)}
     counts = {value: 0 for value in expected}
     for raw in cards:
         if not isinstance(raw, dict):
-            continue
+            return True
         value = raw.get(_INPUT_CHARACTER_ID_FIELD)
-        if value is None:
-            continue
         if not isinstance(value, str) or value not in expected:
             return True
         counts[value] += 1
@@ -752,7 +754,8 @@ def _inject_supporting_character_names(
     for raw in cards:
         if not isinstance(raw, dict):
             continue
-        source = by_id.get(raw.get(_INPUT_CHARACTER_ID_FIELD))
+        value = raw.get(_INPUT_CHARACTER_ID_FIELD)
+        source = by_id.get(value) if isinstance(value, str) else None
         if source is not None and source.name:
             raw["name"] = source.name
 
@@ -766,7 +769,9 @@ def _input_character_indexes(data: dict, input_count: int) -> set[int]:
     return {
         index
         for index, raw in enumerate(cards)
-        if isinstance(raw, dict) and raw.get(_INPUT_CHARACTER_ID_FIELD) in expected
+        if isinstance(raw, dict)
+        and isinstance(raw.get(_INPUT_CHARACTER_ID_FIELD), str)
+        and raw[_INPUT_CHARACTER_ID_FIELD] in expected
     }
 
 
