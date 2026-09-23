@@ -349,6 +349,27 @@ def test_gpt_6_luna_pricing() -> None:
     assert price.long_context_output_multiplier == Decimal("1.5")
 
 
+def test_gpt_5_6_luna_pricing_reflects_july_30_price_cut() -> None:
+    """GPT-5.6 Luna는 2026-07-30부터 80% 인하된 단가를 쓴다(KNK-1412)."""
+    luna = registry.resolve("gpt-5.6-luna")
+    previous = luna.pricing_on(date(2026, 7, 29))
+    current = luna.pricing_on(date(2026, 7, 30))
+
+    assert (
+        previous.input_usd_per_1m_tokens,
+        previous.output_usd_per_1m_tokens,
+    ) == (Decimal("1.00"), Decimal("6.00"))
+    assert previous.effective_until == date(2026, 7, 29)
+    assert (
+        current.input_usd_per_1m_tokens,
+        current.cache_read_input_usd_per_1m_tokens,
+        current.cache_write_input_usd_per_1m_tokens,
+        current.output_usd_per_1m_tokens,
+    ) == (Decimal("0.20"), Decimal("0.02"), Decimal("0.25"), Decimal("1.20"))
+    assert current.effective_from == date(2026, 7, 30)
+    assert current.long_context_threshold_tokens == 272_000
+
+
 def test_gpt_6_luna_passes_chat_model_startup_checks(monkeypatch) -> None:
     """CHAT_MODEL로 골라도 금지 공급자·스트리밍 검사를 통과한다(KNK-1411)."""
     monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
