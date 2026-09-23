@@ -3,6 +3,7 @@
 라이브 호출은 없다. SDK 호출을 monkeypatch로 대체하고 설정 조립·응답 해석·에러 변환을 검증한다.
 """
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -479,3 +480,141 @@ def test_check_supported_rejects_unsupported_effort() -> None:
     )
     with pytest.raises(LlmConfigError):
         google_sdk.check_supported(resolved)
+
+
+# ── Langfuse 관측 배선(KNK-1097) ─────────────────────────────────────────────
+# 자동 계측(langfuse.openai)이 google-genai를 덮지 않으므로 어댑터가 observe_generation으로
+# 손수 기록한다. 실제 Langfuse 전송 없이(무과금) "무엇을 어디에 기록하는가"만 고정한다.
+
+
+class _Recorder:
+    """observe_generation 대역 — 시작 인자와 finish 인자, 블록 예외를 기록한다."""
+
+    def __init__(self) -> None:
+        self.started: dict = {}
+        self.finished: dict | None = None
+        self.exc: BaseException | None = None
+
+    def finish(self, **kwargs) -> None:
+        self.finished = {**(self.finished or {}), **kwargs}
+
+
+def _mock_observation(monkeypatch) -> _Recorder:
+    rec = _Recorder()
+
+    @contextmanager
+    def fake_observe_generation(name, **kwargs):
+        rec.started = {"name": name, **kwargs}
+        try:
+            yield rec
+        except BaseException as exc:
+            rec.exc = exc
+            raise
+
+    monkeypatch.setattr(google_sdk, "observe_generation", fake_observe_generation)
+    return rec
+
+
+async def test_complete_records_observation_with_usage(monkeypatch, _patch_client) -> None:
+    """성공 시: 이름·모델·모델 인자·입력은 시작에, 본문과 usage는 finish에 실린다.
+    thinking은 output과 나눠 output_reasoning으로 싣고(관리 단가가 따로 매겨 합치면 이중 과금),
+    total을 명시해 Langfuse의 재합산을 막는다."""
+    rec = _mock_observation(monkeypatch)
+    req = _req(temperature=0.7, max_tokens=1000, json_mode=True)
+    await google_sdk.complete(req, _RESOLVED)
+
+    assert rec.started == {
+        "name": "Gemini-generation",
+        "model": "gemini-test",
+        "model_parameters": {
+            "temperature": 0.7,
+            "max_tokens": 1000,
+            "reasoning_effort": "medium",
+            "json_mode": True,
+        },
+        "input_data": req.messages,
+    }
+    assert rec.finished == {
+        "output": "응답",
+        "usage_details": {"input": 100, "output": 200, "output_reasoning": 50, "total": 350},
+    }
+    assert rec.exc is None
+
+
+def test_usage_details_splits_cached_input() -> None:
+    """prompt_token_count는 캐시 적중분을 포함하므로 input과 input_cached_tokens로 나눠 싣는다."""
+    response = SimpleNamespace(usage_metadata=SimpleNamespace(
+        prompt_token_count=1000, cached_content_token_count=600,
+        candidates_token_count=200, thoughts_token_count=None,
+    ))
+    assert google_sdk._usage_details(response) == {
+        "input": 400, "input_cached_tokens": 600, "output": 200, "total": 1200,
+    }
+
+
+def test_usage_details_none_without_usage() -> None:
+    assert google_sdk._usage_details(SimpleNamespace(usage_metadata=None)) is None
+    empty = SimpleNamespace(usage_metadata=SimpleNamespace(
+        prompt_token_count=None, cached_content_token_count=None,
+        candidates_token_count=None, thoughts_token_count=None,
+    ))
+    assert google_sdk._usage_details(empty) is None
+
+
+async def test_complete_failure_marks_observation_with_neutral_exception(monkeypatch) -> None:
+    """공급자 실패는 관측 블록을 공급자 중립 예외로 나간다 — 응답이 없으니 finish는 불리지 않는다."""
+    rec = _mock_observation(monkeypatch)
+
+    async def boom(*a, **kw):
+        raise _api_error(503, "overloaded")
+
+    monkeypatch.setattr(
+        google_sdk, "_client",
+        lambda p: SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(
+            generate_content=boom,
+        ))),
+    )
+    with pytest.raises(LlmUnavailable) as excinfo:
+        await google_sdk.complete(_req(), _RESOLVED)
+    assert isinstance(excinfo.value.__cause__, errors.APIError)  # 원래 SDK 예외 체인 유지
+    assert isinstance(rec.exc, LlmUnavailable)
+    assert rec.finished is None
+
+
+def test_usage_details_clamps_negative_input() -> None:
+    """cached가 prompt보다 큰 어긋난 응답도 음수 input(음수 비용)을 만들지 않는다."""
+    response = SimpleNamespace(usage_metadata=SimpleNamespace(
+        prompt_token_count=100, cached_content_token_count=150,
+        candidates_token_count=10, thoughts_token_count=None,
+    ))
+    assert google_sdk._usage_details(response) == {
+        "input": 0, "input_cached_tokens": 150, "output": 10, "total": 110,
+    }
+
+
+def test_usage_details_partial_fields() -> None:
+    """빠진 필드는 싣지 않는다 — prompt가 없으면 cached도 버리고, thinking만 있으면 그것만 싣는다."""
+    response = SimpleNamespace(usage_metadata=SimpleNamespace(
+        prompt_token_count=None, cached_content_token_count=30,
+        candidates_token_count=None, thoughts_token_count=40,
+    ))
+    assert google_sdk._usage_details(response) == {"output_reasoning": 40, "total": 40}
+
+
+async def test_stream_does_not_open_observation(monkeypatch) -> None:
+    """스트리밍은 아직 관측하지 않는다(모듈 docstring 4). 현재 컨텍스트 관측을 yield 너머로
+    열어 두면 중도 이탈이 ERROR로 남고 부모가 틀어지므로, 스트림 전용 관측 없이 붙이지 않게 고정한다."""
+    rec = _mock_observation(monkeypatch)
+
+    async def fake_stream(*a, **kw):
+        yield SimpleNamespace(text="조각", usage_metadata=None, model_version=None, candidates=[])
+
+    monkeypatch.setattr(
+        google_sdk, "_client",
+        lambda p: SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(
+            generate_content_stream=AsyncMock(return_value=fake_stream()),
+        ))),
+    )
+    async for _ in google_sdk.stream(_req(), _RESOLVED):
+        pass
+    assert rec.started == {}
