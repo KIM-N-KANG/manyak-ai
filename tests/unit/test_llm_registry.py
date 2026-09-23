@@ -67,9 +67,11 @@ def test_resolve_deepseek_models(model: str) -> None:
     assert resolved.adapter == ADAPTER_OPENAI_SDK
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini"])
+@pytest.mark.parametrize(
+    "model", ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-luna", "gpt-5.4-mini"]
+)
 def test_resolve_openai_models(model: str) -> None:
-    """등록한 GPT 3종은 OpenAI 공급자 + OpenAI SDK 어댑터로 해석된다."""
+    """등록한 GPT 4종은 OpenAI 공급자 + OpenAI SDK 어댑터로 해석된다."""
     resolved = registry.resolve(model)
 
     assert resolved.model == model
@@ -85,7 +87,7 @@ def test_terra_uses_medium_reasoning_without_temperature() -> None:
     assert resolved.reasoning_effort == "medium"
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.4-mini"])
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna", "gpt-5.4-mini"])
 def test_other_openai_models_keep_reasoning_disabled(model: str) -> None:
     """Terra 설정을 바꿔도 다른 GPT 모델의 비추론 정책은 그대로다."""
     resolved = registry.resolve(model)
@@ -154,7 +156,14 @@ def test_every_registered_model_has_pricing() -> None:
 
 
 @pytest.mark.parametrize(
-    ("model", "context_window", "max_output", "reasoning_effort", "structured_modes"),
+    (
+        "model",
+        "context_window",
+        "max_output",
+        "reasoning_effort",
+        "structured_modes",
+        "verified_on",
+    ),
     [
         (
             "gpt-5.6-terra",
@@ -162,6 +171,7 @@ def test_every_registered_model_has_pricing() -> None:
             128_000,
             "medium",
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
+            date(2026, 7, 29),
         ),
         (
             "gpt-5.6-luna",
@@ -169,6 +179,15 @@ def test_every_registered_model_has_pricing() -> None:
             128_000,
             "none",
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
+            date(2026, 7, 29),
+        ),
+        (
+            "gpt-6-luna",
+            1_050_000,
+            128_000,
+            "none",
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
+            date(2026, 9, 23),
         ),
         (
             "gpt-5.4-mini",
@@ -176,6 +195,7 @@ def test_every_registered_model_has_pricing() -> None:
             128_000,
             "none",
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
+            date(2026, 7, 29),
         ),
         (
             "claude-sonnet-5",
@@ -183,6 +203,7 @@ def test_every_registered_model_has_pricing() -> None:
             128_000,
             None,
             {STRUCTURED_OUTPUT_JSON_SCHEMA},
+            date(2026, 7, 29),
         ),
     ],
 )
@@ -192,6 +213,7 @@ def test_registered_model_capabilities(
     max_output: int,
     reasoning_effort: str | None,
     structured_modes: set[str],
+    verified_on: date,
 ) -> None:
     """공식 문서에서 확인한 한도·추론·구조화 출력 능력을 모델마다 고정한다."""
     resolved = registry.resolve(model)
@@ -200,7 +222,7 @@ def test_registered_model_capabilities(
     assert resolved.max_output_tokens == max_output
     assert resolved.reasoning_effort == reasoning_effort
     assert resolved.structured_output_modes == frozenset(structured_modes)
-    assert resolved.capabilities_verified_on == date(2026, 7, 29)
+    assert resolved.capabilities_verified_on == verified_on
     assert resolved.capabilities_source_urls
     assert all(url.startswith("https://") for url in resolved.capabilities_source_urls)
 
@@ -225,6 +247,7 @@ def test_available_pinned_snapshots_are_recorded() -> None:
     assert registry.resolve("claude-sonnet-5").snapshot_model == "claude-sonnet-5"
     assert registry.resolve("gpt-5.6-terra").snapshot_model is None
     assert registry.resolve("gpt-5.6-luna").snapshot_model is None
+    assert registry.resolve("gpt-6-luna").snapshot_model is None
     assert registry.resolve("deepseek-flash").snapshot_model is None
 
 
@@ -307,6 +330,30 @@ def test_gpt_5_6_pricing_includes_cache_write_and_long_context_rules() -> None:
     assert terra.long_context_threshold_tokens == 272_000
     assert terra.long_context_input_multiplier == Decimal("2")
     assert terra.long_context_output_multiplier == Decimal("1.5")
+
+
+def test_gpt_6_luna_pricing() -> None:
+    """GPT-6 Luna 공식 단가(2026-09-22 출시, 2026-09-23 확인)를 고정한다(KNK-1411)."""
+    price = registry.resolve("gpt-6-luna").pricing_on(date(2026, 9, 23))
+
+    assert (
+        price.input_usd_per_1m_tokens,
+        price.cache_read_input_usd_per_1m_tokens,
+        price.cache_write_input_usd_per_1m_tokens,
+        price.output_usd_per_1m_tokens,
+    ) == (Decimal("0.10"), Decimal("0.01"), Decimal("0.125"), Decimal("0.50"))
+    assert price.effective_from == date(2026, 9, 22)
+    assert price.verified_on == date(2026, 9, 23)
+    assert price.long_context_threshold_tokens == 272_000
+    assert price.long_context_input_multiplier == Decimal("2")
+    assert price.long_context_output_multiplier == Decimal("1.5")
+
+
+def test_gpt_6_luna_passes_chat_model_startup_checks(monkeypatch) -> None:
+    """CHAT_MODEL로 골라도 금지 공급자·스트리밍 검사를 통과한다(KNK-1411)."""
+    monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
+
+    llm.validate_startup()  # 예외 없이 통과
 
 
 def test_resolve_unknown_model_lists_known_models() -> None:

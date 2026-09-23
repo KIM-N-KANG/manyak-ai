@@ -158,6 +158,44 @@ _REGISTRY: dict[str, ResolvedModel] = {
             ),
         ),
     ),
+    # 채팅 후보(CHAT_MODEL, KNK-1411). gpt-5.6-luna와 같이 비추론(none)으로 부른다. 공식 문서상
+    # temperature는 none일 때만 받지만, 추론 단계를 올리면 400이 나므로 받지 않는 것으로 적는다.
+    "gpt-6-luna": ResolvedModel(
+        model="gpt-6-luna",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=False,
+        context_window_tokens=1_050_000,
+        max_output_tokens=128_000,
+        reasoning_effort="none",
+        supported_reasoning_efforts=frozenset(
+            {"none", "low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 9, 23),
+        capabilities_source_urls=(
+            "https://developers.openai.com/api/docs/models/gpt-6-luna",
+        ),
+        # 공식 페이지의 스냅샷이 `gpt-6-luna` 하나뿐이라 이름과 다른 고정 스냅샷 ID가 없다.
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.10"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.01"),
+                output_usd_per_1m_tokens=Decimal("0.50"),
+                cache_write_input_usd_per_1m_tokens=Decimal("0.125"),
+                source_url="https://developers.openai.com/api/docs/models/gpt-6-luna",
+                verified_on=date(2026, 9, 23),
+                effective_from=date(2026, 9, 22),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+        ),
+    ),
     "gpt-5.4-mini": ResolvedModel(
         model="gpt-5.4-mini",
         provider=PROVIDER_OPENAI,
