@@ -19,6 +19,19 @@
 
 ---
 
+## v0.4.1 — 2026-09-23 배포 완료
+
+- 범위: KNK-1097(Gemini 단발 호출 Langfuse 관측, #128), KNK-1336(스토리라인 생성 준비·응답 조립 서비스 이동 리팩터, #127), KNK-1329(사용자 설정 주변 인물 수와 스토리라인 인물 유지), KNK-1406(버전 0.4.1, #129).
+  - **외부 계약 변경 없음 — AI 단독 배포·단독 롤백 안전.** 새 env 없음. 요청·응답 형태가 그대로이고 백엔드는 이미 주변 인물 0~5명 형태로 보낸다.
+  - 운영 컴파일 모델이 Gemini라 이번 배포부터 컴파일 호출마다 `Gemini-generation` 관측이 생긴다. 그전에는 Gemini 텍스트 호출이 Langfuse에 없어 컴파일 트레이스 비용에서 빠졌다.
+  - 프롬프트 버전: STORYLINES 6→7, COMPILE 10→11, COMPILE_GEMINI 4→5.
+- PR #130 → main `7c17592`(사용자 직접 Merge Commit). 워크플로 `35842191003` 성공(Test·Image smoke·Docker build·Deploy to ECS (prod)). 태그 `v0.4.1`은 이 main 커밋을 가리킨다.
+- 운영 검증: ECS 서비스 `manyak-prod` 배포 COMPLETED, 태스크 ai HEALTHY, AI digest가 ECR `7c17592`와 일치(`sha256:dd9c17fe…`). `prod-health.sh`는 EC2를 찾다 실패해(알려진 사항, "다음 배포 때 볼 것") ECS로 검증했다.
+- QA: 도커 유닛·API 1096 passed·8 skipped, 라이브 통합 10 passed(89.01초), `qa.sh` 종료코드 0.
+- 계약·기동·런타임 리뷰에서 차단 결함은 발견하지 못했다. KNK-1336은 전후 코드 대조로 동작 동일을 확인했다.
+  - **배포 후 관측 대상:** KNK-1329가 컴파일 인물 카드 수를 입력 인원과 정확히 맞추도록 검증을 조였다. 불일치는 `character_setting` 부분 재호출(최대 2회) 후 502가 된다. Sentry `feature=story_completion`·`error_code=invalid_ai_response`의 `character_setting` 비율과 compile `retry_count`를 v0.4.0과 비교한다.
+- release 브랜치 원격이 머지 직후 실수로 삭제돼, 로컬에 남은 같은 커밋(`183cc6e`)을 다시 push해 역류에 썼다. release→dev 반영은 PR #131, Merge Commit `480e5e9`로 완료했다.
+
 ## v0.4.0 — 2026-09-17 배포 완료
 
 - 범위: KNK-1101(부모 이미지 기반 채팅 자식 이미지, #119), KNK-1284(S3 직접 업로드·최종 URL, #120), KNK-1300(이미지 결과 대기 후 본문 순차 전송, #121), KNK-1309(버전·라이브 QA 연결 정리, #122). 인물·표지·자식 공통 이미지 모델 기본값은 `gpt-image-2.5-flare`다.
