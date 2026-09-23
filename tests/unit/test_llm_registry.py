@@ -126,12 +126,12 @@ def test_each_model_declares_its_own_settings() -> None:
 
 
 @pytest.mark.parametrize(
-    ("model", "input_price", "cache_read_price", "output_price"),
+    ("model", "input_price", "cache_read_price", "output_price", "verified_on"),
     [
-        ("gpt-5.6-terra", "2.50", "0.25", "15.00"),
-        ("gpt-5.6-luna", "1.00", "0.10", "6.00"),
-        ("gpt-5.4-mini", "0.75", "0.075", "4.50"),
-        ("claude-sonnet-5", "2.00", "0.20", "10.00"),
+        ("gpt-5.6-terra", "2.50", "0.25", "15.00", date(2026, 7, 29)),
+        ("gpt-5.6-luna", "1.00", "0.10", "6.00", date(2026, 7, 29)),
+        ("gpt-5.4-mini", "0.75", "0.075", "4.50", date(2026, 7, 29)),
+        ("claude-sonnet-5", "2.00", "0.20", "10.00", date(2026, 9, 23)),
     ],
 )
 def test_registered_model_pricing_per_million_tokens(
@@ -139,6 +139,7 @@ def test_registered_model_pricing_per_million_tokens(
     input_price: str,
     cache_read_price: str,
     output_price: str,
+    verified_on: date,
 ) -> None:
     """모든 실사용 모델이 2026-07-29 기준 입력·캐시 읽기·출력 USD 단가를 가진다."""
     price = registry.resolve(model).pricing_on(date(2026, 7, 29))
@@ -146,7 +147,7 @@ def test_registered_model_pricing_per_million_tokens(
     assert price.input_usd_per_1m_tokens == Decimal(input_price)
     assert price.cache_read_input_usd_per_1m_tokens == Decimal(cache_read_price)
     assert price.output_usd_per_1m_tokens == Decimal(output_price)
-    assert price.verified_on == date(2026, 7, 29)
+    assert price.verified_on == verified_on
     assert price.source_url.startswith("https://")
 
 
@@ -251,25 +252,19 @@ def test_available_pinned_snapshots_are_recorded() -> None:
     assert registry.resolve("deepseek-flash").snapshot_model is None
 
 
-def test_claude_sonnet_5_pricing_switches_after_introductory_period() -> None:
-    """Sonnet 5의 공식 할인 종료일 다음 날부터 예정된 표준 단가를 고른다."""
+def test_claude_sonnet_5_keeps_launch_price_after_cancelled_increase() -> None:
+    """Sonnet 5는 9/1 예정 인상이 취소돼 출시가 $2/$10을 계속 쓴다(KNK-1414)."""
     model = registry.resolve("claude-sonnet-5")
 
-    introductory = model.pricing_on(date(2026, 8, 31))
-    standard = model.pricing_on(date(2026, 9, 1))
-
-    assert (
-        introductory.input_usd_per_1m_tokens,
-        introductory.cache_write_input_usd_per_1m_tokens,
-        introductory.cache_read_input_usd_per_1m_tokens,
-        introductory.output_usd_per_1m_tokens,
-    ) == (Decimal("2.00"), Decimal("2.50"), Decimal("0.20"), Decimal("10.00"))
-    assert (
-        standard.input_usd_per_1m_tokens,
-        standard.cache_write_input_usd_per_1m_tokens,
-        standard.cache_read_input_usd_per_1m_tokens,
-        standard.output_usd_per_1m_tokens,
-    ) == (Decimal("3.00"), Decimal("3.75"), Decimal("0.30"), Decimal("15.00"))
+    for on in (date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 23)):
+        price = model.pricing_on(on)
+        assert (
+            price.input_usd_per_1m_tokens,
+            price.cache_write_input_usd_per_1m_tokens,
+            price.cache_read_input_usd_per_1m_tokens,
+            price.output_usd_per_1m_tokens,
+        ) == (Decimal("2.00"), Decimal("2.50"), Decimal("0.20"), Decimal("10.00"))
+        assert price.effective_until is None
 
 
 def test_deepseek_flash_pricing_and_capabilities() -> None:
