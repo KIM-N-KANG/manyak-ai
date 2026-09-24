@@ -215,7 +215,7 @@ async def test_call_contract(install_llm_sdk) -> None:
     install_llm_sdk(_create)
     await chat_choices._call("SYS", "USER")
 
-    assert captured["model"] == chat_choices.settings.chat_model
+    assert captured["model"] == chat_choices.settings.chat_choice_model
     assert captured["messages"] == [
         {"role": "system", "content": "SYS"},
         {"role": "user", "content": "USER"},
@@ -346,6 +346,46 @@ async def test_failure_capture_provider_follows_the_selected_model(
 
     await generate_choices(_request(), "*장면*")
 
+    assert {c["provider"] for c in calls} == {"not-deepseek"}
+
+
+# ── 선택지는 본문 모델이 아니라 선택지 모델을 쓴다 (KNK-1416) ────────────────
+# 다른 테스트는 두 설정값이 같아서, 선택지가 실수로 `chat_model`을 읽어도 통과한다.
+# 본문은 DeepSeek에 두고 선택지만 다른 모델로 바꿔, 호출·결과·실패 보고가 선택지 모델을 따르는지 본다.
+async def test_uses_choice_model_not_chat_model(
+    monkeypatch, other_provider_model, install_llm_sdk
+) -> None:
+    choice_model = other_provider_model()
+    monkeypatch.setattr(chat_choices.settings, "chat_model", "deepseek-flash")
+    monkeypatch.setattr(chat_choices.settings, "chat_choice_model", choice_model)
+    sent: list[str] = []
+
+    async def _create(**kwargs):
+        sent.append(kwargs["model"])
+        return _Resp('{"choices": ["가", "나", "다"]}', usage=_Usage(5, 7))
+
+    install_llm_sdk(_create)
+    res = await generate_choices(_request(), "*장면*")
+
+    assert sent == [choice_model]
+    assert res.provider == "not-deepseek"
+
+
+async def test_failure_reports_choice_model_not_chat_model(
+    monkeypatch, other_provider_model, install_llm_sdk
+) -> None:
+    choice_model = other_provider_model()
+    monkeypatch.setattr(chat_choices.settings, "chat_model", "deepseek-flash")
+    monkeypatch.setattr(chat_choices.settings, "chat_choice_model", choice_model)
+    calls: list = []
+    monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda *a, **k: calls.append(k))
+    _mock_calls(install_llm_sdk, [OpenAIError("boom")])
+
+    res = await generate_choices(_request(), "*장면*")
+
+    assert res.choices == list(_FALLBACK)
+    assert (res.model, res.provider) == (choice_model, "not-deepseek")
+    assert {c["model"] for c in calls} == {choice_model}
     assert {c["provider"] for c in calls} == {"not-deepseek"}
 
 

@@ -36,7 +36,8 @@ from src.services.llm.base import (
 # 모아두면 한 모델의 설정을 고칠 때 다른 모델이 같이 바뀐다. 그리고 여기 적는 것은 **뜻**뿐이고
 # 회사별 문법은 어댑터가 만든다 — 공급자가 늘어도 이 표를 고치지 않는다.
 _REGISTRY: dict[str, ResolvedModel] = {
-    # 스토리라인·채팅(STORYLINES_MODEL·CHAT_MODEL). 비추론 호출 — 창작 태스크에서 추론 모드가
+    # 스토리라인·채팅 본문·판정·선택지(STORYLINES_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL)의
+    # 기본값. 비추론 호출 — 창작 태스크에서 추론 모드가
     # 출력 외국어 오염·평면화를 일으켜 비추론이 더 안정적이었다(KNK-208 벤치).
     #
     # DeepSeek은 2026-09-10에 `deepseek-v4-flash`를 `deepseek-flash`(V4.1 Flash)로 바꿨다(KNK-1195).
@@ -371,8 +372,13 @@ _REGISTRY: dict[str, ResolvedModel] = {
 # 이 제약은 배치 문제를 푼 뒤에 풀린다. 대화 목록 안에 지시문 줄을 넣는 방법이 따로 있어
 # (모델별 제약 있음 — `_split_system` 주석) 버리지 않을 길이 있고, 그 검토와 안전 실측이
 # 채팅을 이 공급자로 여는 티켓의 몫이다. 그때 여기 한 줄을 지운다.
+#
+# **선택지도 같은 공급자를 막는다**(KNK-1416). 선택지는 지시문 배치 문제는 없지만, 이 회사는
+# JSON 강제에 스키마 전체를 요구하는데 통로에 그 칸이 없어 어댑터가 인자를 빼고 보낸다
+# (`anthropic_sdk`). 형식 준수가 프롬프트에만 기대게 되므로 별도 검토 전에는 열지 않는다.
 BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
     "CHAT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
+    "CHAT_CHOICE_MODEL": frozenset({PROVIDER_ANTHROPIC}),
 }
 
 
@@ -453,6 +459,7 @@ def selected_models() -> tuple[tuple[str, str], ...]:
         ("STORYLINES_MODEL", settings.storylines_model),
         ("STORY_COMPILE_MODEL", settings.story_compile_model),
         ("CHAT_MODEL", settings.chat_model),
+        ("CHAT_CHOICE_MODEL", settings.chat_choice_model),
     )
 
 

@@ -16,6 +16,17 @@ def test_model_fields_read_new_env_names(monkeypatch) -> None:
     assert s.chat_model == "chat-x"
 
 
+def test_choice_model_field_reads_its_env(monkeypatch) -> None:
+    """선택지 모델은 CHAT_MODEL과 따로 CHAT_CHOICE_MODEL을 읽는다(KNK-1416)."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_MODEL", "chat-x")
+    monkeypatch.setenv("CHAT_CHOICE_MODEL", "choice-x")
+
+    s = Settings(_env_file=None)
+
+    assert (s.chat_model, s.chat_choice_model) == ("chat-x", "choice-x")
+
+
 def test_model_defaults(monkeypatch) -> None:
     """env 미설정 시 컴파일은 Terra, 스토리라인·채팅은 DeepSeek flash를 쓴다."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
@@ -25,6 +36,7 @@ def test_model_defaults(monkeypatch) -> None:
     assert s.story_compile_model == "gpt-5.6-terra"
     assert s.storylines_model == "deepseek-flash"
     assert s.chat_model == "deepseek-flash"
+    assert s.chat_choice_model == "deepseek-flash"
 
 
 def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> None:

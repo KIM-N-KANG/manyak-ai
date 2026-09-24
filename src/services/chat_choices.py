@@ -185,7 +185,7 @@ async def _call(system: str, user: str) -> tuple[list, str, int | None, int | No
     """선택지 호출 1회 → (choices 리스트, model, in_tokens, out_tokens). 실패 시 예외."""
     result = await llm.complete(
         LlmRequest(
-            model=settings.chat_model,
+            model=settings.chat_choice_model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -217,7 +217,7 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
     seen: set[str] = set()
     input_tokens: int | None = None
     output_tokens: int | None = None
-    model = settings.chat_model
+    model = settings.chat_choice_model
     # 이 호출이 어느 공급자로 갈지는 부르기 전에 정해진다 — 세 번 다 실패해 폴백으로 답하면
     # 성공 결과가 하나도 없어서, 결과에서 읽는 방식으로는 meta를 채울 수 없다(KNK-674).
     provider = llm.provider_of(model)
@@ -251,7 +251,7 @@ async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResul
                     if isinstance(e, (json.JSONDecodeError, ValueError))
                     else None
                 ),
-                model=settings.chat_model,
+                model=settings.chat_choice_model,
                 prompt_versions={"NEXT_ACTIONS": NEXT_ACTIONS_VERSION},
                 retry_count=attempt,  # 0=첫 호출, 1·2=재호출
                 latency_ms=int((time.monotonic() - t0) * 1000),

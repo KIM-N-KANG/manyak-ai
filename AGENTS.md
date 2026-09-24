@@ -35,7 +35,7 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 ### 서비스 개요
 - 스토리 제작(story)과 채팅 플레이(chat)의 LLM 호출을 맡는 FastAPI 서비스입니다. 완전 stateless로, 상태는 백엔드가 듭니다.
 - LLM 호출은 공통 통로(`src/services/llm/`)를 지납니다. 어느 모델을 어느 공급자로 보내는지, 어느 자리에 어느 공급자를 쓸 수 없는지는
-  등록부(`registry.py`)가 정본이고, 등록되지 않은 모델은 호출 대상이 될 수 없습니다. 용도별 모델은 env(`STORYLINES_MODEL`·`STORY_COMPILE_MODEL`·`CHAT_MODEL`)로 고르며 현재 값은 `src/core/config.py`를 봅니다.
+  등록부(`registry.py`)가 정본이고, 등록되지 않은 모델은 호출 대상이 될 수 없습니다. 용도별 모델은 env(`STORYLINES_MODEL`·`STORY_COMPILE_MODEL`·`CHAT_MODEL`·`CHAT_CHOICE_MODEL`)로 고르며 현재 값은 `src/core/config.py`를 봅니다.
 - 로컬 전용(git 무시) 디렉터리 — 존재하지만 커밋 대상이 아닙니다. 커밋에 딸려 들어가면 사고입니다:
   - `scripts/*` — 프롬프트 미리보기·실측 스크립트 창고(`test.sh`·`test.ps1`만 예외로 git 추적).
   - `experiment/` — 프롬프트·모델 변경의 품질·시간·비용을 baseline과 비교하는 실험 환경. 사용법은 `experiment/README.md`.
