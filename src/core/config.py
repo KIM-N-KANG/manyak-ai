@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
-    app_version: str = "0.4.1"
+    app_version: str = "0.4.2"
     debug: bool = False
 
     deepseek_api_key: str
@@ -29,12 +29,15 @@ class Settings(BaseSettings):
     # 주소 기본값은 None — SDK 기본 주소를 쓴다는 뜻이다.
     gemini_api_key: str = ""
     gemini_api_url: str | None = None
-    # 모델은 용도별 3개 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
+    # 모델은 용도별 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
     # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
     story_compile_model: str = "gpt-5.6-terra"  # 스토리 컴파일 전용
     storylines_model: str = "deepseek-flash"  # 스토리라인 생성 전용(fast, KNK-215)
-    chat_model: str = "deepseek-flash"  # 채팅 턴·선택지·판정 공용(fast, KNK-215)
-    # provider는 더 이상 설정값이 아니다(KNK-674). 위 세 모델 이름을 등록부가 해석해
+    chat_model: str = "deepseek-flash"  # 채팅 본문·판정 공용(fast, KNK-215)
+    # 선택지는 본문과 따로 고른다(KNK-1416). 본문 모델을 바꿔도 별도 API인 선택지가 딸려가지
+    # 않게 하려는 것이다. 운영 env가 없으면 이 기본값이 쓰이므로 분리 전 운영과 같은 모델로 둔다.
+    chat_choice_model: str = "deepseek-flash"  # 선택지 전용
+    # provider는 더 이상 설정값이 아니다(KNK-674). 위 모델 이름들을 등록부가 해석해
     # 호출별로 정한다(`llm.provider_of`) — 스토리와 채팅을 서로 다른 회사로 돌릴 수 있어야
     # 하는데, 전역값 하나로는 둘 중 하나가 반드시 거짓이 되기 때문이다.
     # 옛 LLM_PROVIDER env가 남아 있어도 무시된다(model_config의 extra="ignore").
