@@ -39,6 +39,7 @@ def _clear_llm_env(monkeypatch) -> None:
         "STORYLINES_MODEL",
         "STORY_COMPILE_MODEL",
         "CHAT_MODEL",
+        "CHAT_CHOICE_MODEL",
         "OPENAI_API_KEY",
         "OPENAI_API_URL",
         "ANTHROPIC_API_KEY",
@@ -506,15 +507,45 @@ def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypa
     registry.validate_selected_models()
 
 
-def test_selected_models_covers_three_env_vars(monkeypatch) -> None:
-    """용도별 모델 3개를 env 이름과 함께 돌려준다(KNK-595 3분리와 짝)."""
+def test_selected_models_covers_every_model_env(monkeypatch) -> None:
+    """용도별 모델 4개를 env 이름과 함께 돌려준다(KNK-595 3분리, KNK-1416 선택지 분리)."""
     monkeypatch.setattr(registry, "settings", _settings())
 
     assert registry.selected_models() == (
         ("STORYLINES_MODEL", "deepseek-flash"),
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
         ("CHAT_MODEL", "deepseek-flash"),
+        ("CHAT_CHOICE_MODEL", "deepseek-flash"),
     )
+
+
+def test_chat_model_change_leaves_choice_model(monkeypatch) -> None:
+    """CHAT_MODEL만 바꾸면 선택지는 기본 모델에 남는다(KNK-1416).
+
+    분리 전에는 선택지도 CHAT_MODEL을 같이 써서, 본문 모델을 바꾸면 별도 API인 선택지까지
+    딸려갔다. 운영에 새 env가 없어도 이 성질이 지켜져야 한다. 판정은 본문과 같은 모델이다.
+    """
+    monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
+
+    selected = dict(registry.selected_models())
+
+    assert selected["CHAT_MODEL"] == "gpt-6-luna"
+    assert selected["CHAT_CHOICE_MODEL"] == "deepseek-flash"
+    llm.validate_startup()  # 예외 없이 통과
+
+
+def test_choice_slot_blocks_anthropic(monkeypatch) -> None:
+    """선택지 자리에도 Anthropic 모델을 고르면 기동에서 막고 어느 env인지 알린다(KNK-1416)."""
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(anthropic_api_key="ant-key", chat_choice_model="claude-sonnet-5"),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        registry.validate_selected_models()
+
+    assert "CHAT_CHOICE_MODEL" in str(exc_info.value)
 
 
 def test_validate_passes_with_default_models(monkeypatch) -> None:
