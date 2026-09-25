@@ -199,7 +199,11 @@ class _Trace:
         if self._span is None:
             return
         try:
-            self._span.update(model=model, usage_details=usage_details)
+            # 일부 사용량만 알려진 경우도 나머지를 입력 길이로 추정하지 않게 한다.
+            fields: dict[str, object] = {"usage_details": usage_details}
+            if "input" in usage_details and "output" in usage_details:
+                fields["model"] = model
+            self._span.update(**fields)
         except Exception as e:  # noqa: BLE001
             logger.warning("Langfuse 사용량 기록 실패(%s) — 응답에는 영향 없음", type(e).__name__)
 
@@ -308,7 +312,9 @@ def observe_model_call(
         from langfuse import get_client
 
         span = stack.enter_context(get_client().start_as_current_observation(
-            name=name, as_type="generation", model=model, input=input_data,
+            # model을 먼저 주면 사용량 없는 실패도 Langfuse가 토큰·비용을 추정한다.
+            # 모델명은 metadata에 보존하고 실제 사용량을 받은 set_usage에서만 연결한다.
+            name=name, as_type="generation", input=input_data,
         ))
     except Exception as exc:  # noqa: BLE001 — 관측 시작 실패는 모델 호출을 막지 않는다
         logger.warning("Langfuse 호출 관측 시작 실패(%s)", type(exc).__name__)

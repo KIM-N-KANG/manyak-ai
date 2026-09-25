@@ -121,14 +121,18 @@ for span in calls:
     assert span.end_time is not None and span.end_time >= span.start_time
     assert span.attributes["langfuse.observation.type"] == "generation"
 if scenario not in {"success", "media"}:
+    assert "langfuse.observation.model.name" not in calls[0].attributes
+    assert calls[0].attributes["langfuse.observation.metadata.model"] == settings.moderation_model
     assert calls[0].attributes["langfuse.observation.level"] == "ERROR"
     assert calls[0].attributes["langfuse.observation.status_message"] == (
         "CancelledError" if scenario == "cancel" else "TimeoutError"
     )
 if scenario == "all_timeout":
+    assert "langfuse.observation.model.name" not in calls[1].attributes
     assert calls[1].attributes["langfuse.observation.status_message"] == "TimeoutError"
 if scenario in {"success", "timeout_fallback", "media", "media_fallback"}:
     successful = calls[-1]
+    assert successful.attributes["langfuse.observation.model.name"] in {settings.moderation_model, settings.moderation_fallback_model}
     assert json.loads(successful.attributes["langfuse.observation.output"])["decision"] == "APPROVED"
     usage = json.loads(successful.attributes["langfuse.observation.usage_details"])
     assert usage["input"] == 6 and usage["input_cached_tokens"] == 4 and usage["output"] == 5

@@ -1,7 +1,11 @@
 """관측용 이미지 제거는 원본 입력·판정을 바꾸지 않는다."""
 
 from copy import deepcopy
+from unittest.mock import Mock
 
+import pytest
+
+from src.core.langfuse import _Trace
 from src.services.llm.base import TokenUsage
 from src.services.moderation.observation import usage_details, without_media
 
@@ -30,3 +34,10 @@ def test_missing_usage_is_not_reported_as_zero_and_cached_tokens_are_not_doubled
         "input": 60, "input_cached_tokens": 40, "output": 20,
     }
     assert usage_details(TokenUsage(input_tokens=100, output_tokens=20)) == {"input": 100, "output": 20}
+
+
+@pytest.mark.parametrize("details", [{}, {"input": 10}, {"output": 5}])
+def test_incomplete_usage_does_not_enable_model_cost_estimation(details):
+    span = Mock()
+    _Trace(span).set_usage(model="gpt-5.6-luna", usage_details=details)
+    span.update.assert_called_once_with(usage_details=details)
