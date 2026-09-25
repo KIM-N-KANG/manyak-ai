@@ -39,10 +39,13 @@ def prepare_input(post: dict[str, JsonValue]) -> ModerationInput:
         if isinstance(shape, dict):
             if not isinstance(value, dict):
                 raise ValueError(f"{path}: 객체가 필요합니다")
-            return {
-                key: select(value[key], child, f"{path}.{key}" if path else key)
-                for key, child in shape.items() if key in value and value[key] is not None
-            }
+            selected = {}
+            for key, child in shape.items():
+                if key in value and value[key] is not None:
+                    item = select(value[key], child, f"{path}.{key}" if path else key)
+                    if item is not None:
+                        selected[key] = item
+            return selected
         if isinstance(shape, list):
             if not isinstance(value, list):
                 raise ValueError(f"{path}: 배열이 필요합니다")
@@ -50,6 +53,9 @@ def prepare_input(post: dict[str, JsonValue]) -> ModerationInput:
         if not isinstance(value, str):
             raise ValueError(f"{path}: 문자열이 필요합니다")
         kind = "IMAGE" if path == "thumbnailUrl" or path.endswith(".imageUrl") else "TEXT"
+        # 빈 주소는 첨부 이미지가 없다는 뜻이다. 다운로드하거나 판독 실패로 취급하지 않는다.
+        if kind == "IMAGE" and not value.strip():
+            return None
         paths[path] = kind
         if kind == "IMAGE":
             images.append(ImageSource(path=path, url=value))
