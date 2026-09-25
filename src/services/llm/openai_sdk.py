@@ -10,6 +10,7 @@
 """
 
 import hashlib
+import inspect
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -214,7 +215,7 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         kwargs["timeout"] = req.timeout
     provider_kwargs = _provider_kwargs(resolved)
     kwargs.update(provider_kwargs)
-    if resolved.provider == PROVIDER_DEEPSEEK and langfuse.is_enabled():
+    if resolved.provider == PROVIDER_DEEPSEEK and langfuse.is_enabled() and req.automatic_observation:
         # DeepSeek은 시간대별 단가가 둘이라 Langfuse가 구간을 고를 수 있게 꼬리표를 싣는다
         # (KNK-1195, `deepseek_pricing` 모듈 docstring). `metadata`는 Langfuse 래퍼 전용 인자다 —
         # 래퍼가 걷어내고 공급자에는 보내지 않는다. 래퍼가 없을 때(비활성) 붙이면 DeepSeek API로
@@ -312,8 +313,16 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
     client = _client(resolved.provider)
     if req.max_retries is not None:
         client = client.with_options(max_retries=req.max_retries)
+    create = client.chat.completions.create
+    if not req.automatic_observation:
+        # 인스턴스·전역 패치를 바꾸지 않고 이 호출만 자동 계측을 건너뛴다.
+        # unwrap은 OpenAI의 인자 검사 래퍼까지 풀어 bound method가 함수가 될 수 있다.
+        bound_to = getattr(create, "__self__", None)
+        create = inspect.unwrap(create)
+        if bound_to is not None and inspect.isfunction(create):
+            create = create.__get__(bound_to, type(bound_to))
     try:
-        response = await client.chat.completions.create(**kwargs)
+        response = await create(**kwargs)
     except OpenAIError as exc:
         raise _translate(exc, resolved) from exc
     return LlmResult(

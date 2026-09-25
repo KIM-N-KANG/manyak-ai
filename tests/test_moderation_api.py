@@ -376,3 +376,207 @@ async def test_image_errors_preserve_all_content_violations(client, dependencies
     assert body["image_errors"] == expected_errors
     assert body["error_code"] == ("IMAGE_INVALID" if preparation_failure else "IMAGE_UNREADABLE")
     assert dependencies[1].await_count == (2 if fallback else 1)
+
+
+@pytest.fixture
+def moderation_trace(monkeypatch):
+    """실제 observe_request를 가짜 SDK에 연결해 기록과 호출 컨텍스트를 확인한다."""
+    from contextlib import contextmanager
+    from contextvars import ContextVar
+    from types import SimpleNamespace
+
+    import langfuse
+    import src.core.langfuse as lf
+
+    current = ContextVar("moderation_test_trace", default=None)
+    spans = []
+
+    @contextmanager
+    def start(**kwargs):
+        span = {**kwargs, "metadata": {}, "updates": [], "parent": current.get()}
+        if span["parent"] is None:
+            spans.append(span)
+
+        def update(**fields):
+            span["updates"].append(fields)
+            span.update(fields)
+
+        token = current.set(span)
+        try:
+            yield SimpleNamespace(update=update)
+        finally:
+            current.reset(token)
+
+    @contextmanager
+    def propagate(**kwargs):
+        current.get()["attributes"] = kwargs
+        yield
+
+    monkeypatch.setattr(lf._state, "enabled", True)
+    monkeypatch.setattr(langfuse, "get_client", lambda: SimpleNamespace(start_as_current_observation=start))
+    monkeypatch.setattr(langfuse, "propagate_attributes", propagate)
+    return spans, current
+
+
+async def test_moderation_trace_records_input_result_and_fallback_calls(client, dependencies, moderation_trace):
+    from src.services.moderation.prompt import MODERATION_VERSION
+
+    spans, current = moderation_trace
+    complete = dependencies[1]
+    parents = []
+    first = LlmResult(text="invalid json", model=settings.moderation_model, provider="openai",
+                      usage=TokenUsage(input_tokens=12, output_tokens=3))
+    second = LlmResult(text=json.dumps({"decision": "APPROVED", "issues": []}),
+                       model=settings.moderation_fallback_model, provider="deepseek",
+                       usage=TokenUsage(input_tokens=15, output_tokens=4))
+
+    async def invoke(request):
+        parents.append(current.get())
+        return first if len(parents) == 1 else second
+
+    complete.side_effect = invoke
+    response = await client.post(URL, json=POST, headers={
+        "X-Manyak-Request-Id": "req-moderation",
+        "X-Manyak-Story-Id": "wrong-header-story",
+    })
+    assert response.status_code == 200
+    assert len(spans) == 1
+    span = spans[0]
+    assert all(parent["parent"] is span for parent in parents)
+    assert span["name"] == "게시물 검수"
+    assert span["as_type"] == "span"  # SDK generation과 사용량을 중복 집계하지 않는다.
+    assert span["input"]["thumbnailUrl"] == "[이미지 URL 생략]"
+    assert span["output"] == response.json()
+    assert "meta" not in response.json()
+    metadata = span["metadata"]
+    assert metadata["story_id"] == POST["storyId"]
+    assert metadata["request_id"] == "req-moderation"
+    assert metadata["prompt_versions"] == {"MODERATION": MODERATION_VERSION}
+    calls = metadata["calls"]
+    assert [call["attempt"] for call in calls] == [1, 2]
+    assert [call["provider"] for call in calls] == ["openai", "deepseek"]
+    assert [call["model"] for call in calls] == [first.model, second.model]
+    assert [call["input_tokens"] for call in calls] == [12, 15]
+    assert [call["output_tokens"] for call in calls] == [3, 4]
+    assert calls[0]["error_type"] == "InvalidModerationResponse"
+    assert calls[0]["result"] is None
+    assert calls[1]["result"] == response.json()
+    assert calls[1]["error_type"] is None
+    assert all(call["duration_ms"] >= 0 for call in calls)
+    assert current.get() is None
+
+
+async def test_moderation_trace_keeps_combined_text_and_image_errors(client, dependencies, moderation_trace):
+    dependencies[0].side_effect = lambda sources, **kwargs: PreparedImages(
+        images=[ModerationImage(sources[1].path, "image/png", b"image")],
+        errors=[ImageInvalid(sources[0].path, "invalid file")],
+    )
+    dependencies[1].return_value = output("REJECTED", [{"path": "title", "rule": "DRUGS", "reason": "위반"}])
+    response = await client.post(URL, json=POST)
+    span = moderation_trace[0][0]
+    assert span["output"] == response.json()
+    assert span["output"]["issues"][0]["path"] == "title"
+    assert span["output"]["image_errors"] == [{"path": "thumbnailUrl", "error_code": "IMAGE_INVALID"}]
+    assert len(span["metadata"]["calls"]) == 1
+
+
+async def test_moderation_trace_without_model_call(client, dependencies, moderation_trace):
+    dependencies[0].side_effect = lambda sources, **kwargs: PreparedImages(
+        images=[], errors=[ImageInvalid(source.path, "invalid file") for source in sources],
+    )
+    response = await client.post(URL, json=POST)
+    span = moderation_trace[0][0]
+    assert span["output"] == response.json()
+    assert span["output"]["error_code"] == "IMAGE_INVALID"
+    assert span["metadata"]["calls"] == []
+    dependencies[1].assert_not_awaited()
+
+
+async def test_moderation_trace_records_both_provider_failures(client, dependencies, moderation_trace):
+    dependencies[1].side_effect = LlmUnavailable("private provider detail", provider="openai", model=settings.moderation_model)
+    response = await client.post(URL, json=POST)
+    span = moderation_trace[0][0]
+    assert span["output"] == response.json()
+    assert span["output"]["error_code"] == "MODEL_CALL_FAILED"
+    calls = span["metadata"]["calls"]
+    assert len(calls) == 2
+    assert all(call["error_type"] == "LlmUnavailable" for call in calls)
+    assert all(call["input_tokens"] is None and call["output_tokens"] is None for call in calls)
+    assert "private provider detail" not in str(span)
+
+
+@pytest.mark.parametrize("failure_at", ["start", "output", "metadata", "close"])
+async def test_moderation_response_survives_langfuse_failure(client, dependencies, monkeypatch, failure_at):
+    from contextlib import contextmanager, nullcontext
+    from types import SimpleNamespace
+
+    import langfuse
+    import src.core.langfuse as lf
+
+    def update(**fields):
+        if failure_at in fields:
+            raise RuntimeError("observation unavailable")
+
+    @contextmanager
+    def start(**kwargs):
+        if failure_at == "start":
+            raise RuntimeError("observation unavailable")
+        try:
+            yield SimpleNamespace(update=update)
+        finally:
+            if failure_at == "close":
+                raise RuntimeError("observation unavailable")
+
+    monkeypatch.setattr(lf._state, "enabled", True)
+    monkeypatch.setattr(langfuse, "get_client", lambda: SimpleNamespace(start_as_current_observation=start))
+    monkeypatch.setattr(langfuse, "propagate_attributes", lambda **kwargs: nullcontext())
+    response = await client.post(URL, json=POST)
+    assert response.status_code == 200
+    assert response.json() == {"decision": "APPROVED", "issues": [], "error_code": None, "image_errors": []}
+    dependencies[1].assert_awaited_once()
+
+
+async def test_concurrent_moderation_traces_do_not_mix_stories(client, dependencies, moderation_trace):
+    import asyncio
+
+    spans, current = moderation_trace
+    both_started = asyncio.Event()
+    observed = []
+
+    async def invoke(request):
+        span = current.get()
+        observed.append(span["parent"]["input"]["storyId"])
+        if len(observed) == 2:
+            both_started.set()
+        await both_started.wait()
+        assert current.get() is span
+        return output()
+
+    dependencies[1].side_effect = invoke
+    async with asyncio.timeout(5):
+        responses = await asyncio.gather(*(
+            client.post(URL, json={"storyId": story_id, "title": story_id})
+            for story_id in ("story-a", "story-b")
+        ))
+    assert all(response.status_code == 200 for response in responses)
+    assert len(spans) == 2
+    assert set(observed) == {"story-a", "story-b"}
+    for span in spans:
+        assert span["metadata"]["story_id"] == span["input"]["storyId"]
+        assert len(span["metadata"]["calls"]) == 1
+    assert current.get() is None
+
+
+async def test_disabled_langfuse_does_not_access_sdk(client, dependencies, monkeypatch):
+    import langfuse
+    import src.core.langfuse as lf
+
+    def forbidden():
+        raise AssertionError("비활성 관측에서 SDK를 사용하면 안 됨")
+
+    monkeypatch.setattr(lf._state, "enabled", False)
+    monkeypatch.setattr(langfuse, "get_client", forbidden)
+    response = await client.post(URL, json=POST)
+    assert response.status_code == 200
+    assert response.json()["decision"] == "APPROVED"
+    dependencies[1].assert_awaited_once()

@@ -44,6 +44,19 @@ class ModerationResult(BaseModel):
     image_errors: list[ModerationImageFailure] = Field(default_factory=list)
 
 
+class ModerationCall(BaseModel):
+    """요청 안의 호출별 관측 정보. HTTP 응답에는 포함하지 않는다."""
+
+    attempt: int
+    model: str
+    provider: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    duration_ms: float = 0
+    result: ModerationResult | None = None
+    error_type: str | None = None
+
+
 def failure(
     code: ErrorCode, image_errors: list[ModerationImageFailure] | None = None,
     *, issues: list[ModerationIssue] | None = None,

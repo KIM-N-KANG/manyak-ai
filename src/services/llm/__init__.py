@@ -17,11 +17,12 @@
 from collections.abc import AsyncIterator
 from dataclasses import replace
 
-from src.services.llm import registry
+from src.services.llm import deepseek_pricing, registry
 from src.services.llm.base import (
     ADAPTER_ANTHROPIC_SDK,
     ADAPTER_GOOGLE_SDK,
     ADAPTER_OPENAI_SDK,
+    PROVIDER_DEEPSEEK,
     LlmAdapter,
     LlmConfigError,
     LlmRequest,
@@ -31,7 +32,12 @@ from src.services.llm.base import (
     message_has_images,
 )
 
-__all__ = ["complete", "provider_of", "request_body", "stream", "validate_startup"]
+__all__ = ["complete", "observation_metadata", "provider_of", "request_body", "stream", "validate_startup"]
+
+
+def observation_metadata(model: str) -> dict[str, str]:
+    """수동 관측에도 공급자의 단가 구간을 동일하게 기록한다."""
+    return deepseek_pricing.pricing_metadata() if provider_of(model) == PROVIDER_DEEPSEEK else {}
 
 
 def provider_of(model: str) -> str:
@@ -130,7 +136,7 @@ def _request_adapter(req: LlmRequest) -> tuple[LlmAdapter, ResolvedModel]:
     if req.max_retries is not None and req.max_retries < 0:
         raise LlmConfigError("max_retries는 0 이상이어야 합니다.")
     if resolved.adapter != ADAPTER_OPENAI_SDK and (
-        req.response_schema is not None or req.max_retries is not None
+        req.response_schema is not None or req.max_retries is not None or not req.automatic_observation
     ):
         raise LlmConfigError("이 어댑터는 요청별 스키마·재시도 설정을 지원하지 않습니다.")
     if req.reasoning_effort is not None:
@@ -164,5 +170,7 @@ def stream(req: LlmRequest) -> AsyncIterator[StreamEvent]:
     async generator를 그대로 돌려준다 — 모델 해석 실패는 첫 조각을 기다리기 전에,
     호출한 자리에서 바로 드러나야 한다.
     """
+    if not req.automatic_observation:
+        raise LlmConfigError("자동 관측 제외는 단발 호출에서만 지원합니다.")
     adapter, resolved = _request_adapter(req)
     return adapter.stream(req, resolved)

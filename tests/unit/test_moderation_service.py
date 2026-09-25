@@ -388,3 +388,33 @@ async def test_preparation_errors_remain_when_model_time_budget_expires(monkeypa
     assert not calls
     assert response.error_code == "IMAGE_INVALID"
     assert [error.path for error in response.image_errors] == ["thumbnailUrl"]
+
+
+@pytest.mark.parametrize("error", [asyncio.CancelledError(), RuntimeError("unexpected")])
+async def test_call_observation_preserves_unhandled_error(monkeypatch, error):
+    from src.services.moderation.models import ModerationCall
+
+    requests = install(monkeypatch, [error])
+    calls: list[ModerationCall] = []
+    with pytest.raises(type(error)):
+        await service.moderate_story(POST, calls=calls)
+    assert len(requests) == len(calls) == 1
+    assert calls[0].error_type == type(error).__name__
+    assert calls[0].input_tokens is None
+    assert calls[0].result is None
+    assert calls[0].duration_ms >= 0
+
+
+async def test_call_timeout_is_recorded_before_fallback(monkeypatch):
+    from src.services.moderation.models import ModerationCall
+
+    install(monkeypatch, [TimeoutError(), result()])
+    calls: list[ModerationCall] = []
+    response = await service.moderate_story(POST, calls=calls)
+    assert response.decision == "APPROVED"
+    assert len(calls) == 2
+    assert calls[0].error_type == "TimeoutError"
+    assert calls[0].input_tokens is None
+    assert calls[1].error_type is None
+    assert calls[1].input_tokens == 10
+    assert calls[1].output_tokens == 5

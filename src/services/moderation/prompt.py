@@ -7,8 +7,10 @@ from pathlib import Path
 from src.services.llm.base import ContentPart, Message, text_part
 from src.services.moderation.images import ModerationImage
 from src.services.moderation.input import ModerationInput
+from src.services.prompt_meta import read_version
 
 _PATH = Path(__file__).resolve().parents[3] / "prompt/moderation/MODERATION-TEMPLATE.md"
+MODERATION_VERSION = read_version(_PATH)
 
 
 @lru_cache(maxsize=1)

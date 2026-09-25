@@ -181,6 +181,7 @@ class LlmRequest:
     response_schema: dict[str, object] | None = None
     reasoning_effort: str | None = None
     max_retries: int | None = None  # None이면 기존 SDK 재시도 설정을 유지한다.
+    automatic_observation: bool = True  # False이면 호출부가 민감 입력을 제외해 직접 기록한다.
 
 
 @dataclass(frozen=True)
