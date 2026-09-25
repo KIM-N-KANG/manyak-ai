@@ -28,7 +28,7 @@ WEBP = b"RIFF\x00\x00\x00\x00WEBPvp8"
 HOST = "cdn.example.com"
 
 
-def _mock(monkeypatch, handler, **client_kwargs) -> list[httpx.Request]:
+def _mock(monkeypatch, handler) -> list[httpx.Request]:
     """허용 호스트를 테스트용으로 바꾸고 AsyncClient를 가짜 전송으로 만든다."""
     seen: list[httpx.Request] = []
     client_type = httpx.AsyncClient
@@ -41,7 +41,7 @@ def _mock(monkeypatch, handler, **client_kwargs) -> list[httpx.Request]:
     monkeypatch.setattr(
         images.httpx,
         "AsyncClient",
-        lambda **kw: client_type(transport=httpx.MockTransport(record), **(kw | client_kwargs)),
+        lambda **kw: client_type(transport=httpx.MockTransport(record), **kw),
     )
     return seen
 
@@ -303,7 +303,7 @@ async def test_downloads_at_most_five_images_at_once(monkeypatch) -> None:
 @pytest.mark.parametrize("limit, rejected", [(39, True), (40, False)])
 async def test_total_image_limit_counts_base64_expansion(monkeypatch, limit, rejected) -> None:
     # PNG는 13바이트이므로 두 장의 원본 26바이트가 base64에서는 40바이트가 된다.
-    monkeypatch.setattr(images, "DEEPSEEK_MAX_REQUEST_BYTES", limit)
+    monkeypatch.setattr(images, "MAX_REQUEST_BYTES", limit)
     _mock(monkeypatch, lambda req: httpx.Response(200, content=PNG))
     sources = [_src("thumbnailUrl"), _src("characters[0].images[0].imageUrl")]
     if rejected:

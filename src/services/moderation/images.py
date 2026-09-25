@@ -21,7 +21,7 @@ import httpx
 
 from src.core.config import settings
 from src.services.llm.base import ContentPart, image_part
-from src.services.llm.openai_sdk import DEEPSEEK_MAX_REQUEST_BYTES
+from src.services.moderation.limits import MAX_REQUEST_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -161,9 +161,9 @@ async def fetch_images(sources: list[ImageSource]) -> list[ModerationImage]:
             image = await _download_one(client, source)
             # base64는 원본 3바이트마다 4바이트가 된다. 이미지들만으로 요청 한도를
             # 넘으면 모델을 부르기 전에 IMAGE_INVALID로 끝낸다. 글·JSON을 포함한
-            # 최종 본문 한도는 OpenAI SDK 어댑터가 DeepSeek 전송 직전에 검사한다.
+            # 최종 본문은 검수 호출을 조립하는 쪽에서 limits.validate_request_size로 검사한다.
             encoded_bytes += 4 * ((len(image.data) + 2) // 3)
-            if encoded_bytes > DEEPSEEK_MAX_REQUEST_BYTES:
+            if encoded_bytes > MAX_REQUEST_BYTES:
                 raise ImageInvalid(source.path, "이미지 전체 전송 용량 제한 초과")
             return image
 
@@ -190,8 +190,6 @@ async def fetch_images(sources: list[ImageSource]) -> list[ModerationImage]:
         if isinstance(result, ImageInvalid):
             raise result
     for result in results:
-        if isinstance(result, ModerationImageError):
-            raise result
         if isinstance(result, BaseException):
             # 우리 코드의 결함은 다운로드 실패로 위장하지 않는다(STYLEGUIDE §4).
             raise result

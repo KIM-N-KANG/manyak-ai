@@ -73,29 +73,6 @@ _MAX_RETRIES = 2
 # 이 어댑터는 조각 흘리기를 한다(`stream`). 기동 검사가 읽는다 — `base.LlmAdapter` 참조.
 SUPPORTS_STREAMING = True
 
-# DeepSeek Vision의 inline 이미지 요청 본문 한도. 원본 이미지 크기가 아니라
-# base64·텍스트·JSON 필드를 포함한다. https://api-docs.deepseek.com/guides/vision/
-DEEPSEEK_MAX_REQUEST_BYTES = 48 * 1024 * 1024
-
-
-def _validate_request_size(kwargs: dict[str, object], resolved: ResolvedModel) -> None:
-    """SDK 전용 인자를 제외하고 실제 JSON 본문의 UTF-8 크기를 확인한다."""
-    if resolved.provider != PROVIDER_DEEPSEEK:
-        return
-    body = {key: value for key, value in kwargs.items() if key not in {"timeout", "metadata", "extra_body"}}
-    body.update(kwargs.get("extra_body", {}))
-    # httpx의 JSON 전송 형식과 맞춘다. 전체 JSON 문자열을 별도로 보관하지 않는다.
-    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-    size = 0
-    for chunk in encoder.iterencode(body):
-        size += len(chunk.encode("utf-8"))
-        if size > DEEPSEEK_MAX_REQUEST_BYTES:
-            raise LlmBadRequest(
-                "DeepSeek 요청 전체 용량 제한(48MiB) 초과",
-                provider=resolved.provider,
-                model=resolved.model,
-            )
-
 
 def _fingerprint(api_key: str) -> str:
     """캐시 이름표에 넣을 키 지문.
@@ -316,7 +293,6 @@ def _translate(exc: OpenAIError, resolved: ResolvedModel) -> LlmError:
 async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
     """단발 호출. 재호출·시간 예산은 호출부가 관장하고 여기서는 한 번만 부른다."""
     kwargs = _build_kwargs(req, resolved)
-    _validate_request_size(kwargs, resolved)
     client = _client(resolved.provider)
     try:
         response = await client.chat.completions.create(**kwargs)
@@ -342,7 +318,6 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
     kwargs = _build_kwargs(req, resolved)
     kwargs["stream"] = True
     kwargs["stream_options"] = {"include_usage": True}  # 마지막 청크에 usage 동봉(토큰 로깅)
-    _validate_request_size(kwargs, resolved)
     client = _client(resolved.provider)
 
     try:
