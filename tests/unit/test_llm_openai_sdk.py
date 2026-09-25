@@ -70,6 +70,42 @@ _STRICT = ResolvedModel(
 )
 
 
+def test_deepseek_request_limit_matches_serialized_body(monkeypatch) -> None:
+    body = {
+        "model": "deepseek-flash",
+        "messages": [{"role": "user", "content": "한글과 이미지"}],
+        "thinking": {"type": "disabled"},
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    kwargs = dict(body)
+    kwargs["extra_body"] = {"thinking": kwargs.pop("thinking")}
+    kwargs["timeout"] = 60
+    kwargs["metadata"] = {"langfuse_only": "x" * 1000}
+    actual_bytes = len(httpx.Request("POST", "https://example.com", json=body).content)
+    monkeypatch.setattr(openai_sdk, "DEEPSEEK_MAX_REQUEST_BYTES", actual_bytes)
+    openai_sdk._validate_request_size(kwargs, _FLASH)
+
+    monkeypatch.setattr(openai_sdk, "DEEPSEEK_MAX_REQUEST_BYTES", actual_bytes - 1)
+    with pytest.raises(LlmBadRequest, match="용량 제한"):
+        openai_sdk._validate_request_size(kwargs, _FLASH)
+    openai_sdk._validate_request_size(kwargs, _GPT)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_oversized_deepseek_request_never_calls_sdk(monkeypatch, streaming) -> None:
+    completions = _FakeCompletions(result=_response())
+    _install(monkeypatch, completions)
+    monkeypatch.setattr(openai_sdk, "DEEPSEEK_MAX_REQUEST_BYTES", 1)
+    with pytest.raises(LlmBadRequest, match="용량 제한"):
+        if streaming:
+            async for _ in openai_sdk.stream(_req(), _FLASH):
+                pytest.fail("용량 초과 요청에서 스트림을 시작하면 안 된다")
+        else:
+            await openai_sdk.complete(_req(), _FLASH)
+    assert completions.captured is None
+
+
 # ── 목 SDK ───────────────────────────────────────────────────────────────────
 class _FakeCompletions:
     def __init__(self, result: object = None, error: BaseException | None = None) -> None:

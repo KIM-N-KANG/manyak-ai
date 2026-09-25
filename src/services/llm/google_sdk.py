@@ -19,6 +19,7 @@ from src.services.llm.base import (
     STRUCTURED_OUTPUT_JSON_OBJECT,
     LlmBadRequest,
     LlmConfigError,
+    message_has_images,
     LlmError,
     LlmRateLimited,
     LlmRequest,
@@ -72,6 +73,13 @@ def check_supported(resolved: ResolvedModel) -> None:
 
 def _build_config(req: LlmRequest, resolved: ResolvedModel) -> types.GenerateContentConfig:
     """SDK에 넘길 설정을 조립한다."""
+    if message_has_images(req.messages):
+        # 이미지 조각을 이 회사 문법(`types.Part.from_bytes`)으로 아직 옮기지 않는다(KNK-1359는
+        # OpenAI SDK 어댑터만). 그대로 보내면 `_build_contents`가 조각 목록을 글로 취급해
+        # 이미지가 조용히 사라지므로 설정 오류로 막는다 — anthropic_sdk와 같은 규칙.
+        raise LlmConfigError(
+            f"모델 '{resolved.model}'의 어댑터는 이미지 조각을 아직 옮기지 못합니다."
+        )
     config_kwargs: dict[str, object] = {}
 
     # system instruction — messages에서 system role을 분리한다.

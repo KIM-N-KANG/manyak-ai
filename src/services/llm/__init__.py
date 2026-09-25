@@ -27,6 +27,7 @@ from src.services.llm.base import (
     LlmResult,
     ResolvedModel,
     StreamEvent,
+    message_has_images,
 )
 
 __all__ = ["complete", "provider_of", "stream", "validate_startup"]
@@ -107,9 +108,23 @@ def _adapter_of(model: str) -> tuple[LlmAdapter, ResolvedModel]:
     )
 
 
+def _reject_images_if_unsupported(req: LlmRequest, resolved: ResolvedModel) -> None:
+    """이미지 조각이 실린 요청을 이미지를 못 받는 모델에 보내지 않는다(KNK-1359).
+
+    설정 오류(`LlmConfigError`)로 던진다 — 공급자 장애가 아니라 "이 모델을 이 자리에 쓸 수
+    없다"는 문제라서다. 조용히 보내면 공급자가 400을 내거나, 이미지를 무시하고 글만 보고 답한다.
+    검수에서 후자는 "이미지를 안 보고 승인"이 되므로 오류보다 나쁘다.
+    """
+    if message_has_images(req.messages) and not resolved.supports_image_input:
+        raise LlmConfigError(
+            f"모델 '{resolved.model}'은 이미지 입력을 받지 않는데 요청에 이미지 조각이 있습니다."
+        )
+
+
 async def complete(req: LlmRequest) -> LlmResult:
-    """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·판정)."""
+    """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·판정·검수)."""
     adapter, resolved = _adapter_of(req.model)
+    _reject_images_if_unsupported(req, resolved)
     return await adapter.complete(req, resolved)
 
 
@@ -120,4 +135,5 @@ def stream(req: LlmRequest) -> AsyncIterator[StreamEvent]:
     호출한 자리에서 바로 드러나야 한다.
     """
     adapter, resolved = _adapter_of(req.model)
+    _reject_images_if_unsupported(req, resolved)
     return adapter.stream(req, resolved)

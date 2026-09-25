@@ -4,6 +4,7 @@
 어댑터는 호출부의 도메인을 모른다.
 """
 
+import base64
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import date
@@ -28,7 +29,53 @@ STRUCTURED_OUTPUT_JSON_OBJECT = "json_object"
 STRUCTURED_OUTPUT_JSON_SCHEMA = "json_schema"
 
 # LLM에 보내는 대화 한 줄. role은 소문자("system"·"user"·"assistant") — OpenAI 호환 규약.
-Message: TypeAlias = dict[str, str]
+#
+# content는 보통 글 한 덩어리(str)다. 이미지를 함께 보낼 때만(게시물 검수, KNK-1359) 조각 목록이
+# 된다 — 글 조각 `{"type": "text", "text": ...}`과 이미지 조각
+# `{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`의 나열이다.
+# 이 모양은 OpenAI 호환 규약이라 OpenAI SDK 어댑터는 그대로 보내고, 다른 어댑터는 자기 문법으로
+# 옮기거나 못 옮기면 거부한다(`message_has_images` 참조).
+ContentPart: TypeAlias = dict[str, object]
+Message: TypeAlias = dict[str, str | list[ContentPart]]
+
+CONTENT_PART_TEXT = "text"
+CONTENT_PART_IMAGE_URL = "image_url"
+
+
+def text_part(text: str) -> ContentPart:
+    """글 조각을 만든다."""
+    return {"type": CONTENT_PART_TEXT, "text": text}
+
+
+def image_part(*, data: bytes, content_type: str) -> ContentPart:
+    """이미지 조각을 만든다 — 바이트를 data URL로 담는다.
+
+    URL을 그대로 넘기지 않는 이유: 공급자가 우리 저장소 주소를 직접 열게 하면 접근 실패를
+    우리가 잡을 수 없고, 비공개 주소면 아예 못 연다. 내려받기·형식·크기 검사는 호출부가 먼저
+    끝내고 여기엔 검사가 끝난 바이트만 온다.
+    """
+    encoded = base64.b64encode(data).decode("ascii")
+    return {
+        "type": CONTENT_PART_IMAGE_URL,
+        "image_url": {"url": f"data:{content_type};base64,{encoded}"},
+    }
+
+
+def message_has_images(messages: list[Message]) -> bool:
+    """대화 목록에 이미지 조각이 하나라도 있는지.
+
+    통로가 호출 전에 본다 — 이미지를 못 받는 모델(`ResolvedModel.supports_image_input`)에
+    보내면 공급자가 400을 내거나, 더 나쁘게는 이미지를 조용히 무시하고 글만 보고 답한다.
+    검수에서 그건 "이미지를 안 보고 승인"이라 오류보다 나쁘다.
+    """
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == CONTENT_PART_IMAGE_URL
+            for part in content
+        ):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -92,6 +139,9 @@ class ResolvedModel:
     reasoning_effort: str | None = None
     supported_reasoning_efforts: frozenset[str] = frozenset()
     structured_output_modes: frozenset[str] = frozenset()
+    # 이미지 조각(`image_part`)을 입력으로 받는지. 기본 False — 새 모델은 문서로 확인한 뒤에만
+    # True로 적는다. 못 받는 모델에 이미지를 보내면 통로가 호출 전에 막는다(`llm.complete`).
+    supports_image_input: bool = False
     # 기능 정보도 가격처럼 언제 어느 공식 문서로 확인했는지 남긴다. 고정 스냅샷이 따로 없으면
     # snapshot_model은 None이다. Claude 4.6+의 dateless ID는 그 자체가 고정 스냅샷이다.
     capabilities_verified_on: date | None = None

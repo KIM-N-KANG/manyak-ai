@@ -53,9 +53,14 @@ _REGISTRY: dict[str, ResolvedModel] = {
         reasoning_effort=None,
         supported_reasoning_efforts=frozenset({"high", "max"}),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
-        capabilities_verified_on=date(2026, 9, 11),
+        # 이미지 입력: 가격표의 "Vision ✓"와 Vision 가이드(JPEG·PNG·GIF·WebP, 장당 32MiB)로
+        # 확인했다(KNK-1359). 게시물 검수의 대체 모델이라 이 값이 없으면 대체 호출이 이미지를
+        # 못 본다.
+        supports_image_input=True,
+        capabilities_verified_on=date(2026, 9, 23),
         capabilities_source_urls=(
             "https://api-docs.deepseek.com/quick_start/pricing",
+            "https://api-docs.deepseek.com/guides/vision",
         ),
         snapshot_model=None,
         # 단가는 시간대에 따라 둘이다 — 피크(UTC 월~금 01:00~04:00·06:00~10:00)와 그 절반인 오프피크.
@@ -137,7 +142,10 @@ _REGISTRY: dict[str, ResolvedModel] = {
         structured_output_modes=frozenset(
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
         ),
-        capabilities_verified_on=date(2026, 7, 29),
+        # 이미지 입력: 모델 페이지의 "Input modalities: text, image"로 확인했다(KNK-1359).
+        # 게시물 검수의 기본 모델이다.
+        supports_image_input=True,
+        capabilities_verified_on=date(2026, 9, 23),
         capabilities_source_urls=(
             "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
         ),

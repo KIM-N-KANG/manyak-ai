@@ -200,7 +200,9 @@ def test_registered_model_capabilities(
     assert resolved.max_output_tokens == max_output
     assert resolved.reasoning_effort == reasoning_effort
     assert resolved.structured_output_modes == frozenset(structured_modes)
-    assert resolved.capabilities_verified_on == date(2026, 7, 29)
+    # luna는 이미지 입력 확인(KNK-1359)으로 검증일이 갱신됐다.
+    expected_verified_on = date(2026, 9, 23) if model == "gpt-5.6-luna" else date(2026, 7, 29)
+    assert resolved.capabilities_verified_on == expected_verified_on
     assert resolved.capabilities_source_urls
     assert all(url.startswith("https://") for url in resolved.capabilities_source_urls)
 
@@ -273,7 +275,9 @@ def test_deepseek_flash_pricing_and_capabilities() -> None:
     assert flash.max_output_tokens == 384_000
     assert flash.reasoning_effort is None
     assert flash.structured_output_modes == frozenset({STRUCTURED_OUTPUT_JSON_OBJECT})
-    assert flash.capabilities_verified_on == date(2026, 9, 11)
+    # 이미지 입력 확인(KNK-1359)으로 검증일이 갱신됐고 Vision 가이드가 근거에 추가됐다.
+    assert flash.capabilities_verified_on == date(2026, 9, 23)
+    assert "https://api-docs.deepseek.com/guides/vision" in flash.capabilities_source_urls
 
 
 @pytest.mark.parametrize("legacy", ["deepseek-v4-flash", "deepseek-v4-pro"])
