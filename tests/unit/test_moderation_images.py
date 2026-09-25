@@ -18,6 +18,7 @@ from src.services.moderation.images import (
     ImageDownloadFailed,
     ImageInvalid,
     ImageSource,
+    PreparedImages,
     fetch_images,
 )
 
@@ -59,7 +60,7 @@ async def test_detects_format_from_bytes_not_extension(monkeypatch, data, conten
     """형식은 실제 바이트로 판별한다 — 확장자가 거짓이어도 결과가 같다."""
     _mock(monkeypatch, lambda req: httpx.Response(200, content=data))
 
-    [image] = await fetch_images([_src("thumbnailUrl", "wrong.bmp")])
+    [image] = (await fetch_images([_src("thumbnailUrl", "wrong.bmp")])).images
 
     assert (image.path, image.content_type, image.data) == ("thumbnailUrl", content_type, data)
     part = image.content_part()
@@ -80,8 +81,8 @@ async def test_keeps_input_order_and_downloads_all(monkeypatch) -> None:
 
     result = await fetch_images(sources)
 
-    assert [i.path for i in result] == [s.path for s in sources]
-    assert [i.content_type for i in result] == ["image/png", "image/jpeg", "image/png"]
+    assert [i.path for i in result.images] == [s.path for s in sources]
+    assert [i.content_type for i in result.images] == ["image/png", "image/jpeg", "image/png"]
     assert len(seen) == 3
     assert all(req.method == "GET" for req in seen)
 
@@ -89,7 +90,7 @@ async def test_keeps_input_order_and_downloads_all(monkeypatch) -> None:
 async def test_no_sources_returns_empty_without_network(monkeypatch) -> None:
     seen = _mock(monkeypatch, lambda req: httpx.Response(200, content=PNG))
 
-    assert await fetch_images([]) == []
+    assert await fetch_images([]) == PreparedImages(images=[], errors=[])
     assert seen == []
 
 
@@ -108,11 +109,12 @@ async def test_disallowed_url_is_download_failure_without_request(monkeypatch, u
     """허용되지 않은 주소는 요청을 보내지 않고 접근 실패로 분류한다 — 파일 문제가 아니다."""
     seen = _mock(monkeypatch, lambda req: httpx.Response(200, content=PNG))
 
-    with pytest.raises(ImageDownloadFailed) as info:
-        await fetch_images([ImageSource(path="thumbnailUrl", url=url)])
+    prepared = await fetch_images([ImageSource(path="thumbnailUrl", url=url)])
+    [error] = prepared.errors
+    assert isinstance(error, ImageDownloadFailed)
 
-    assert info.value.code == ERROR_IMAGE_DOWNLOAD_FAILED
-    assert info.value.path == "thumbnailUrl"
+    assert error.code == ERROR_IMAGE_DOWNLOAD_FAILED
+    assert error.path == "thumbnailUrl"
     assert seen == []
 
 
@@ -120,9 +122,10 @@ async def test_disallowed_url_is_download_failure_without_request(monkeypatch, u
 async def test_non_2xx_is_download_failure(monkeypatch, status) -> None:
     _mock(monkeypatch, lambda req: httpx.Response(status, content=b"nope"))
 
-    with pytest.raises(ImageDownloadFailed) as info:
-        await fetch_images([_src("thumbnailUrl")])
-    assert info.value.code == ERROR_IMAGE_DOWNLOAD_FAILED
+    prepared = await fetch_images([_src("thumbnailUrl")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageDownloadFailed)
+    assert error.code == ERROR_IMAGE_DOWNLOAD_FAILED
 
 
 async def test_redirect_is_not_followed(monkeypatch) -> None:
@@ -132,8 +135,9 @@ async def test_redirect_is_not_followed(monkeypatch) -> None:
         lambda req: httpx.Response(302, headers={"location": "https://evil.example.com/x"}),
     )
 
-    with pytest.raises(ImageDownloadFailed):
-        await fetch_images([_src("thumbnailUrl")])
+    prepared = await fetch_images([_src("thumbnailUrl")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageDownloadFailed)
     assert len(seen) == 1
 
 
@@ -143,9 +147,10 @@ async def test_transport_error_is_download_failure(monkeypatch) -> None:
 
     _mock(monkeypatch, boom)
 
-    with pytest.raises(ImageDownloadFailed) as info:
-        await fetch_images([_src("thumbnailUrl")])
-    assert info.value.code == ERROR_IMAGE_DOWNLOAD_FAILED
+    prepared = await fetch_images([_src("thumbnailUrl")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageDownloadFailed)
+    assert error.code == ERROR_IMAGE_DOWNLOAD_FAILED
 
 
 async def test_per_request_timeout_is_download_failure(monkeypatch) -> None:
@@ -154,13 +159,14 @@ async def test_per_request_timeout_is_download_failure(monkeypatch) -> None:
 
     _mock(monkeypatch, slow)
 
-    with pytest.raises(ImageDownloadFailed) as info:
-        await fetch_images([_src("characters[0].images[0].imageUrl")])
-    assert info.value.path == "characters[0].images[0].imageUrl"
+    prepared = await fetch_images([_src("characters[0].images[0].imageUrl")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageDownloadFailed)
+    assert error.path == "characters[0].images[0].imageUrl"
 
 
-async def test_overall_timeout_names_first_unfinished_image(monkeypatch) -> None:
-    """전체 제한 시간을 넘기면 끝나지 않은 첫 장의 경로로 실패한다."""
+async def test_overall_timeout_preserves_success_and_names_unfinished_image(monkeypatch) -> None:
+    """전체 제한 시간을 넘겨도 완료된 정상 이미지와 끝나지 않은 이미지 오류를 함께 반환한다."""
 
     async def hang(req: httpx.Request) -> httpx.Response:
         if req.url.path.endswith("fast.png"):
@@ -171,9 +177,11 @@ async def test_overall_timeout_names_first_unfinished_image(monkeypatch) -> None
     _mock(monkeypatch, hang)
     monkeypatch.setattr(settings, "moderation_image_timeout", 0.05)
 
-    with pytest.raises(ImageDownloadFailed) as info:
-        await fetch_images([_src("thumbnailUrl", "fast.png"), _src("characters[0].images[0].imageUrl", "slow.png")])
-    assert info.value.path == "characters[0].images[0].imageUrl"
+    prepared = await fetch_images([_src("thumbnailUrl", "fast.png"), _src("characters[0].images[0].imageUrl", "slow.png")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageDownloadFailed)
+    assert error.path == "characters[0].images[0].imageUrl"
+    assert [image.path for image in prepared.images] == ["thumbnailUrl"]
 
 
 # ── 사용자가 고칠 문제: IMAGE_INVALID ────────────────────────────────────────
@@ -184,18 +192,20 @@ async def test_overall_timeout_names_first_unfinished_image(monkeypatch) -> None
 async def test_non_image_or_unsupported_format_is_invalid(monkeypatch, data) -> None:
     _mock(monkeypatch, lambda req: httpx.Response(200, content=data))
 
-    with pytest.raises(ImageInvalid) as info:
-        await fetch_images([_src("thumbnailUrl")])
-    assert info.value.code == ERROR_IMAGE_INVALID
-    assert info.value.path == "thumbnailUrl"
+    prepared = await fetch_images([_src("thumbnailUrl")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageInvalid)
+    assert error.code == ERROR_IMAGE_INVALID
+    assert error.path == "thumbnailUrl"
 
 
 async def test_oversized_body_is_invalid(monkeypatch) -> None:
     monkeypatch.setattr(settings, "moderation_image_max_bytes", 16)
     _mock(monkeypatch, lambda req: httpx.Response(200, content=PNG + b"x" * 32))
 
-    with pytest.raises(ImageInvalid):
-        await fetch_images([_src("thumbnailUrl")])
+    prepared = await fetch_images([_src("thumbnailUrl")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageInvalid)
 
 
 async def test_declared_oversize_is_rejected_before_reading_body(monkeypatch) -> None:
@@ -206,8 +216,9 @@ async def test_declared_oversize_is_rejected_before_reading_body(monkeypatch) ->
         lambda req: httpx.Response(200, headers={"content-length": "1000000"}, content=PNG),
     )
 
-    with pytest.raises(ImageInvalid):
-        await fetch_images([_src("thumbnailUrl")])
+    prepared = await fetch_images([_src("thumbnailUrl")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageInvalid)
 
 
 async def test_exactly_max_bytes_is_allowed(monkeypatch) -> None:
@@ -215,13 +226,13 @@ async def test_exactly_max_bytes_is_allowed(monkeypatch) -> None:
     monkeypatch.setattr(settings, "moderation_image_max_bytes", 32)
     _mock(monkeypatch, lambda req: httpx.Response(200, content=data))
 
-    [image] = await fetch_images([_src("thumbnailUrl")])
+    [image] = (await fetch_images([_src("thumbnailUrl")])).images
     assert image.data == data
 
 
-# ── 여러 장 실패 시 첫 번째만 ────────────────────────────────────────────────
-async def test_first_failure_in_input_order_wins(monkeypatch) -> None:
-    """뒤 장이 다운로드 실패, 앞 장이 파일 불량이면 앞 장의 오류를 낸다."""
+# ── 여러 장 실패 시 오류 전체 수집 ────────────────────────────────────────────────
+async def test_all_failures_are_returned_in_input_order(monkeypatch) -> None:
+    """파일 불량과 다운로드 실패를 모두 입력 순서대로 반환한다."""
 
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path.endswith("bad.png"):
@@ -230,24 +241,28 @@ async def test_first_failure_in_input_order_wins(monkeypatch) -> None:
 
     _mock(monkeypatch, handler)
 
-    with pytest.raises(ImageInvalid) as info:
-        await fetch_images([_src("thumbnailUrl", "bad.png"), _src("characters[0].images[0].imageUrl", "err.png")])
-    assert info.value.path == "thumbnailUrl"
+    prepared = await fetch_images([_src("thumbnailUrl", "bad.png"), _src("characters[0].images[0].imageUrl", "err.png")])
+    assert prepared.images == []
+    assert [(error.path, error.code) for error in prepared.errors] == [
+        ("thumbnailUrl", "IMAGE_INVALID"), ("characters[0].images[0].imageUrl", "IMAGE_DOWNLOAD_FAILED"),
+    ]
+
 
 
 async def test_error_message_does_not_contain_url(monkeypatch) -> None:
     """예외 문자열은 로그·Sentry로 흘러가므로 서빙 URL을 담지 않는다."""
     _mock(monkeypatch, lambda req: httpx.Response(404))
 
-    with pytest.raises(ImageDownloadFailed) as info:
-        await fetch_images([_src("thumbnailUrl", "secret-object-key.png")])
-    assert "secret-object-key" not in str(info.value)
-    assert HOST not in str(info.value)
+    prepared = await fetch_images([_src("thumbnailUrl", "secret-object-key.png")])
+    [error] = prepared.errors
+    assert isinstance(error, ImageDownloadFailed)
+    assert "secret-object-key" not in str(error)
+    assert HOST not in str(error)
 
 
 @pytest.mark.parametrize("bad_first", [True, False])
 @pytest.mark.parametrize("slow", [True, False])
-async def test_invalid_image_wins_over_download_failure(monkeypatch, bad_first, slow) -> None:
+async def test_invalid_and_download_failures_survive_timeouts_in_either_order(monkeypatch, bad_first, slow) -> None:
     async def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path.endswith("bad.png"):
             return httpx.Response(200, content=b"not image")
@@ -261,10 +276,13 @@ async def test_invalid_image_wins_over_download_failure(monkeypatch, bad_first, 
     if not bad_first:
         sources.reverse()
 
-    with pytest.raises(ImageInvalid) as info:
-        await fetch_images(sources)
+    prepared = await fetch_images(sources)
+    assert prepared.images == []
+    assert [error.path for error in prepared.errors] == [source.path for source in sources]
+    assert {error.path: error.code for error in prepared.errors} == {
+        "thumbnailUrl": "IMAGE_INVALID", "characters[0].images[0].imageUrl": "IMAGE_DOWNLOAD_FAILED",
+    }
 
-    assert info.value.path == "thumbnailUrl"
 
 
 async def test_downloads_at_most_five_images_at_once(monkeypatch) -> None:
@@ -296,7 +314,7 @@ async def test_downloads_at_most_five_images_at_once(monkeypatch) -> None:
         result = await task
 
     assert peak == 5
-    assert [image.path for image in result] == [source.path for source in sources]
+    assert [image.path for image in result.images] == [source.path for source in sources]
     assert active == 0
 
 
@@ -306,11 +324,14 @@ async def test_total_image_limit_counts_base64_expansion(monkeypatch, limit, rej
     monkeypatch.setattr(images, "MAX_REQUEST_BYTES", limit)
     _mock(monkeypatch, lambda req: httpx.Response(200, content=PNG))
     sources = [_src("thumbnailUrl"), _src("characters[0].images[0].imageUrl")]
+    prepared = await fetch_images(sources)
     if rejected:
-        with pytest.raises(ImageInvalid, match="전체 전송 용량"):
-            await fetch_images(sources)
+        assert prepared.images == []
+        assert [error.path for error in prepared.errors] == [source.path for source in sources]
+        assert all(isinstance(error, ImageInvalid) and "전체 전송 용량" in str(error) for error in prepared.errors)
     else:
-        assert len(await fetch_images(sources)) == 2
+        assert len(prepared.images) == 2
+        assert prepared.errors == []
 
 
 async def test_timeout_cancels_queued_and_active_downloads(monkeypatch) -> None:
@@ -328,7 +349,67 @@ async def test_timeout_cancels_queued_and_active_downloads(monkeypatch) -> None:
 
     _mock(monkeypatch, handler)
     monkeypatch.setattr(settings, "moderation_image_timeout", 0.05)
-    with pytest.raises(ImageDownloadFailed):
-        await fetch_images([_src(f"characters[{i}].images[0].imageUrl") for i in range(12)])
+    prepared = await fetch_images([_src(f"characters[{i}].images[0].imageUrl") for i in range(12)])
+    assert len(prepared.errors) == 12
+    assert all(isinstance(error, ImageDownloadFailed) for error in prepared.errors)
+    assert prepared.images == []
     assert started == 5
     assert active == 0
+
+
+async def test_success_and_all_errors_are_kept_despite_completion_order(monkeypatch) -> None:
+    last_completed = asyncio.Event()
+
+    async def handler(req):
+        if req.url.path == "/first.png":
+            await last_completed.wait()
+            return httpx.Response(200, content=b"not an image")
+        if req.url.path == "/last.png":
+            last_completed.set()
+            return httpx.Response(404)
+        return httpx.Response(200, content=PNG)
+
+    _mock(monkeypatch, handler)
+    sources = [_src("thumbnailUrl", "first.png"), _src("characters[0].images[0].imageUrl", "good.png"),
+               _src("characters[1].images[0].imageUrl", "last.png")]
+    prepared = await fetch_images(sources)
+    assert [image.path for image in prepared.images] == [sources[1].path]
+    assert [(error.path, error.code) for error in prepared.errors] == [
+        (sources[0].path, "IMAGE_INVALID"), (sources[2].path, "IMAGE_DOWNLOAD_FAILED"),
+    ]
+    assert all(error.__traceback__ is None for error in prepared.errors)
+
+
+async def test_request_cancellation_cleans_up_downloads(monkeypatch) -> None:
+    started = asyncio.Event()
+    active = 0
+
+    async def handler(req):
+        nonlocal active
+        active += 1
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            active -= 1
+
+    _mock(monkeypatch, handler)
+    task = asyncio.create_task(fetch_images([_src(f"characters[{i}].images[0].imageUrl") for i in range(12)]))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert active == 0
+
+
+async def test_programming_error_is_not_hidden_by_image_failure(monkeypatch) -> None:
+    def handler(req):
+        if req.url.path == "/bug.png":
+            raise TypeError("bug")
+        return httpx.Response(200, content=b"invalid")
+
+    _mock(monkeypatch, handler)
+    with pytest.raises(TypeError, match="bug"):
+        await fetch_images([_src("thumbnailUrl", "bad.png"), _src("characters[0].images[0].imageUrl", "bug.png")])

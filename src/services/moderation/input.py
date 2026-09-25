@@ -30,10 +30,11 @@ class ModerationInput:
     images: list[ImageSource]
 
 
-def prepare_input(post: dict[str, JsonValue]) -> ModerationInput:
+def prepare_input(post: dict[str, JsonValue], *, excluded_image_paths: set[str] | None = None) -> ModerationInput:
     """storyId・공개 설정・알 수 없는 필드는 모델 입력과 유효 경로에서 제외한다."""
     paths: dict[str, Literal["TEXT", "IMAGE"]] = {}
     images: list[ImageSource] = []
+    excluded = excluded_image_paths or set()
 
     def select(value: JsonValue, shape: object, path: str) -> JsonValue:
         if isinstance(shape, dict):
@@ -54,7 +55,7 @@ def prepare_input(post: dict[str, JsonValue]) -> ModerationInput:
             raise ValueError(f"{path}: 문자열이 필요합니다")
         kind = "IMAGE" if path == "thumbnailUrl" or path.endswith(".imageUrl") else "TEXT"
         # 빈 주소는 첨부 이미지가 없다는 뜻이다. 다운로드하거나 판독 실패로 취급하지 않는다.
-        if kind == "IMAGE" and not value.strip():
+        if kind == "IMAGE" and (not value.strip() or path in excluded):
             return None
         paths[path] = kind
         if kind == "IMAGE":

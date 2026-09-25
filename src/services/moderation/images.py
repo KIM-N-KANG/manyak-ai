@@ -10,7 +10,7 @@
 - `IMAGE_DOWNLOAD_FAILED` — 접근 불가·시간 초과·허용되지 않은 주소. 인프라 문제.
 - `IMAGE_INVALID` — 이미지가 아닌 파일·지원하지 않는 형식·장당 상한 초과. 사용자가 고칠 문제.
 
-둘 다 모델을 부르기 전에 확정되므로 실패한 게시물에는 모델 비용이 들지 않는다.
+준비에 실패한 이미지는 오류로 모으고, 정상 이미지는 모델 검수를 계속할 수 있도록 함께 반환한다.
 """
 
 import asyncio
@@ -22,6 +22,7 @@ import httpx
 from src.core.config import settings
 from src.services.llm.base import ContentPart, image_part
 from src.services.moderation.limits import MAX_REQUEST_BYTES
+from src.services.moderation.models import ImageErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class ModerationImageError(Exception):
     특정할 수 있는 값이라 남기지 않는다.
     """
 
-    code: str = ""
+    code: ImageErrorCode
 
     def __init__(self, path: str, message: str) -> None:
         super().__init__(f"{path}: {message}")
@@ -138,36 +139,39 @@ async def _download_one(client: httpx.AsyncClient, source: ImageSource) -> Moder
     return ModerationImage(path=source.path, content_type=content_type, data=image_data)
 
 
-async def fetch_images(sources: list[ImageSource], *, timeout: float | None = None) -> list[ModerationImage]:
-    """게시물의 이미지를 전부 내려받는다. 입력 순서를 유지한다.
+@dataclass(frozen=True)
+class PreparedImages:
+    images: list[ModerationImage]
+    errors: list[ModerationImageError]
 
-    한 장이라도 실패하면 `ModerationImageError`를 던진다 — 계약이 "이미지를 못 보면 승인하지
-    않는다"이므로 일부만 검수하지 않는다. 파일 불량을 다운로드 실패보다 먼저 알리고,
-    같은 종류의 실패는 입력 순서상 첫 번째를 알린다(`error_path`에는 하나만 싣는다).
 
-    전체 제한 시간(`moderation_image_timeout`)은 게시물 한 건 기준이다. 장수에 비례해 늘리면
-    이미지가 많은 게시물이 요청 전체 예산(150초)을 혼자 먹는다. 시간 초과 시 끝나지 않은 첫
-    장을 `IMAGE_DOWNLOAD_FAILED`로 돌려준다.
+async def fetch_images(sources: list[ImageSource], *, timeout: float | None = None) -> PreparedImages:
+    """정상 이미지와 준비 오류를 모두 수집한다. 각 목록은 입력 순서를 유지한다.
+
+    전체 제한 시간은 게시물 한 건 기준이다. 시간 초과 시 진행 중이거나 대기 중인
+    다운로드를 취소하고 해당 이미지 각각을 다운로드 실패로 기록한다.
     """
     if not sources:
-        return []
+        return PreparedImages(images=[], errors=[])
     timeout = settings.moderation_image_timeout if timeout is None else min(timeout, settings.moderation_image_timeout)
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
     encoded_bytes = 0
 
-    async def download(source: ImageSource) -> ModerationImage:
+    async def download(source: ImageSource) -> ModerationImage | ModerationImageError:
         nonlocal encoded_bytes
         async with semaphore:
-            image = await _download_one(client, source)
-            # base64는 원본 3바이트마다 4바이트가 된다. 이미지들만으로 요청 한도를
-            # 넘으면 모델을 부르기 전에 IMAGE_INVALID로 끝낸다. 글·JSON을 포함한
-            # 최종 본문은 검수 호출을 조립하는 쪽에서 limits.validate_request_size로 검사한다.
+            try:
+                image = await _download_one(client, source)
+            except ModerationImageError as exc:
+                # 오류 목록이 다운로드 프레임의 큰 이미지 버퍼까지 붙잡지 않게 한다.
+                return exc.with_traceback(None)
             encoded_bytes += 4 * ((len(image.data) + 2) // 3)
+            # 합계 한도를 넘으면 바이트를 더 보관하지 않는다. 남은 이미지의 형식 검사는 계속한다.
             if encoded_bytes > MAX_REQUEST_BYTES:
-                raise ImageInvalid(source.path, "이미지 전체 전송 용량 제한 초과")
+                return ImageInvalid(source.path, "이미지 전체 전송 용량 제한 초과")
             return image
 
-    # 리다이렉트를 따라가지 않는다 — 허용 목록 검사를 통과한 주소가 내부 주소로 튀는 길을 막는다.
+    # 허용된 URL에서 내부 주소로 이동하는 리다이렉트는 따라가지 않는다.
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         tasks = [asyncio.create_task(download(source)) for source in sources]
         try:
@@ -175,24 +179,23 @@ async def fetch_images(sources: list[ImageSource], *, timeout: float | None = No
                 asyncio.gather(*tasks, return_exceptions=True), timeout=timeout
             )
         except asyncio.TimeoutError:
-            for task in tasks:
-                if task.done() and not task.cancelled():
-                    error = task.exception()
-                    if isinstance(error, ImageInvalid):
-                        raise error
-            # wait_for가 gather를 취소하면 자식도 취소된다. 끝나지 않은 첫 장이 실패 위치다.
-            unfinished = next(
-                (s for s, t in zip(sources, tasks) if t.cancelled() or not t.done()), sources[0]
-            )
-            raise ImageDownloadFailed(unfinished.path, "이미지 다운로드 시간 초과") from None
-    images: list[ModerationImage] = []
+            # wait_for가 gather와 자식을 취소하고 정리한 뒤 반환한다. 완료된 결과는 보존한다.
+            results = [
+                ImageDownloadFailed(source.path, "이미지 다운로드 시간 초과")
+                if task.cancelled() else task.exception() or task.result()
+                for source, task in zip(sources, tasks)
+            ]
+    prepared = PreparedImages(images=[], errors=[])
     for result in results:
-        if isinstance(result, ImageInvalid):
+        if isinstance(result, ModerationImageError):
+            prepared.errors.append(result)
+        elif isinstance(result, BaseException):
+            # 코드 결함·호출 취소를 이미지 오류로 위장하지 않는다.
             raise result
-    for result in results:
-        if isinstance(result, BaseException):
-            # 우리 코드의 결함은 다운로드 실패로 위장하지 않는다(STYLEGUIDE §4).
-            raise result
-        images.append(result)
-    logger.info("검수 이미지 %d장 준비 완료", len(images))
-    return images
+        elif encoded_bytes > MAX_REQUEST_BYTES:
+            # 합계 초과는 요청 전체의 제한이다. 일부만 보내지 않고 관련 이미지 모두에 알린다.
+            prepared.errors.append(ImageInvalid(result.path, "이미지 전체 전송 용량 제한 초과"))
+        else:
+            prepared.images.append(result)
+    logger.info("검수 이미지 준비 완료 success=%d failed=%d", len(prepared.images), len(prepared.errors))
+    return prepared

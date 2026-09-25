@@ -5,12 +5,14 @@ from copy import deepcopy
 from unittest.mock import AsyncMock
 
 import pytest
+import httpx
 from httpx import ASGITransport, AsyncClient
 
+from src.core.config import settings
 from src.main import app
 from src.services.llm.base import LlmResult, LlmUnavailable, TokenUsage
-from src.services.moderation import service
-from src.services.moderation.images import ImageDownloadFailed, ImageInvalid, ModerationImage
+from src.services.moderation import images, service
+from src.services.moderation.images import ImageDownloadFailed, ImageInvalid, ModerationImage, PreparedImages
 
 URL = "/api/v1/moderation/story"
 POST = {
@@ -38,7 +40,7 @@ def output(decision="APPROVED", issues=None):
 @pytest.fixture
 def dependencies(monkeypatch):
     async def fetch(sources, **kwargs):
-        return [ModerationImage(s.path, "image/png", b"image") for s in sources]
+        return PreparedImages(images=[ModerationImage(s.path, "image/png", b"image") for s in sources], errors=[])
 
     fetch_mock = AsyncMock(side_effect=fetch)
     complete = AsyncMock(return_value=output())
@@ -53,8 +55,8 @@ async def test_approval_and_camel_case_input_reach_service(client, dependencies)
     post["startSettings"][0]["endings"][0]["requirement"]["minTurns"] = 5
     response = await client.post(URL, json=post)
     assert response.status_code == 200
-    assert response.json() == {"decision": "APPROVED", "issues": [], "error_code": None, "error_path": None}
-    assert list(response.json()) == ["decision", "issues", "error_code", "error_path"]
+    assert response.json() == {"decision": "APPROVED", "issues": [], "error_code": None, "image_errors": []}
+    assert list(response.json()) == ["decision", "issues", "error_code", "image_errors"]
     fetch, complete = dependencies
     assert [s.path for s in fetch.call_args.args[0]] == ["thumbnailUrl", "characters[0].images[0].imageUrl"]
     messages = complete.call_args.args[0].messages
@@ -218,16 +220,17 @@ async def test_provider_failure_falls_back_and_both_failures_are_200(client, dep
     dependencies[1].side_effect = failure
     response = await client.post(URL, json=POST)
     assert response.status_code == 200
-    assert response.json() == {"decision": "REJECTED", "issues": [], "error_code": "MODEL_CALL_FAILED", "error_path": None}
+    assert response.json() == {"decision": "REJECTED", "issues": [], "error_code": "MODEL_CALL_FAILED", "image_errors": []}
     assert dependencies[1].await_count == 2
 
 
 @pytest.mark.parametrize("failure", [ImageDownloadFailed("thumbnailUrl", "failed"), ImageInvalid("thumbnailUrl", "invalid")])
 async def test_image_preparation_errors_are_200_without_model_call(client, dependencies, failure):
-    dependencies[0].side_effect = failure
+    dependencies[0].side_effect = None
+    dependencies[0].return_value = PreparedImages(images=[], errors=[failure])
     response = await client.post(URL, json=POST)
     assert response.status_code == 200
-    assert response.json() == {"decision": "REJECTED", "issues": [], "error_code": failure.code, "error_path": "thumbnailUrl"}
+    assert response.json() == {"decision": "REJECTED", "issues": [], "error_code": failure.code, "image_errors": [{"path": "thumbnailUrl", "error_code": failure.code}]}
     dependencies[1].assert_not_awaited()
 
 
@@ -244,6 +247,53 @@ async def test_unreadable_image_and_oversized_request_are_200(client, dependenci
     assert response.status_code == 200
     assert response.json()["error_code"] == "IMAGE_INVALID"
     dependencies[1].assert_not_awaited()
+
+
+async def test_file_download_and_model_image_errors_are_combined(client, dependencies, monkeypatch):
+    post = deepcopy(POST)
+    post["characters"].append({"name": "다른 인물", "images": [
+        {"imageName": "다른 인물_기본", "imageUrl": "https://cdn.example.com/readable.png"},
+    ]})
+    seen = []
+    reports = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if request.url.path == "/cover.png":
+            return httpx.Response(200, content=b"broken file")
+        if request.url.path == "/a.png":
+            return httpx.Response(404)
+        return httpx.Response(200, content=b"\x89PNG\r\n\x1a\nimage")
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(settings, "image_parent_allowed_hosts", ["cdn.example.com"])
+    monkeypatch.setattr(images.httpx, "AsyncClient", lambda **kw: client_type(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(service, "fetch_images", images.fetch_images)
+    monkeypatch.setattr(service, "capture_ai_exception", lambda exc, **tags: reports.append(tags))
+    dependencies[1].return_value = output("REJECTED", [{
+        "path": "characters[1].images[0].imageUrl", "rule": None, "reason": "판독 불가",
+    }])
+
+    response = await client.post(URL, json=post)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "decision": "REJECTED", "issues": [], "error_code": "IMAGE_INVALID",
+        "image_errors": [
+            {"path": "thumbnailUrl", "error_code": "IMAGE_INVALID"},
+            {"path": "characters[0].images[0].imageUrl", "error_code": "IMAGE_DOWNLOAD_FAILED"},
+            {"path": "characters[1].images[0].imageUrl", "error_code": "IMAGE_UNREADABLE"},
+        ],
+    }
+    assert sorted(seen) == ["/a.png", "/cover.png", "/readable.png"]
+    dependencies[1].assert_awaited_once()
+    parts = dependencies[1].call_args.args[0].messages[1]["content"]
+    assert [part["type"] for part in parts] == ["text", "text", "image_url"]
+    assert parts[1]["text"] == "첨부 이미지 경로: characters[1].images[0].imageUrl"
+    assert "/cover.png" not in parts[0]["text"] and "/a.png" not in parts[0]["text"]
+    assert "인물_평상시" in parts[0]["text"]
+    # 준비 실패는 요청당 한 건(대표 코드), 판독 실패는 모델 호출당 한 건.
+    assert [report["error_code"] for report in reports] == ["IMAGE_INVALID", "IMAGE_UNREADABLE"]
 
 
 @pytest.mark.parametrize("path,value", [
@@ -293,3 +343,36 @@ def test_openapi_declares_request_and_response():
     operation = app.openapi()["paths"][URL]["post"]
     assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/StoryModerationRequest")
     assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/StoryModerationResponse")
+
+
+@pytest.mark.parametrize("preparation_failure", [False, True])
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_image_errors_preserve_all_content_violations(client, dependencies, preparation_failure, fallback):
+    if preparation_failure:
+        dependencies[0].side_effect = None
+        dependencies[0].return_value = PreparedImages(
+            images=[ModerationImage("characters[0].images[0].imageUrl", "image/png", b"image")],
+            errors=[ImageInvalid("thumbnailUrl", "broken")],
+        )
+    text_paths = ["title", "oneLineIntro", "storySettings.worldSetting"]
+    content_issues = [{"path": path, "rule": "DRUGS", "reason": "마약 사용을 권장합니다."} for path in text_paths]
+    content_issues.append({
+        "path": "characters[0].images[0].imageName", "rule": "DRUGS", "reason": "마약 사용을 권장합니다.",
+    })
+    model_result = output("REJECTED", [
+        {"path": "characters[0].images[0].imageUrl", "rule": None, "reason": "판독 불가"},
+        *content_issues,
+    ])
+    dependencies[1].side_effect = (
+        [LlmUnavailable("failed", provider="openai", model="test"), model_result] if fallback else [model_result]
+    )
+    response = await client.post(URL, json=POST)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "REJECTED"
+    assert body["issues"] == [{**item, "type": "TEXT"} for item in content_issues]
+    expected_errors = ([{"path": "thumbnailUrl", "error_code": "IMAGE_INVALID"}] if preparation_failure else [])
+    expected_errors.append({"path": "characters[0].images[0].imageUrl", "error_code": "IMAGE_UNREADABLE"})
+    assert body["image_errors"] == expected_errors
+    assert body["error_code"] == ("IMAGE_INVALID" if preparation_failure else "IMAGE_UNREADABLE")
+    assert dependencies[1].await_count == (2 if fallback else 1)

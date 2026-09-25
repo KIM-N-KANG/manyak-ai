@@ -8,7 +8,8 @@ Rule = Literal[
     "MINOR_SEXUAL_EXPLOITATION", "EXPLICIT_SEXUAL_CONTENT", "NONCONSENSUAL_SEXUAL_EXPLOITATION",
     "DRUGS", "EXTREME_GORE", "SELF_HARM_PROMOTION", "HATE_VIOLENCE_INCITEMENT",
 ]
-ErrorCode = Literal["IMAGE_DOWNLOAD_FAILED", "IMAGE_INVALID", "IMAGE_UNREADABLE", "MODEL_CALL_FAILED"]
+ImageErrorCode = Literal["IMAGE_DOWNLOAD_FAILED", "IMAGE_INVALID", "IMAGE_UNREADABLE"]
+ErrorCode = Literal[ImageErrorCode, "MODEL_CALL_FAILED"]
 
 
 class ModelIssue(BaseModel):
@@ -31,12 +32,20 @@ class ModerationIssue(BaseModel):
     reason: str
 
 
+class ModerationImageFailure(BaseModel):
+    path: str
+    error_code: ImageErrorCode
+
+
 class ModerationResult(BaseModel):
     decision: Literal["APPROVED", "REJECTED"]
     issues: list[ModerationIssue] = Field(default_factory=list)
     error_code: ErrorCode | None = None
-    error_path: str | None = None
+    image_errors: list[ModerationImageFailure] = Field(default_factory=list)
 
 
-def failure(code: ErrorCode, path: str | None = None) -> ModerationResult:
-    return ModerationResult(decision="REJECTED", error_code=code, error_path=path)
+def failure(
+    code: ErrorCode, image_errors: list[ModerationImageFailure] | None = None,
+    *, issues: list[ModerationIssue] | None = None,
+) -> ModerationResult:
+    return ModerationResult(decision="REJECTED", issues=issues or [], error_code=code, image_errors=image_errors or [])

@@ -8,7 +8,7 @@ import pytest
 from src.core.config import settings
 from src.services.llm.base import LlmResult, LlmUnavailable, TokenUsage
 from src.services.moderation import service
-from src.services.moderation.images import ImageDownloadFailed, ImageInvalid, ModerationImage
+from src.services.moderation.images import ImageDownloadFailed, ImageInvalid, ModerationImage, PreparedImages
 from src.services.moderation.input import prepare_input
 from src.services.moderation.models import ModelDecision
 from src.services.moderation.prompt import build_messages
@@ -44,7 +44,7 @@ def setup(monkeypatch):
     monkeypatch.setattr(settings, "moderation_request_timeout", 150.0)
 
     async def fetch(sources, **kwargs):
-        return [ModerationImage(source.path, "image/png", b"\x89PNG\r\n\x1a\nimage") for source in sources]
+        return PreparedImages(images=[ModerationImage(source.path, "image/png", b"\x89PNG\r\n\x1a\nimage") for source in sources], errors=[])
 
     monkeypatch.setattr(service, "fetch_images", fetch)
 
@@ -103,7 +103,7 @@ def test_messages_include_real_images_and_treat_post_as_data():
 async def test_approval_uses_primary_once_and_no_retries(monkeypatch):
     calls = install(monkeypatch, [result()])
     response = await service.moderate_story(POST)
-    assert response.model_dump() == {"decision": "APPROVED", "issues": [], "error_code": None, "error_path": None}
+    assert response.model_dump() == {"decision": "APPROVED", "issues": [], "error_code": None, "image_errors": []}
     assert len(calls) == 1
     assert calls[0].model == "gpt-5.6-luna"
     assert calls[0].max_retries == 0
@@ -138,20 +138,20 @@ async def test_failed_primary_falls_back_once(monkeypatch, outcome):
 async def test_both_models_fail_closed(monkeypatch):
     calls = install(monkeypatch, [result(text="no"), result("REJECTED", [issue("storyId")])])
     response = await service.moderate_story(POST)
-    assert response.model_dump() == {"decision": "REJECTED", "issues": [], "error_code": "MODEL_CALL_FAILED", "error_path": None}
+    assert response.model_dump() == {"decision": "REJECTED", "issues": [], "error_code": "MODEL_CALL_FAILED", "image_errors": []}
     assert len(calls) == 2
 
 
 @pytest.mark.parametrize("error", [ImageInvalid("thumbnailUrl", "bad"), ImageDownloadFailed("thumbnailUrl", "bad")])
 async def test_image_failure_never_calls_model(monkeypatch, error):
     async def fail(*args, **kwargs):
-        raise error
+        return PreparedImages(images=[], errors=[error])
 
     monkeypatch.setattr(service, "fetch_images", fail)
     calls = install(monkeypatch, [])
     response = await service.moderate_story(POST)
     assert response.error_code == error.code
-    assert response.error_path == error.path
+    assert [(item.path, item.error_code) for item in response.image_errors] == [(error.path, error.code)]
     assert not calls
 
 
@@ -162,7 +162,7 @@ async def test_oversized_full_body_is_rejected_before_any_model(monkeypatch):
     calls = install(monkeypatch, [])
     response = await service.moderate_story(POST)
     assert response.error_code == "IMAGE_INVALID"
-    assert response.error_path == "thumbnailUrl"
+    assert [item.path for item in response.image_errors] == ["thumbnailUrl", "characters[0].images[0].imageUrl"]
     assert not calls
 
 
@@ -189,7 +189,7 @@ async def test_total_deadline_is_passed_to_image_preparation(monkeypatch):
 
     async def fetch(sources, *, timeout):
         assert 0 < timeout <= 0.01
-        raise ImageDownloadFailed(sources[0].path, "시간 초과")
+        return PreparedImages(images=[], errors=[ImageDownloadFailed(source.path, "시간 초과") for source in sources])
 
     monkeypatch.setattr(service, "fetch_images", fetch)
     response = await service.moderate_story(POST)
@@ -205,8 +205,8 @@ async def test_unreadable_image_does_not_fallback_and_uses_input_order(monkeypat
     ])])
     response = await service.moderate_story(POST)
     assert response.error_code == "IMAGE_UNREADABLE"
-    assert response.error_path == "thumbnailUrl"
-    assert response.issues == []
+    assert [item.path for item in response.image_errors] == ["thumbnailUrl", "characters[0].images[0].imageUrl"]
+    assert [item.path for item in response.issues] == ["title"]
     assert len(calls) == 1
 
     assert reports == [{
@@ -288,11 +288,15 @@ async def test_image_failure_is_reported_to_sentry(monkeypatch):
     monkeypatch.setattr(service, "capture_ai_exception", lambda exc, **tags: reports.append(tags))
 
     async def fail(*args, **kwargs):
-        raise ImageDownloadFailed("thumbnailUrl", "failed")
+        return PreparedImages(images=[], errors=[
+            ImageDownloadFailed("thumbnailUrl", "failed"),
+            ImageDownloadFailed("characters[0].images[0].imageUrl", "failed"),
+        ])
 
     monkeypatch.setattr(service, "fetch_images", fail)
     calls = install(monkeypatch, [])
     response = await service.moderate_story(POST)
+    # 실패 장수와 무관하게 요청당 한 건만 보고한다.
     assert reports == [{"feature": "story_moderation", "provider": "none", "error_code": "IMAGE_DOWNLOAD_FAILED"}]
     assert response.error_code == "IMAGE_DOWNLOAD_FAILED"
     assert not calls
@@ -316,3 +320,71 @@ async def test_missing_openai_key_falls_back_without_network(monkeypatch):
     assert response.decision == "APPROVED"
     assert calls == ["gpt-5.6-luna", "deepseek-flash"]
     assert reports[0]["provider"] == "openai"
+
+
+@pytest.mark.parametrize("preparation_error", [ImageInvalid, ImageDownloadFailed])
+@pytest.mark.parametrize("model_outcome", ["approved", "unreadable", "rejected", "failed", "fallback"])
+async def test_partial_image_failure_survives_model_outcomes(monkeypatch, preparation_error, model_outcome):
+    async def fetch(sources, **kwargs):
+        return PreparedImages(
+            images=[ModerationImage(sources[1].path, "image/png", b"image")],
+            errors=[preparation_error(sources[0].path, "failed")],
+        )
+
+    monkeypatch.setattr(service, "fetch_images", fetch)
+    unreadable = result("REJECTED", [issue("characters[0].images[0].imageUrl", None)])
+    outcomes = {
+        "approved": [result()],
+        "unreadable": [unreadable],
+        "rejected": [result("REJECTED", [issue()])],
+        "failed": [result(text="bad"), result(text="bad")],
+        "fallback": [result(text="bad"), unreadable],
+    }
+    calls = install(monkeypatch, outcomes[model_outcome])
+    response = await service.moderate_story(POST)
+    expected = [{"path": "thumbnailUrl", "error_code": preparation_error.code}]
+    if model_outcome in ("unreadable", "fallback"):
+        expected.append({"path": "characters[0].images[0].imageUrl", "error_code": "IMAGE_UNREADABLE"})
+    assert [error.model_dump() for error in response.image_errors] == expected
+    assert response.error_code == (
+        "IMAGE_INVALID" if preparation_error is ImageInvalid else
+        "IMAGE_UNREADABLE" if len(expected) == 2 else "IMAGE_DOWNLOAD_FAILED"
+    )
+    assert response.decision == "REJECTED"
+    assert [item.path for item in response.issues] == (["title"] if model_outcome == "rejected" else [])
+    assert len(calls) == len(outcomes[model_outcome])
+    if len(calls) == 2:
+        assert calls[0].messages == calls[1].messages
+
+
+async def test_missing_image_cannot_be_reported_as_unreadable_by_model(monkeypatch):
+    async def fetch(sources, **kwargs):
+        return PreparedImages(
+            images=[ModerationImage(sources[1].path, "image/png", b"image")],
+            errors=[ImageDownloadFailed(sources[0].path, "failed")],
+        )
+
+    monkeypatch.setattr(service, "fetch_images", fetch)
+    calls = install(monkeypatch, [result("REJECTED", [issue("thumbnailUrl", None)]), result()])
+    response = await service.moderate_story(POST)
+    assert len(calls) == 2
+    assert [(error.path, error.error_code) for error in response.image_errors] == [
+        ("thumbnailUrl", "IMAGE_DOWNLOAD_FAILED"),
+    ]
+
+
+async def test_preparation_errors_remain_when_model_time_budget_expires(monkeypatch):
+    monkeypatch.setattr(settings, "moderation_request_timeout", 0)
+
+    async def fetch(sources, **kwargs):
+        return PreparedImages(
+            images=[ModerationImage(sources[1].path, "image/png", b"image")],
+            errors=[ImageInvalid(sources[0].path, "failed")],
+        )
+
+    monkeypatch.setattr(service, "fetch_images", fetch)
+    calls = install(monkeypatch, [])
+    response = await service.moderate_story(POST)
+    assert not calls
+    assert response.error_code == "IMAGE_INVALID"
+    assert [error.path for error in response.image_errors] == ["thumbnailUrl"]

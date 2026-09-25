@@ -67,4 +67,4 @@ class StoryModerationRequest(_ModerationInput):
 
 
 class StoryModerationResponse(ModerationResult):
-    """decision·issues·error_code·error_path 순서와 null 필드를 유지한다."""
+    """decision·issues·error_code·image_errors 순서와 빈 배열·null 필드를 유지한다."""

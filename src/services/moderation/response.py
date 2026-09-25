@@ -4,7 +4,7 @@ from pydantic import ValidationError
 
 from src.services.llm.base import LlmResult
 from src.services.moderation.input import ModerationInput
-from src.services.moderation.models import ModelDecision, ModerationIssue, ModerationResult, failure
+from src.services.moderation.models import ModelDecision, ModerationImageFailure, ModerationIssue, ModerationResult, failure
 
 
 class InvalidModerationResponse(ValueError):
@@ -37,6 +37,8 @@ def parse_response(result: LlmResult, inputs: ModerationInput) -> ModerationResu
         else:
             issues.append(ModerationIssue(path=issue.path, type=kind, rule=issue.rule, reason=issue.reason))
     if unreadable:
-        path = next(source.path for source in inputs.images if source.path in unreadable)
-        return failure("IMAGE_UNREADABLE", path)
+        return failure("IMAGE_UNREADABLE", [
+            ModerationImageFailure(path=source.path, error_code="IMAGE_UNREADABLE")
+            for source in inputs.images if source.path in unreadable
+        ], issues=issues)
     return ModerationResult(decision="REJECTED", issues=issues)
