@@ -337,6 +337,8 @@ _REGISTRY: dict[str, ResolvedModel] = {
 # 채팅을 이 공급자로 여는 티켓의 몫이다. 그때 여기 한 줄을 지운다.
 BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
     "CHAT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
+    "MODERATION_MODEL": frozenset({PROVIDER_DEEPSEEK, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
+    "MODERATION_FALLBACK_MODEL": frozenset({PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
 }
 
 
@@ -417,6 +419,8 @@ def selected_models() -> tuple[tuple[str, str], ...]:
         ("STORYLINES_MODEL", settings.storylines_model),
         ("STORY_COMPILE_MODEL", settings.story_compile_model),
         ("CHAT_MODEL", settings.chat_model),
+        ("MODERATION_MODEL", settings.moderation_model),
+        ("MODERATION_FALLBACK_MODEL", settings.moderation_fallback_model),
     )
 
 
@@ -424,8 +428,8 @@ def validate_selected_models() -> None:
     """선택된 모델이 등록돼 있고, 그 자리에 쓸 수 있는 공급자이며, 키가 채워졌는지 확인한다.
     위반 시 LlmConfigError.
 
-    서버 시작 시 한 번 부른다 — 잘못 적은 모델 이름이나 빈 키는 첫 사용자 요청(502)이 아니라
-    기동에서 드러나야 한다.
+    서버 시작 시 한 번 부른다. 검수에만 필요한 키의 누락은 해당 검수 호출에서 처리하며,
+    나머지 설정 오류는 기동에서 드러낸다.
 
     **자리별 금지 공급자(`BLOCKED_PROVIDERS`)를 키·주소보다 먼저 본다.** 못 쓰는 공급자를
     꽂았는데 "키가 비어 있습니다"라고 답하면, 키만 채우면 될 것처럼 읽혀 엉뚱한 곳을 고치게 된다.
@@ -447,7 +451,16 @@ def validate_selected_models() -> None:
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데, 이 자리는 그 "
                 f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석)."
             )
+        if env_name in {"MODERATION_MODEL", "MODERATION_FALLBACK_MODEL"}:
+            mode = STRUCTURED_OUTPUT_JSON_SCHEMA if env_name == "MODERATION_MODEL" else STRUCTURED_OUTPUT_JSON_OBJECT
+            if not resolved.supports_image_input or mode not in resolved.structured_output_modes:
+                raise LlmConfigError(f"{env_name}={model}은 이미지 입력과 {mode} 출력을 지원해야 합니다.")
+            if env_name == "MODERATION_MODEL" and "high" not in resolved.supported_reasoning_efforts:
+                raise LlmConfigError(f"{env_name}={model}은 high 추론 강도를 지원해야 합니다.")
         if not creds.api_key.strip():
+            # 검수 키 누락은 해당 호출에서 처리한다. 다른 기능의 기동을 막지 않는다.
+            if env_name in {"MODERATION_MODEL", "MODERATION_FALLBACK_MODEL"}:
+                continue
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데 "
                 f"{creds.api_key_env}가 비어 있습니다."

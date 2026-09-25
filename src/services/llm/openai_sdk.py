@@ -27,6 +27,7 @@ from src.services.llm.base import (
     PROVIDER_DEEPSEEK,
     PROVIDER_OPENAI,
     STRUCTURED_OUTPUT_JSON_OBJECT,
+    STRUCTURED_OUTPUT_JSON_SCHEMA,
     LlmBadRequest,
     LlmConfigError,
     LlmError,
@@ -167,6 +168,13 @@ def check_supported(resolved: ResolvedModel) -> None:
 def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]:
     """SDK에 넘길 인자를 조립한다. 값이 없는 인자는 **아예 넣지 않는다**(SDK 기본값에 맡긴다)."""
     kwargs: dict[str, object] = {"model": resolved.model, "messages": req.messages}
+    if req.response_schema is not None:
+        if STRUCTURED_OUTPUT_JSON_SCHEMA not in resolved.structured_output_modes:
+            raise LlmConfigError(f"모델 '{resolved.model}'은 JSON 스키마 출력을 지원하지 않습니다.")
+        kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "response", "strict": True, "schema": req.response_schema},
+        }
     if req.json_mode:
         if (
             resolved.structured_output_modes
@@ -213,6 +221,14 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         # 그대로 흘러가므로 활성일 때만 붙인다.
         kwargs["metadata"] = deepseek_pricing.pricing_metadata()
     return kwargs
+
+
+def request_body(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]:
+    """SDK 전용 옵션을 뺀 전송 본문. 호출부는 공통 통로의 공개 함수로 접근한다."""
+    kwargs = _build_kwargs(req, resolved)
+    body = {key: value for key, value in kwargs.items() if key not in {"timeout", "metadata", "extra_body"}}
+    body.update(kwargs.get("extra_body", {}))
+    return body
 
 
 def _text_of(response: object) -> str:
@@ -294,6 +310,8 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
     """단발 호출. 재호출·시간 예산은 호출부가 관장하고 여기서는 한 번만 부른다."""
     kwargs = _build_kwargs(req, resolved)
     client = _client(resolved.provider)
+    if req.max_retries is not None:
+        client = client.with_options(max_retries=req.max_retries)
     try:
         response = await client.chat.completions.create(**kwargs)
     except OpenAIError as exc:
@@ -319,6 +337,8 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
     kwargs["stream"] = True
     kwargs["stream_options"] = {"include_usage": True}  # 마지막 청크에 usage 동봉(토큰 로깅)
     client = _client(resolved.provider)
+    if req.max_retries is not None:
+        client = client.with_options(max_retries=req.max_retries)
 
     try:
         chunks = await client.chat.completions.create(**kwargs)

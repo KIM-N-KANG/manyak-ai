@@ -1390,7 +1390,7 @@ def test_the_blocked_slot_is_known_only_to_the_registry() -> None:
     때마다 그 층을 다시 고쳐야 한다(KNK-667). 어느 파일에도 "CHAT_MODEL"이 코드로 박히지
     않았는지는 위 `test_the_streaming_slot_is_known_only_to_the_registry`가 함께 지킨다.
     """
-    assert registry.BLOCKED_PROVIDERS == {"CHAT_MODEL": frozenset({PROVIDER_ANTHROPIC})}
+    assert registry.BLOCKED_PROVIDERS["CHAT_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
 
 
 def test_startup_rejects_this_provider_in_the_chat_slot(monkeypatch) -> None:

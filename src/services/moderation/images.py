@@ -138,7 +138,7 @@ async def _download_one(client: httpx.AsyncClient, source: ImageSource) -> Moder
     return ModerationImage(path=source.path, content_type=content_type, data=image_data)
 
 
-async def fetch_images(sources: list[ImageSource]) -> list[ModerationImage]:
+async def fetch_images(sources: list[ImageSource], *, timeout: float | None = None) -> list[ModerationImage]:
     """게시물의 이미지를 전부 내려받는다. 입력 순서를 유지한다.
 
     한 장이라도 실패하면 `ModerationImageError`를 던진다 — 계약이 "이미지를 못 보면 승인하지
@@ -151,7 +151,7 @@ async def fetch_images(sources: list[ImageSource]) -> list[ModerationImage]:
     """
     if not sources:
         return []
-    timeout = settings.moderation_image_timeout
+    timeout = settings.moderation_image_timeout if timeout is None else min(timeout, settings.moderation_image_timeout)
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
     encoded_bytes = 0
 

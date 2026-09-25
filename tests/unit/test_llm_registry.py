@@ -39,6 +39,8 @@ def _clear_llm_env(monkeypatch) -> None:
         "STORYLINES_MODEL",
         "STORY_COMPILE_MODEL",
         "CHAT_MODEL",
+        "MODERATION_MODEL",
+        "MODERATION_FALLBACK_MODEL",
         "OPENAI_API_KEY",
         "OPENAI_API_URL",
         "ANTHROPIC_API_KEY",
@@ -411,8 +413,8 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
     registry.validate_selected_models()
 
 
-def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypatch) -> None:
-    """OpenAI 키도 GPT를 고른 순간에만 필수가 된다."""
+def test_missing_moderation_key_does_not_block_other_features(monkeypatch) -> None:
+    """검수에만 필요한 키는 기동을 막지 않지만 스토리에 쓰는 키는 필요하다."""
     monkeypatch.setattr(
         registry,
         "settings",
@@ -447,14 +449,16 @@ def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypa
     registry.validate_selected_models()
 
 
-def test_selected_models_covers_three_env_vars(monkeypatch) -> None:
-    """용도별 모델 3개를 env 이름과 함께 돌려준다(KNK-595 3분리와 짝)."""
+def test_selected_models_includes_moderation_models(monkeypatch) -> None:
+    """기존 세 용도와 검수 기본·대체 모델을 모두 기동 검사한다."""
     monkeypatch.setattr(registry, "settings", _settings())
 
     assert registry.selected_models() == (
         ("STORYLINES_MODEL", "deepseek-flash"),
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
         ("CHAT_MODEL", "deepseek-flash"),
+        ("MODERATION_MODEL", "gpt-5.6-luna"),
+        ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
     )
 
 

@@ -178,6 +178,9 @@ class LlmRequest:
     timeout: float | None = None
     temperature: float | None = None
     json_mode: bool = False  # JSON 객체 응답을 요구한다(OpenAI 계열은 response_format으로 강제)
+    response_schema: dict[str, object] | None = None
+    reasoning_effort: str | None = None
+    max_retries: int | None = None  # None이면 기존 SDK 재시도 설정을 유지한다.
 
 
 @dataclass(frozen=True)
