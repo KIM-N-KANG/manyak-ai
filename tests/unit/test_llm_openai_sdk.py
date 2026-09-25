@@ -918,8 +918,8 @@ def test_validate_startup_rejects_model_the_adapter_cannot_express(monkeypatch) 
 def test_validate_startup_names_the_env_for_missing_adapter(monkeypatch) -> None:
     """어댑터 코드가 없어 기동이 막힐 때도 어느 env를 고칠지 알려준다.
 
-    이 메시지만 보고 STORYLINES_MODEL·STORY_COMPILE_MODEL·CHAT_MODEL 중 무엇을 되돌릴지
-    판단해야 한다 — 배포가 실패해 서버가 내려간 상황이라 추적할 시간이 없다.
+    이 메시지만 보고 STORYLINES_MODEL·STORY_COMPILE_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL 중
+    무엇을 되돌릴지 판단해야 한다 — 배포가 실패해 서버가 내려간 상황이라 추적할 시간이 없다.
 
     **어댑터 이름은 코드가 생길 일이 없는 값을 쓴다.** 예전에는 여기에 "anthropic_sdk"를
     썼는데, KNK-676에서 그 어댑터가 실제로 생기자 이 테스트가 검사하려던 실패 경로가 사라져

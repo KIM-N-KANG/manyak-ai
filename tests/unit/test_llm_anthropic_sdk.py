@@ -1391,6 +1391,7 @@ def test_the_blocked_slot_is_known_only_to_the_registry() -> None:
     않았는지는 위 `test_the_streaming_slot_is_known_only_to_the_registry`가 함께 지킨다.
     """
     assert registry.BLOCKED_PROVIDERS["CHAT_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
+    assert registry.BLOCKED_PROVIDERS["CHAT_CHOICE_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
 
 
 def test_startup_rejects_this_provider_in_the_chat_slot(monkeypatch) -> None:

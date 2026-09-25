@@ -68,7 +68,8 @@ def validate_startup() -> None:
     요청마다 500·502를 내면서도 살아 있는 것처럼 보여, 문제를 훨씬 늦게 알게 된다.
 
     어댑터 선택 실패(`_adapter_of`)도 함께 잡아 어느 env가 문제인지 붙인다 — 메시지만 보고
-    STORYLINES_MODEL·STORY_COMPILE_MODEL·CHAT_MODEL 중 무엇을 고칠지 알 수 있어야 한다.
+    STORYLINES_MODEL·STORY_COMPILE_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL 중
+    무엇을 고칠지 알 수 있어야 한다.
 
     **조각 흘리기가 필요한 자리인지도 본다.** 어느 env가 그런 자리인지는 등록부가 알고
     (`registry.STREAMING_ENVS`), 할 수 있는지는 어댑터가 밝힌다(`SUPPORTS_STREAMING`) —

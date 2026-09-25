@@ -5,6 +5,12 @@ google-genai SDK로 Gemini API를 부른다. 하는 일은 OpenAI·Anthropic 어
 1. 등록부의 **뜻**을 이 SDK의 **문법**으로 옮긴다.
 2. 응답에서 본문·모델명·토큰을 꺼내 `LlmResult`로 만든다.
 3. SDK 예외를 공급자 중립 예외로 접는다.
+4. 단발 호출 1건을 Langfuse generation 관측으로 남긴다(KNK-1097). `langfuse.openai` 자동 계측은
+   openai SDK만 덮어 google-genai 호출은 지나친다 — 이미지 어댑터(KNK-1240)처럼 여기서 손으로
+   기록해야 Gemini 컴파일의 토큰·비용이 현재 트레이스(스토리 컴파일 등)에 모인다.
+   스트리밍(`stream`)은 아직 기록하지 않는다. `observe_generation`은 현재 컨텍스트에 관측을
+   붙이는 방식이라 yield를 넘나들면 중도 이탈이 ERROR로 남고 멈춘 사이 만든 관측의 부모가
+   틀어진다. Gemini는 지금 컴파일(단발)에만 쓰이므로, 채팅에 쓰게 될 때 스트림 전용 관측과 함께 붙인다.
 """
 
 import hashlib
@@ -15,6 +21,7 @@ import httpx
 from google import genai
 from google.genai import errors, types
 
+from src.core.langfuse import observe_generation
 from src.services.llm.base import (
     STRUCTURED_OUTPUT_JSON_OBJECT,
     LlmBadRequest,
@@ -41,6 +48,9 @@ _clients: dict[tuple[str, str | None, str], genai.Client] = {}
 
 # 이 어댑터는 조각 흘리기를 한다. 기동 검사가 읽는다.
 SUPPORTS_STREAMING = True
+
+# Langfuse 관측 이름. 자동 계측이 붙이는 "OpenAI-generation"과 나란히 공급자를 드러낸다.
+_OBSERVATION_NAME = "Gemini-generation"
 
 
 def _fingerprint(api_key: str) -> str:
@@ -197,6 +207,64 @@ def _usage_of(response: object) -> TokenUsage:
     )
 
 
+def _usage_details(response: object) -> dict[str, int] | None:
+    """usage_metadata를 Langfuse usage_details로 옮긴다.
+
+    키는 Langfuse 관리 단가(gemini-3.x-flash)가 값을 매긴 이름에 맞춘다 — 이름이 어긋나면 그
+    토큰은 0원으로 계산되고, 겹치면 두 번 계산된다. 그래서:
+
+    - prompt_token_count는 캐시 적중분을 포함하므로 캐시를 뺀 값은 input, 적중분은
+      input_cached_tokens로 나눈다(캐시 읽기 단가는 1/10).
+    - thinking 토큰은 output_reasoning으로 따로 싣고 output에는 합치지 않는다. 관리 단가가
+      output_reasoning에도 출력 단가를 매기므로, 합친 output과 output_reasoning을 함께 보내면
+      thinking이 두 번 과금된다. (`_usage_of`가 output에 합산하는 것은 내부 지표용 TokenUsage
+      규칙이라 여기와 다르다.)
+    - total은 공급자 합계(prompt + candidates + thoughts)를 그대로 싣는다.
+    - tool 호출은 쓰지 않아 tool_use_prompt_token_count는 옮기지 않는다. tools를 도입하면
+      그 입력 토큰도 input에 더해야 비용이 빠지지 않는다.
+
+    값이 하나도 없으면 None을 돌려준다.
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return None
+    prompt = getattr(usage, "prompt_token_count", None)
+    cached = getattr(usage, "cached_content_token_count", None)
+    candidates = getattr(usage, "candidates_token_count", None)
+    thoughts = getattr(usage, "thoughts_token_count", None)
+    details: dict[str, int] = {}
+    if isinstance(prompt, int):
+        cached_count = cached if isinstance(cached, int) else 0
+        # 정상 응답은 cached ≤ prompt지만, 어긋난 값이 음수 비용으로 번지지 않게 막는다.
+        details["input"] = max(0, prompt - cached_count)
+        if cached_count:
+            details["input_cached_tokens"] = cached_count
+    if isinstance(candidates, int):
+        details["output"] = candidates
+    if isinstance(thoughts, int):
+        details["output_reasoning"] = thoughts
+    if not details:
+        return None
+    details["total"] = sum(v for v in (prompt, candidates, thoughts) if isinstance(v, int))
+    return details
+
+
+def _model_parameters(
+    req: LlmRequest, resolved: ResolvedModel
+) -> dict[str, str | int | float | bool | None]:
+    """관측에 실을 모델 인자. 실제 전송 여부와 무관하게 요청·등록부가 정한 값만 요약한다."""
+    params: dict[str, str | int | float | bool | None] = {}
+    if req.temperature is not None and resolved.supports_temperature:
+        params["temperature"] = req.temperature
+    if req.max_tokens is not None:
+        params["max_tokens"] = req.max_tokens
+    if resolved.use_thinking and resolved.reasoning_effort is not None:
+        params["reasoning_effort"] = resolved.reasoning_effort
+    if req.json_mode:
+        params["json_mode"] = True
+    return params
+
+
 def _finish_reason_of(response: object) -> str | None:
     """종료 이유를 꺼낸다. 못 꺼내면 None.
 
@@ -238,18 +306,27 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
     client = _client(resolved.provider)
     config = _build_config(req, resolved)
     contents = _build_contents(req)
-    try:
-        response = await client.aio.models.generate_content(
-            model=resolved.model,
-            contents=contents,
-            config=config,
-        )
-    except errors.APIError as exc:
-        raise _translate(exc, resolved) from exc
-    except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
-        raise _translate(exc, resolved) from exc
+    # 관측 블록 안에서 나가는 예외(공급자 실패)는 관측에 ERROR로 남고 그대로 전파된다.
+    with observe_generation(
+        _OBSERVATION_NAME,
+        model=resolved.model,
+        model_parameters=_model_parameters(req, resolved),
+        input_data=req.messages,
+    ) as generation:
+        try:
+            response = await client.aio.models.generate_content(
+                model=resolved.model,
+                contents=contents,
+                config=config,
+            )
+        except errors.APIError as exc:
+            raise _translate(exc, resolved) from exc
+        except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
+            raise _translate(exc, resolved) from exc
+        text = _text_of(response)
+        generation.finish(output=text, usage_details=_usage_details(response))
     return LlmResult(
-        text=_text_of(response),
+        text=text,
         model=getattr(response, "model_version", None) or req.model,
         provider=resolved.provider,
         usage=_usage_of(response),

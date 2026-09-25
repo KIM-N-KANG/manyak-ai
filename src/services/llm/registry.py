@@ -36,7 +36,8 @@ from src.services.llm.base import (
 # 모아두면 한 모델의 설정을 고칠 때 다른 모델이 같이 바뀐다. 그리고 여기 적는 것은 **뜻**뿐이고
 # 회사별 문법은 어댑터가 만든다 — 공급자가 늘어도 이 표를 고치지 않는다.
 _REGISTRY: dict[str, ResolvedModel] = {
-    # 스토리라인·채팅(STORYLINES_MODEL·CHAT_MODEL). 비추론 호출 — 창작 태스크에서 추론 모드가
+    # 스토리라인·채팅 본문·판정·선택지(STORYLINES_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL)의
+    # 기본값. 비추론 호출 — 창작 태스크에서 추론 모드가
     # 출력 외국어 오염·평면화를 일으켜 비추론이 더 안정적이었다(KNK-208 벤치).
     #
     # DeepSeek은 2026-09-10에 `deepseek-v4-flash`를 `deepseek-flash`(V4.1 Flash)로 바꿨다(KNK-1195).
@@ -160,6 +161,58 @@ _REGISTRY: dict[str, ResolvedModel] = {
                 source_url="https://developers.openai.com/api/docs/models/gpt-5.6-luna",
                 verified_on=date(2026, 7, 29),
                 effective_from=date(2026, 7, 9),
+                effective_until=date(2026, 7, 29),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+            # 2026-07-30부터 80% 인하(OpenAI changelog). KNK-1412에서 뒤늦게 확인해 반영했다.
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.20"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.02"),
+                output_usd_per_1m_tokens=Decimal("1.20"),
+                cache_write_input_usd_per_1m_tokens=Decimal("0.25"),
+                source_url="https://developers.openai.com/api/docs/pricing",
+                verified_on=date(2026, 9, 23),
+                effective_from=date(2026, 7, 30),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+        ),
+    ),
+    # 채팅 후보(CHAT_MODEL, KNK-1411). gpt-5.6-luna와 같이 비추론(none)으로 부른다. 공식 문서상
+    # temperature는 none일 때만 받지만, 추론 단계를 올리면 400이 나므로 받지 않는 것으로 적는다.
+    "gpt-6-luna": ResolvedModel(
+        model="gpt-6-luna",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=False,
+        context_window_tokens=1_050_000,
+        max_output_tokens=128_000,
+        reasoning_effort="none",
+        supported_reasoning_efforts=frozenset(
+            {"none", "low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 9, 23),
+        capabilities_source_urls=(
+            "https://developers.openai.com/api/docs/models/gpt-6-luna",
+        ),
+        # 공식 페이지의 스냅샷이 `gpt-6-luna` 하나뿐이라 이름과 다른 고정 스냅샷 ID가 없다.
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.10"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.01"),
+                output_usd_per_1m_tokens=Decimal("0.50"),
+                cache_write_input_usd_per_1m_tokens=Decimal("0.125"),
+                source_url="https://developers.openai.com/api/docs/models/gpt-6-luna",
+                verified_on=date(2026, 9, 23),
+                effective_from=date(2026, 9, 22),
                 long_context_threshold_tokens=272_000,
                 long_context_input_multiplier=Decimal("2"),
                 long_context_output_multiplier=Decimal("1.5"),
@@ -219,6 +272,8 @@ _REGISTRY: dict[str, ResolvedModel] = {
         ),
         # Claude 4.6+의 dateless canonical ID는 공식적으로 고정 스냅샷이다.
         snapshot_model="claude-sonnet-5",
+        # 출시 때 8/31까지의 할인가로 발표된 $2/$10이 정가로 바뀌었다. 예정됐던 9/1 인상($3/$15)은
+        # 취소됐다(공식 가격 페이지, 2026-09-23 재확인, KNK-1414).
         pricing=(
             ModelPricing(
                 input_usd_per_1m_tokens=Decimal("2.00"),
@@ -226,18 +281,8 @@ _REGISTRY: dict[str, ResolvedModel] = {
                 output_usd_per_1m_tokens=Decimal("10.00"),
                 cache_write_input_usd_per_1m_tokens=Decimal("2.50"),
                 source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-                verified_on=date(2026, 7, 29),
+                verified_on=date(2026, 9, 23),
                 effective_from=date(2026, 6, 30),
-                effective_until=date(2026, 8, 31),
-            ),
-            ModelPricing(
-                input_usd_per_1m_tokens=Decimal("3.00"),
-                cache_read_input_usd_per_1m_tokens=Decimal("0.30"),
-                output_usd_per_1m_tokens=Decimal("15.00"),
-                cache_write_input_usd_per_1m_tokens=Decimal("3.75"),
-                source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-                verified_on=date(2026, 7, 29),
-                effective_from=date(2026, 9, 1),
             ),
         ),
     ),
@@ -335,8 +380,13 @@ _REGISTRY: dict[str, ResolvedModel] = {
 # 이 제약은 배치 문제를 푼 뒤에 풀린다. 대화 목록 안에 지시문 줄을 넣는 방법이 따로 있어
 # (모델별 제약 있음 — `_split_system` 주석) 버리지 않을 길이 있고, 그 검토와 안전 실측이
 # 채팅을 이 공급자로 여는 티켓의 몫이다. 그때 여기 한 줄을 지운다.
+#
+# **선택지도 같은 공급자를 막는다**(KNK-1416). 선택지는 지시문 배치 문제는 없지만, 이 회사는
+# JSON 강제에 스키마 전체를 요구하는데 통로에 그 칸이 없어 어댑터가 인자를 빼고 보낸다
+# (`anthropic_sdk`). 형식 준수가 프롬프트에만 기대게 되므로 별도 검토 전에는 열지 않는다.
 BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
     "CHAT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
+    "CHAT_CHOICE_MODEL": frozenset({PROVIDER_ANTHROPIC}),
     "MODERATION_MODEL": frozenset({PROVIDER_DEEPSEEK, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
     "MODERATION_FALLBACK_MODEL": frozenset({PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
 }
@@ -419,6 +469,7 @@ def selected_models() -> tuple[tuple[str, str], ...]:
         ("STORYLINES_MODEL", settings.storylines_model),
         ("STORY_COMPILE_MODEL", settings.story_compile_model),
         ("CHAT_MODEL", settings.chat_model),
+        ("CHAT_CHOICE_MODEL", settings.chat_choice_model),
         ("MODERATION_MODEL", settings.moderation_model),
         ("MODERATION_FALLBACK_MODEL", settings.moderation_fallback_model),
     )
