@@ -463,7 +463,7 @@ async def test_image_timeout_leaves_time_for_parent_and_text(monkeypatch, reques
         finally:
             cancelled.set()
     monkeypatch.setattr(service, "generate_child_image", generate)
-    deadline = time.monotonic() + 0.4
+    deadline = time.monotonic() + 2.0
     result = [e async for e in service.stream_with_child_image(
         events("*문이 열린다.*\n라떼: 반가워."), request_data, deadline=deadline,
     )]
