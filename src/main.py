@@ -57,8 +57,8 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def chat_validation_error(request: Request, exc: RequestValidationError) -> Response:
-    """채팅 검증 실패 시 서명 URL이 포함될 수 있는 입력값을 응답에서 제외한다."""
-    if request.url.path in ("/api/v1/chat/turns", "/api/v1/chat/choices"):
+    """채팅·검수 검증 실패 시 입력 원문과 이미지 URL을 응답에서 제외한다."""
+    if request.url.path in ("/api/v1/chat/turns", "/api/v1/chat/choices", "/api/v1/moderation/story"):
         # 필수 필드 누락은 슬롯이 아닌 요청 본문 전체를 input에 담을 수 있다.
         errors = [{key: error[key] for key in ("type", "loc", "msg") if key in error}
                   for error in exc.errors()]

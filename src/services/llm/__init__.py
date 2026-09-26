@@ -11,25 +11,33 @@
 호출용 공개 함수는 `complete`·`stream` 둘이다. **둘 다 단발 호출이다** — 재호출·시간 예산·
 검증은 호출부가 관장한다(스토리라인 invalid 재호출 KNK-312이 통로로 올라오면 이관 범위가
 폭발한다). 여기에 기동 검사용 `validate_startup`과 로깅 메타·Sentry 태그용 `provider_of`가
-더해져 공개 함수는 넷이다.
+더해진다. `request_body`는 호출부가 전송 전에 검사할 수 있도록 최종 본문만 반환한다.
 """
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
-from src.services.llm import registry
+from src.services.llm import deepseek_pricing, registry
 from src.services.llm.base import (
     ADAPTER_ANTHROPIC_SDK,
     ADAPTER_GOOGLE_SDK,
     ADAPTER_OPENAI_SDK,
+    PROVIDER_DEEPSEEK,
     LlmAdapter,
     LlmConfigError,
     LlmRequest,
     LlmResult,
     ResolvedModel,
     StreamEvent,
+    message_has_images,
 )
 
-__all__ = ["complete", "provider_of", "stream", "validate_startup"]
+__all__ = ["complete", "observation_metadata", "provider_of", "request_body", "stream", "validate_startup"]
+
+
+def observation_metadata(model: str) -> dict[str, str]:
+    """수동 관측에도 공급자의 단가 구간을 동일하게 기록한다."""
+    return deepseek_pricing.pricing_metadata() if provider_of(model) == PROVIDER_DEEPSEEK else {}
 
 
 def provider_of(model: str) -> str:
@@ -108,9 +116,52 @@ def _adapter_of(model: str) -> tuple[LlmAdapter, ResolvedModel]:
     )
 
 
-async def complete(req: LlmRequest) -> LlmResult:
-    """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·판정)."""
+def _reject_images_if_unsupported(req: LlmRequest, resolved: ResolvedModel) -> None:
+    """이미지 조각이 실린 요청을 이미지를 못 받는 모델에 보내지 않는다(KNK-1359).
+
+    설정 오류(`LlmConfigError`)로 던진다 — 공급자 장애가 아니라 "이 모델을 이 자리에 쓸 수
+    없다"는 문제라서다. 조용히 보내면 공급자가 400을 내거나, 이미지를 무시하고 글만 보고 답한다.
+    검수에서 후자는 "이미지를 안 보고 승인"이 되므로 오류보다 나쁘다.
+    """
+    if message_has_images(req.messages) and not resolved.supports_image_input:
+        raise LlmConfigError(
+            f"모델 '{resolved.model}'은 이미지 입력을 받지 않는데 요청에 이미지 조각이 있습니다."
+        )
+
+
+def _request_adapter(req: LlmRequest) -> tuple[LlmAdapter, ResolvedModel]:
     adapter, resolved = _adapter_of(req.model)
+    _reject_images_if_unsupported(req, resolved)
+    if req.response_schema is not None and req.json_mode:
+        raise LlmConfigError("response_schema와 json_mode는 동시에 지정할 수 없습니다.")
+    if req.max_retries is not None and req.max_retries < 0:
+        raise LlmConfigError("max_retries는 0 이상이어야 합니다.")
+    if resolved.adapter != ADAPTER_OPENAI_SDK and (
+        req.response_schema is not None or req.max_retries is not None or not req.automatic_observation
+    ):
+        raise LlmConfigError("이 어댑터는 요청별 스키마·재시도 설정을 지원하지 않습니다.")
+    if req.reasoning_effort is not None:
+        if req.reasoning_effort not in resolved.supported_reasoning_efforts:
+            raise LlmConfigError(f"모델 '{req.model}'이 요청한 추론 강도를 지원하지 않습니다.")
+        resolved = replace(
+            resolved, reasoning_effort=req.reasoning_effort,
+            use_thinking=req.reasoning_effort != "none",
+        )
+    return adapter, resolved
+
+
+def request_body(req: LlmRequest) -> dict[str, object]:
+    """네트워크 호출 없이 최종 전송 본문을 반환한다. 용량 정책은 호출부가 적용한다."""
+    adapter, resolved = _request_adapter(req)
+    builder = getattr(adapter, "request_body", None)
+    if builder is None:
+        raise LlmConfigError(f"모델 '{req.model}'의 전송 본문 미리보기를 지원하지 않습니다.")
+    return builder(req, resolved)
+
+
+async def complete(req: LlmRequest) -> LlmResult:
+    """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·판정·검수)."""
+    adapter, resolved = _request_adapter(req)
     return await adapter.complete(req, resolved)
 
 
@@ -120,5 +171,7 @@ def stream(req: LlmRequest) -> AsyncIterator[StreamEvent]:
     async generator를 그대로 돌려준다 — 모델 해석 실패는 첫 조각을 기다리기 전에,
     호출한 자리에서 바로 드러나야 한다.
     """
-    adapter, resolved = _adapter_of(req.model)
+    if not req.automatic_observation:
+        raise LlmConfigError("자동 관측 제외는 단발 호출에서만 지원합니다.")
+    adapter, resolved = _request_adapter(req)
     return adapter.stream(req, resolved)

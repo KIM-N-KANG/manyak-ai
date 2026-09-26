@@ -40,6 +40,8 @@ def _clear_llm_env(monkeypatch) -> None:
         "STORY_COMPILE_MODEL",
         "CHAT_MODEL",
         "CHAT_CHOICE_MODEL",
+        "MODERATION_MODEL",
+        "MODERATION_FALLBACK_MODEL",
         "OPENAI_API_KEY",
         "OPENAI_API_URL",
         "ANTHROPIC_API_KEY",
@@ -181,7 +183,7 @@ def test_every_registered_model_has_pricing() -> None:
             128_000,
             "none",
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
-            date(2026, 7, 29),
+            date(2026, 9, 23),
         ),
         (
             "gpt-6-luna",
@@ -292,7 +294,9 @@ def test_deepseek_flash_pricing_and_capabilities() -> None:
     assert flash.max_output_tokens == 384_000
     assert flash.reasoning_effort is None
     assert flash.structured_output_modes == frozenset({STRUCTURED_OUTPUT_JSON_OBJECT})
-    assert flash.capabilities_verified_on == date(2026, 9, 11)
+    # 이미지 입력 확인(KNK-1359)으로 검증일이 갱신됐고 Vision 가이드가 근거에 추가됐다.
+    assert flash.capabilities_verified_on == date(2026, 9, 23)
+    assert "https://api-docs.deepseek.com/guides/vision" in flash.capabilities_source_urls
 
 
 @pytest.mark.parametrize("legacy", ["deepseek-v4-flash", "deepseek-v4-pro"])
@@ -471,8 +475,8 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
     registry.validate_selected_models()
 
 
-def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypatch) -> None:
-    """OpenAI 키도 GPT를 고른 순간에만 필수가 된다."""
+def test_missing_moderation_key_does_not_block_other_features(monkeypatch) -> None:
+    """검수에만 필요한 키는 기동을 막지 않지만 스토리에 쓰는 키는 필요하다."""
     monkeypatch.setattr(
         registry,
         "settings",
@@ -508,7 +512,7 @@ def test_startup_requires_openai_key_only_when_openai_model_is_selected(monkeypa
 
 
 def test_selected_models_covers_every_model_env(monkeypatch) -> None:
-    """용도별 모델 4개를 env 이름과 함께 돌려준다(KNK-595 3분리, KNK-1416 선택지 분리)."""
+    """기존 기능·채팅 선택지·검수 기본 및 대체 모델을 모두 기동 검사한다."""
     monkeypatch.setattr(registry, "settings", _settings())
 
     assert registry.selected_models() == (
@@ -516,6 +520,8 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
         ("CHAT_MODEL", "deepseek-flash"),
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
+        ("MODERATION_MODEL", "gpt-5.6-luna"),
+        ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
     )
 
 

@@ -42,6 +42,7 @@ from src.services.llm.base import (
     LlmTimeout,
     LlmUnavailable,
     Message,
+    message_has_images,
     ResolvedModel,
     StreamCompleted,
     StreamEvent,
@@ -214,6 +215,14 @@ def check_supported(resolved: ResolvedModel) -> None:
 
 def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]:
     """SDK에 넘길 인자를 조립한다. 값이 없는 인자는 넣지 않는다(SDK 기본값에 맡긴다)."""
+    if message_has_images(req.messages):
+        # 이미지 조각은 OpenAI 호환 모양이라 이 회사 문법(`{"type": "image", "source": ...}`)으로
+        # 옮겨야 하는데 아직 옮기지 않는다(KNK-1359는 OpenAI SDK 어댑터만). 등록부가 이 어댑터의
+        # 모델에 이미지 지원 표시를 달면 통로 검사를 통과해 여기까지 오므로, 그대로 보내
+        # 400을 받거나 글만 보고 답하는 대신 설정 오류로 막는다.
+        raise LlmConfigError(
+            f"모델 '{resolved.model}'의 어댑터는 이미지 조각을 아직 옮기지 못합니다."
+        )
     system, messages = _split_system(req.messages, resolved.model)
     kwargs: dict[str, object] = {
         "model": resolved.model,
