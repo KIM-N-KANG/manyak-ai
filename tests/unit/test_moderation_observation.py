@@ -36,6 +36,26 @@ def test_missing_usage_is_not_reported_as_zero_and_cached_tokens_are_not_doubled
     assert usage_details(TokenUsage(input_tokens=100, output_tokens=20)) == {"input": 100, "output": 20}
 
 
+@pytest.mark.parametrize("url", [
+    "https://cdn.example.com/image.png",
+    "https://cdn.example.com/opaque-id?signature=synthetic&expires=123",
+    "HTTP://cdn.example.com/image",
+])
+def test_urls_in_reasons_are_redacted_in_output_and_call_metadata(url):
+    reason = f'이미지 "{url}" 내용을 확인할 수 없습니다.'
+    result = {"issues": [{"path": "thumbnailUrl", "reason": reason}]}
+    data = {"output": result, "calls": [{"result": result}]}
+    original = deepcopy(data)
+
+    recorded = without_media(data)
+
+    assert data == original
+    assert url not in str(recorded)
+    for value in (recorded["output"], recorded["calls"][0]["result"]):
+        assert value["issues"][0]["reason"] == '이미지 "[URL 생략]" 내용을 확인할 수 없습니다.'
+        assert value["issues"][0]["path"] == "thumbnailUrl"
+
+
 @pytest.mark.parametrize("details", [{}, {"input": 10}, {"output": 5}])
 def test_incomplete_usage_does_not_enable_model_cost_estimation(details):
     span = Mock()
