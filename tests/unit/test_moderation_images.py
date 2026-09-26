@@ -334,6 +334,81 @@ async def test_total_image_limit_counts_base64_expansion(monkeypatch, limit, rej
         assert prepared.errors == []
 
 
+async def test_total_limit_stops_active_and_queued_downloads_before_reading_full_files(monkeypatch) -> None:
+    monkeypatch.setattr(images, "MAX_REQUEST_BYTES", 80)
+    monkeypatch.setattr(images, "_CHUNK_SIZE", 12)
+    started = 0
+    chunks = 0
+    closed = 0
+    all_started = asyncio.Event()
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            nonlocal started, chunks
+            started += 1
+            if started == 5:
+                all_started.set()
+            await all_started.wait()
+            for _ in range(100):
+                chunks += 1
+                yield b"\x89PNG\r\n\x1a\nxxxx"
+                await asyncio.sleep(0)
+
+        async def aclose(self):
+            nonlocal closed
+            closed += 1
+
+    _mock(monkeypatch, lambda req: httpx.Response(200, stream=Stream()))
+    sources = [_src(f"characters[{i}].images[0].imageUrl") for i in range(12)]
+    prepared = await asyncio.wait_for(fetch_images(sources), timeout=2)
+
+    # 원본 12바이트는 base64 16바이트. 다섯 청크까지만 보관하고 여섯 번째에서 중단한다.
+    assert chunks == 6
+    assert started == closed == 5
+    assert prepared.images == []
+    assert [error.path for error in prepared.errors] == [source.path for source in sources]
+    assert all(isinstance(error, ImageInvalid) for error in prepared.errors)
+
+
+@pytest.mark.parametrize("broken_stream", [False, True])
+async def test_failed_download_releases_budget_for_valid_images(monkeypatch, broken_stream) -> None:
+    monkeypatch.setattr(images, "MAX_REQUEST_BYTES", 20)
+    monkeypatch.setattr(images, "_MAX_CONCURRENT_DOWNLOADS", 1)
+    monkeypatch.setattr(images, "_CHUNK_SIZE", 12)
+
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"x" * 12
+            raise httpx.ReadError("synthetic")
+
+    def handler(req):
+        if req.url.path == "/bad.png":
+            return httpx.Response(200, stream=BrokenStream()) if broken_stream else httpx.Response(200, content=b"x" * 12)
+        return httpx.Response(200, content=PNG)
+
+    _mock(monkeypatch, handler)
+    sources = [_src("thumbnailUrl", "bad.png"), _src("characters[0].images[0].imageUrl")]
+    prepared = await fetch_images(sources)
+
+    assert [image.path for image in prepared.images] == [sources[1].path]
+    assert [(error.path, error.code) for error in prepared.errors] == [
+        (sources[0].path, "IMAGE_DOWNLOAD_FAILED" if broken_stream else "IMAGE_INVALID"),
+    ]
+
+
+async def test_total_limit_preserves_previously_detected_download_error(monkeypatch) -> None:
+    monkeypatch.setattr(images, "MAX_REQUEST_BYTES", 39)
+    monkeypatch.setattr(images, "_MAX_CONCURRENT_DOWNLOADS", 1)
+    _mock(monkeypatch, lambda req: httpx.Response(404) if req.url.path == "/missing.png" else httpx.Response(200, content=PNG))
+    sources = [_src("thumbnailUrl", "missing.png"), *[_src(f"characters[{i}].images[0].imageUrl") for i in range(3)]]
+
+    prepared = await fetch_images(sources)
+
+    assert prepared.images == []
+    assert [error.path for error in prepared.errors] == [source.path for source in sources]
+    assert [error.code for error in prepared.errors] == ["IMAGE_DOWNLOAD_FAILED", *["IMAGE_INVALID"] * 3]
+
+
 async def test_timeout_cancels_queued_and_active_downloads(monkeypatch) -> None:
     active = 0
     started = 0

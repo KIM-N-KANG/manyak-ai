@@ -78,7 +78,7 @@ class ModerationImage:
         return image_part(data=self.data, content_type=self.content_type)
 
 
-def detect_content_type(data: bytes) -> str | None:
+def detect_content_type(data: bytes | bytearray) -> str | None:
     """실제 바이트로 형식을 판별한다. 지원하지 않으면 None."""
     if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
@@ -111,10 +111,31 @@ def _validate_url(source: ImageSource) -> httpx.URL:
     return url
 
 
-async def _download_one(client: httpx.AsyncClient, source: ImageSource) -> ModerationImage:
+@dataclass
+class _ImageBudget:
+    """보관 중인 이미지의 base64 예상 크기를 요청 전체에서 공유한다."""
+
+    encoded_bytes: int = 0
+    exceeded: bool = False
+
+    def reserve(self, path: str, old_size: int, new_size: int) -> None:
+        increment = 4 * ((new_size + 2) // 3) - 4 * ((old_size + 2) // 3)
+        # await 없이 확인과 예약을 끝내므로 병렬 다운로드도 같은 예산을 넘지 않는다.
+        if self.encoded_bytes + increment > MAX_REQUEST_BYTES:
+            self.exceeded = True
+            raise ImageInvalid(path, "이미지 전체 전송 용량 제한 초과")
+        self.encoded_bytes += increment
+
+    def release(self, size: int) -> None:
+        self.encoded_bytes -= 4 * ((size + 2) // 3)
+
+
+async def _download_one(client: httpx.AsyncClient, source: ImageSource, budget: _ImageBudget) -> ModerationImage:
     """한 장을 내려받아 형식·크기를 확인한다. URL·본문은 로그에 남기지 않는다."""
     url = _validate_url(source)
     max_bytes = settings.moderation_image_max_bytes
+    data = bytearray()
+    retained = False
     try:
         async with client.stream("GET", url) as response:
             if not 200 <= response.status_code < 300:
@@ -123,20 +144,25 @@ async def _download_one(client: httpx.AsyncClient, source: ImageSource) -> Moder
             if declared is not None and declared.isdigit() and int(declared) > max_bytes:
                 # 본문을 받기 전에 끊는다 — 32MiB 넘는 파일을 다 받고 버리지 않는다.
                 raise ImageInvalid(source.path, "이미지 크기 제한 초과")
-            data = bytearray()
             async for chunk in response.aiter_bytes(chunk_size=_CHUNK_SIZE):
-                data.extend(chunk)
-                if len(data) > max_bytes:
+                new_size = len(data) + len(chunk)
+                if new_size > max_bytes:
                     raise ImageInvalid(source.path, "이미지 크기 제한 초과")
+                budget.reserve(source.path, len(data), new_size)
+                data.extend(chunk)
+        content_type = detect_content_type(data)
+        if content_type is None:
+            raise ImageInvalid(source.path, "이미지가 아니거나 지원하지 않는 형식")
+        image = ModerationImage(path=source.path, content_type=content_type, data=bytes(data))
+        retained = True
+        return image
     except httpx.TimeoutException as exc:
         raise ImageDownloadFailed(source.path, "이미지 다운로드 시간 초과") from exc
     except httpx.HTTPError as exc:
         raise ImageDownloadFailed(source.path, "이미지 다운로드 실패") from exc
-    image_data = bytes(data)
-    content_type = detect_content_type(image_data)
-    if content_type is None:
-        raise ImageInvalid(source.path, "이미지가 아니거나 지원하지 않는 형식")
-    return ModerationImage(path=source.path, content_type=content_type, data=image_data)
+    finally:
+        if not retained:
+            budget.release(len(data))
 
 
 @dataclass(frozen=True)
@@ -155,21 +181,21 @@ async def fetch_images(sources: list[ImageSource], *, timeout: float | None = No
         return PreparedImages(images=[], errors=[])
     timeout = settings.moderation_image_timeout if timeout is None else min(timeout, settings.moderation_image_timeout)
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
-    encoded_bytes = 0
+    budget = _ImageBudget()
 
     async def download(source: ImageSource) -> ModerationImage | ModerationImageError:
-        nonlocal encoded_bytes
         async with semaphore:
             try:
-                image = await _download_one(client, source)
+                return await _download_one(client, source, budget)
             except ModerationImageError as exc:
+                if budget.exceeded:
+                    # 합계 초과가 확정되면 느린 작업과 아직 시작하지 않은 작업도 즉시 중단한다.
+                    current = asyncio.current_task()
+                    for task in tasks:
+                        if task is not current and not task.done():
+                            task.cancel()
                 # 오류 목록이 다운로드 프레임의 큰 이미지 버퍼까지 붙잡지 않게 한다.
                 return exc.with_traceback(None)
-            encoded_bytes += 4 * ((len(image.data) + 2) // 3)
-            # 합계 한도를 넘으면 바이트를 더 보관하지 않는다. 남은 이미지의 형식 검사는 계속한다.
-            if encoded_bytes > MAX_REQUEST_BYTES:
-                return ImageInvalid(source.path, "이미지 전체 전송 용량 제한 초과")
-            return image
 
     # 허용된 URL에서 내부 주소로 이동하는 리다이렉트는 따라가지 않는다.
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
@@ -186,13 +212,15 @@ async def fetch_images(sources: list[ImageSource], *, timeout: float | None = No
                 for source, task in zip(sources, tasks)
             ]
     prepared = PreparedImages(images=[], errors=[])
-    for result in results:
+    for source, result in zip(sources, results):
         if isinstance(result, ModerationImageError):
             prepared.errors.append(result)
+        elif budget.exceeded and isinstance(result, asyncio.CancelledError):
+            prepared.errors.append(ImageInvalid(source.path, "이미지 전체 전송 용량 제한 초과"))
         elif isinstance(result, BaseException):
             # 코드 결함·호출 취소를 이미지 오류로 위장하지 않는다.
             raise result
-        elif encoded_bytes > MAX_REQUEST_BYTES:
+        elif budget.exceeded:
             # 합계 초과는 요청 전체의 제한이다. 일부만 보내지 않고 관련 이미지 모두에 알린다.
             prepared.errors.append(ImageInvalid(result.path, "이미지 전체 전송 용량 제한 초과"))
         else:
