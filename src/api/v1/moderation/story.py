@@ -12,12 +12,15 @@ router = APIRouter(prefix="/moderation")
 
 @router.post("/story", response_model=StoryModerationResponse)
 async def moderate_story(request: StoryModerationRequest) -> StoryModerationResponse:
-    post = request.model_dump(by_alias=True, exclude_none=True)
+    post = request.model_dump(by_alias=True, exclude_none=True, mode="json")
     calls: list[ModerationCall] = []
+    metadata = {"submission_id": post["submissionId"], "prompt_versions": {"MODERATION": MODERATION_VERSION}}
+    if "storyId" in post:
+        metadata["story_id"] = without_media(post["storyId"])
     with observe_request(
         "게시물 검수",
         input_data=without_media(post),
-        metadata={"story_id": without_media(post["storyId"]), "prompt_versions": {"MODERATION": MODERATION_VERSION}},
+        metadata=metadata,
     ) as trace:
         try:
             result = await service.moderate_story(post, calls=calls)

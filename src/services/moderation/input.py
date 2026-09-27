@@ -31,7 +31,7 @@ class ModerationInput:
 
 
 def prepare_input(post: dict[str, JsonValue], *, excluded_image_paths: set[str] | None = None) -> ModerationInput:
-    """storyId・공개 설정・알 수 없는 필드는 모델 입력과 유효 경로에서 제외한다."""
+    """submissionId・storyId・공개 설정・알 수 없는 필드는 모델 입력과 유효 경로에서 제외한다."""
     paths: dict[str, Literal["TEXT", "IMAGE"]] = {}
     images: list[ImageSource] = []
     excluded = excluded_image_paths or set()
