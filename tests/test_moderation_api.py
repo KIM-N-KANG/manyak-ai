@@ -16,7 +16,8 @@ from src.services.moderation.images import ImageDownloadFailed, ImageInvalid, Mo
 
 URL = "/api/v1/moderation/story"
 POST = {
-    "storyId": "story-test-id", "title": "제목", "oneLineIntro": "한 줄 소개", "genres": ["판타지"],
+    "submissionId": "11111111-1111-4111-8111-111111111111", "storyId": "story-test-id",
+    "title": "제목", "oneLineIntro": "한 줄 소개", "genres": ["판타지"],
     "storySettings": {
         "worldSetting": "세계", "characterSetting": "인물", "userRoleSetting": "역할", "ruleSetting": "규칙",
     },
@@ -62,7 +63,8 @@ async def test_approval_and_camel_case_input_reach_service(client, dependencies)
     messages = complete.call_args.args[0].messages
     text = messages[1]["content"][0]["text"]
     assert '"worldSetting": "세계"' in text
-    assert "story-test-id" not in text and "visibility" not in text and "minTurns" not in text
+    assert "story-test-id" not in text and POST["submissionId"] not in text
+    assert "visibility" not in text and "minTurns" not in text
     complete.assert_awaited_once()
 
 
@@ -76,6 +78,19 @@ async def test_optional_fields_can_be_omitted_and_nullable_text_is_accepted(clie
     assert response.status_code == 200
     assert response.json()["decision"] == "APPROVED"
     assert dependencies[0].call_args.args[0] == []
+
+
+async def test_new_story_without_story_id_is_moderated(client, dependencies, moderation_trace):
+    post = {"submissionId": POST["submissionId"], "title": "새 글"}
+    response = await client.post(URL, json=post)
+    assert response.status_code == 200
+    assert response.json()["decision"] == "APPROVED"
+    span = moderation_trace[0][0]
+    assert span["metadata"]["submission_id"] == POST["submissionId"]
+    assert "story_id" not in span["metadata"]
+    assert span["input"]["submissionId"] == POST["submissionId"]
+    assert "storyId" not in span["input"]
+    assert POST["submissionId"] not in str(dependencies[1].call_args.args[0].messages)
 
 
 async def test_post_content_is_not_trimmed_or_truncated(client, dependencies):
@@ -153,7 +168,7 @@ async def test_empty_content_fields_do_not_block_moderation(client, dependencies
         return empty
 
     post = empty_strings(POST)
-    post["storyId"] = POST["storyId"]
+    post["submissionId"] = POST["submissionId"]
     response = await client.post(URL, json=post)
     assert response.status_code == 200
     assert response.json()["decision"] == "APPROVED"
@@ -168,7 +183,7 @@ async def test_empty_content_fields_do_not_block_moderation(client, dependencies
     {"startSettings": [], "genres": [], "characters": []},
 ])
 async def test_missing_or_empty_post_sections_do_not_block_moderation(client, dependencies, content):
-    response = await client.post(URL, json={"storyId": "story-test-id", **content})
+    response = await client.post(URL, json={"submissionId": POST["submissionId"], **content})
     assert response.status_code == 200
     assert response.json()["decision"] == "APPROVED"
     assert dependencies[0].call_args.args[0] == []
@@ -297,6 +312,7 @@ async def test_file_download_and_model_image_errors_are_combined(client, depende
 
 
 @pytest.mark.parametrize("path,value", [
+    (("submissionId",), 1), (("submissionId",), "not-a-uuid"),
     (("storyId",), 1), (("title",), 123), (("description",), {}),
     (("genres",), [True]), (("storySettings",), []),
     (("storySettings", "worldSetting"), 123),
@@ -318,7 +334,7 @@ async def test_invalid_nested_input_is_422_before_any_work(client, dependencies,
         dependency.assert_not_awaited()
 
 
-@pytest.mark.parametrize("key", ["storyId"])
+@pytest.mark.parametrize("key", ["submissionId"])
 async def test_missing_required_fields_are_422_without_echoing_post(client, dependencies, key):
     post = deepcopy(POST)
     post.pop(key)
@@ -343,6 +359,9 @@ def test_openapi_declares_request_and_response():
     operation = app.openapi()["paths"][URL]["post"]
     assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/StoryModerationRequest")
     assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/StoryModerationResponse")
+    schema = app.openapi()["components"]["schemas"]["StoryModerationRequest"]
+    assert schema["required"] == ["submissionId"]
+    assert schema["properties"]["submissionId"]["format"] == "uuid"
 
 
 @pytest.mark.parametrize("preparation_failure", [False, True])
@@ -449,6 +468,7 @@ async def test_moderation_trace_records_input_result_and_fallback_calls(client, 
     assert span["output"] == response.json()
     assert "meta" not in response.json()
     metadata = span["metadata"]
+    assert metadata["submission_id"] == POST["submissionId"]
     assert metadata["story_id"] == POST["storyId"]
     assert metadata["request_id"] == "req-moderation"
     assert metadata["prompt_versions"] == {"MODERATION": MODERATION_VERSION}
@@ -536,7 +556,7 @@ async def test_moderation_response_survives_langfuse_failure(client, dependencie
     dependencies[1].assert_awaited_once()
 
 
-async def test_concurrent_moderation_traces_do_not_mix_stories(client, dependencies, moderation_trace):
+async def test_concurrent_moderation_traces_do_not_mix_submissions(client, dependencies, moderation_trace):
     import asyncio
 
     spans, current = moderation_trace
@@ -545,7 +565,7 @@ async def test_concurrent_moderation_traces_do_not_mix_stories(client, dependenc
 
     async def invoke(request):
         span = current.get()
-        observed.append(span["parent"]["input"]["storyId"])
+        observed.append(span["parent"]["input"]["submissionId"])
         if len(observed) == 2:
             both_started.set()
         await both_started.wait()
@@ -553,16 +573,21 @@ async def test_concurrent_moderation_traces_do_not_mix_stories(client, dependenc
         return output()
 
     dependencies[1].side_effect = invoke
+    submission_ids = (
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    )
     async with asyncio.timeout(5):
         responses = await asyncio.gather(*(
-            client.post(URL, json={"storyId": story_id, "title": story_id})
-            for story_id in ("story-a", "story-b")
+            client.post(URL, json={"submissionId": submission_id, "title": submission_id})
+            for submission_id in submission_ids
         ))
     assert all(response.status_code == 200 for response in responses)
     assert len(spans) == 2
-    assert set(observed) == {"story-a", "story-b"}
+    assert set(observed) == set(submission_ids)
     for span in spans:
-        assert span["metadata"]["story_id"] == span["input"]["storyId"]
+        assert span["metadata"]["submission_id"] == span["input"]["submissionId"]
+        assert "story_id" not in span["metadata"]
         assert len(span["metadata"]["calls"]) == 1
     assert current.get() is None
 

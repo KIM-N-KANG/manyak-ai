@@ -1,6 +1,8 @@
 """게시물 검수 API 입력. 작성 규칙은 백엔드가 검사하고 AI는 전달받은 내용만 검수한다."""
 
-from pydantic import BaseModel, ConfigDict
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic.alias_generators import to_camel
 
 from src.services.moderation.models import ModerationResult
@@ -54,7 +56,8 @@ class ModerationCharacter(_ModerationInput):
 
 
 class StoryModerationRequest(_ModerationInput):
-    story_id: str
+    submission_id: UUID
+    story_id: str | None = None
     title: str | None = None
     one_line_intro: str | None = None
     description: str | None = None
@@ -64,6 +67,17 @@ class StoryModerationRequest(_ModerationInput):
     main_events: list[ModerationMainEvent] | None = None
     thumbnail_url: str | None = None
     characters: list[ModerationCharacter] | None = None
+
+    @field_validator("submission_id", mode="before")
+    @classmethod
+    def parse_submission_id(cls, value: object) -> object:
+        # FastAPI가 JSON을 dict로 파싱한 뒤 검증하므로 strict 모델에서도 UUID 문자열을 받는다.
+        if isinstance(value, str):
+            try:
+                return UUID(value)
+            except ValueError:
+                pass
+        return value
 
 
 class StoryModerationResponse(ModerationResult):

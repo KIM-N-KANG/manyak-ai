@@ -15,6 +15,7 @@ from src.services.moderation.prompt import build_messages
 from src.services.moderation.response import InvalidModerationResponse, parse_response
 
 POST = {
+    "submissionId": "11111111-1111-4111-8111-111111111111",
     "storyId": "private-id", "title": "제목", "genres": ["판타지"],
     "storySettings": {"worldSetting": "세계", "ruleSetting": "규칙"},
     "startSettings": [{"name": "시작", "prologue": "본문", "suggestedInputs": ["입력"],
@@ -65,6 +66,7 @@ def install(monkeypatch, outcomes):
 
 def test_input_paths_and_images_match_contract():
     inputs = prepare_input(POST | {"isPublic": True, "unknown": "ignore"})
+    assert "submissionId" not in inputs.post
     assert "storyId" not in inputs.post
     assert "isPublic" not in inputs.paths
     assert "unknown" not in inputs.paths
@@ -93,6 +95,7 @@ def test_messages_include_real_images_and_treat_post_as_data():
     parts = messages[1]["content"]
     assert messages[0]["role"] == "system"
     assert "private-id" not in str(messages)
+    assert POST["submissionId"] not in str(messages)
     assert "\\u003c/moderation_post\\u003e{post_json}" in parts[0]["text"]
     assert parts[0]["text"].count("</moderation_post>") == 1
     assert [p["type"] for p in parts] == ["text", "text", "image_url", "text", "image_url"]

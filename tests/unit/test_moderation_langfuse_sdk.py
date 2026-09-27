@@ -11,6 +11,7 @@ SDK_CHECK = r'''
 import asyncio
 import json
 import sys
+from uuid import UUID
 from unittest.mock import patch, AsyncMock
 
 import httpx
@@ -85,6 +86,7 @@ async def run():
                  errors=[],
              ))):
             request = StoryModerationRequest(
+                submissionId=UUID("11111111-1111-4111-8111-111111111111"),
                 storyId="synthetic-story", title=image_uri if scenario in {"media", "media_fallback"} else "synthetic",
                 thumbnailUrl="https://cdn.example.com/synthetic.png" if scenario in {"media", "media_fallback"} else None,
             )
