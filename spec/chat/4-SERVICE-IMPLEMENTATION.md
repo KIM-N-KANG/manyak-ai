@@ -1,6 +1,6 @@
 ---
 version: 20
-updated: 2026-09-29
+updated: 2026-09-30
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -584,8 +584,9 @@ true여도 슬롯이 없으면 생성하지 않고, false여도 슬롯이 있으
 이미지 편집 전에 `emotion_evaluation.py`가 인물 이름·이전 최대 2턴·현재 턴을 JEV에 전달한다.
 프롬프트는 `JEV-EMOTION-TEMPLATE.md`, 호출은 공통 `llm.evaluate()`를 사용한다.
 `JEV_MODEL`의 기본값은 `jev-1.13.0`이며 `TYPESAFE_API_KEY`가 필요하다.
-감정 질문 하나와 감정별 강도 질문 17개를 한 요청으로 보내며 JEV는 재시도하지 않는다.
-감정 후보는 17개 감정과 `neutral`, 강도 후보는 `none`·`low`·`medium`·`high`다.
+감정 질문 하나와 감정별 강도 질문 19개를 한 요청으로 보내며 JEV는 재시도하지 않는다.
+감정 후보는 감동(`moved`)·호기심(`curiosity`)·지루함(`boredom`)을 포함한 19개 감정과
+`neutral`, 강도 후보는 `none`·`low`·`medium`·`high`다.
 `other`·`unknown`은 사용하지 않는다.
 
 `emotion_selection.py`는 원래 감정 확률의 1순위가 85% 이상이면 한 개, 미만이면 상위 두 개를

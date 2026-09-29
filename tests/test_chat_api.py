@@ -1016,7 +1016,10 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
             "current_turn": {"user": "용건이 뭐요?", "assistant": body},
         }
         questions = data["questions"]
-        assert len(questions) == 18 and all(q["type"] == "choice" for q in questions.values())
+        assert len(questions) == 20 and all(q["type"] == "choice" for q in questions.values())
+        for emotion in ("moved", "curiosity", "boredom"):
+            assert emotion in questions["emotion"]["criteria"]
+            assert f"{emotion}_intensity" in questions
         if outcome == "jev_failed":
             return httpx.Response(529)
         if outcome == "jev_timeout":
