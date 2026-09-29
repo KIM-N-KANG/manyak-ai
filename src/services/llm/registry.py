@@ -19,10 +19,12 @@ from src.services.llm.base import (
     ADAPTER_ANTHROPIC_SDK,
     ADAPTER_GOOGLE_SDK,
     ADAPTER_OPENAI_SDK,
+    ADAPTER_TYPESAFE_API,
     PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
     PROVIDER_GOOGLE,
     PROVIDER_OPENAI,
+    PROVIDER_TYPESAFE,
     STRUCTURED_OUTPUT_JSON_OBJECT,
     STRUCTURED_OUTPUT_JSON_SCHEMA,
     LlmConfigError,
@@ -36,6 +38,25 @@ from src.services.llm.base import (
 # 모아두면 한 모델의 설정을 고칠 때 다른 모델이 같이 바뀐다. 그리고 여기 적는 것은 **뜻**뿐이고
 # 회사별 문법은 어댑터가 만든다 — 공급자가 늘어도 이 표를 고치지 않는다.
 _REGISTRY: dict[str, ResolvedModel] = {
+    "jev-1.13.0": ResolvedModel(
+        model="jev-1.13.0",
+        provider=PROVIDER_TYPESAFE,
+        adapter=ADAPTER_TYPESAFE_API,
+        use_thinking=False,
+        supports_temperature=False,
+        context_window_tokens=64_000,
+        # 선택형 판정 전용. 텍스트 생성 한도·추론 설정을 지어내지 않는다.
+        capabilities_verified_on=date(2026, 9, 28),
+        capabilities_source_urls=("https://docs.typesafe.ai/models", "https://docs.typesafe.ai/api"),
+        snapshot_model="jev-1.13.0",
+        pricing=(ModelPricing(
+            input_usd_per_1m_tokens=Decimal("0.042"),
+            cache_read_input_usd_per_1m_tokens=Decimal("0.042"),
+            output_usd_per_1m_tokens=Decimal("0"),
+            source_url="https://docs.typesafe.ai/models",
+            verified_on=date(2026, 9, 28),
+        ),),
+    ),
     # 스토리라인·채팅 본문·판정·선택지(STORYLINES_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL)의
     # 기본값. 비추론 호출 — 창작 태스크에서 추론 모드가
     # 출력 외국어 오염·평면화를 일으켜 비추론이 더 안정적이었다(KNK-208 벤치).
@@ -426,6 +447,13 @@ def credentials(provider: str) -> ProviderCredentials:
     import 시점에 고정하지 않는 이유가 둘이다. 선택되지 않은 공급자의 키가 없어도 서버가
     떠야 하고(lazy), 런타임에 설정을 바꿔 넣는 테스트가 반영돼야 한다.
     """
+    if provider == PROVIDER_TYPESAFE:
+        return ProviderCredentials(
+            api_key=settings.typesafe_api_key,
+            base_url=settings.typesafe_api_url,
+            api_key_env="TYPESAFE_API_KEY",
+            base_url_env="TYPESAFE_API_URL",
+        )
     if provider == PROVIDER_DEEPSEEK:
         return ProviderCredentials(
             api_key=settings.deepseek_api_key,
@@ -472,6 +500,7 @@ def selected_models() -> tuple[tuple[str, str], ...]:
         ("CHAT_CHOICE_MODEL", settings.chat_choice_model),
         ("MODERATION_MODEL", settings.moderation_model),
         ("MODERATION_FALLBACK_MODEL", settings.moderation_fallback_model),
+        ("JEV_MODEL", settings.jev_model),
     )
 
 
@@ -497,6 +526,8 @@ def validate_selected_models() -> None:
             creds = credentials(resolved.provider)
         except LlmConfigError as exc:
             raise LlmConfigError(f"{env_name}: {exc}") from exc
+        if (env_name == "JEV_MODEL") != (resolved.adapter == ADAPTER_TYPESAFE_API):
+            raise LlmConfigError(f"{env_name}: 텍스트 생성 모델과 판정 전용 모델은 서로 바꿀 수 없습니다.")
         if resolved.provider in BLOCKED_PROVIDERS.get(env_name, frozenset()):
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데, 이 자리는 그 "
@@ -509,8 +540,8 @@ def validate_selected_models() -> None:
             if env_name == "MODERATION_MODEL" and "high" not in resolved.supported_reasoning_efforts:
                 raise LlmConfigError(f"{env_name}={model}은 high 추론 강도를 지원해야 합니다.")
         if not creds.api_key.strip():
-            # 검수 키 누락은 해당 호출에서 처리한다. 다른 기능의 기동을 막지 않는다.
-            if env_name in {"MODERATION_MODEL", "MODERATION_FALLBACK_MODEL"}:
+            # 검수·JEV 키 누락은 해당 호출에서 처리한다. 다른 기능의 기동을 막지 않는다.
+            if env_name in {"MODERATION_MODEL", "MODERATION_FALLBACK_MODEL", "JEV_MODEL"}:
                 continue
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데 "
