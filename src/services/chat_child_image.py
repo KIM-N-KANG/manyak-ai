@@ -17,6 +17,7 @@ from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.chat_llm import render_chat_images
 from src.services.image.child_input import ChildImageInput, build_child_image_input
 from src.services.image.child_prompt import CHILD_IMAGE_VERSION
+from src.services.image.emotion_evaluation import JEV_EMOTION_VERSION
 from src.services.image.generate_child import ChildImageResult, generate_child_image
 from src.services.image.upload_child import upload_child_image, validate_upload_url
 
@@ -63,6 +64,7 @@ class ChildImageObservation:
     duration_ms: float | None = None
     parent_fallback: bool = False
     prompt_version: int = CHILD_IMAGE_VERSION
+    jev_prompt_version: int = JEV_EMOTION_VERSION
 
 
 async def _collect(events: AsyncIterator[dict]) -> dict:
@@ -94,7 +96,8 @@ async def _generate_before_deadline(
         result = await generate_child_image(inputs)
         if time.monotonic() > deadline:
             raise TimeoutError("자식 이미지 생성 시간 초과")
-        result = await upload_child_image(result, slot)
+        if not result.image_url:
+            result = await upload_child_image(result, slot)
         # 완료 시각을 검사해 취소를 무시하고 늦게 반환한 결과도 거른다.
         if time.monotonic() > deadline:
             raise TimeoutError("자식 이미지 생성 시간 초과")
@@ -208,7 +211,10 @@ async def stream_with_child_image(
                         name=inputs.parent_image.name,
                         image_name=f"{inputs.parent_image.name}_실시간_{uuid4()}", error="timeout",
                     )
-                observation.parent_fallback = child.error is not None or not child.image_url
+                observation.parent_fallback = (
+                    child.error is not None or not child.image_url
+                    or child.image_url == inputs.parent_image.image_url
+                )
                 if not observation.parent_fallback:
                     event.update(image_name=child.image_name, image_url=child.image_url)
                     # URL 전체 치환은 같은 부모 URL을 쓰는 다른 인물까지 바꾼다.

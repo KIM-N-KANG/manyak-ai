@@ -4,7 +4,6 @@ import json
 from email.parser import BytesParser
 from email.policy import default
 from types import SimpleNamespace
-from xml.etree.ElementTree import fromstring
 
 import httpx
 from openai import AsyncOpenAI
@@ -988,13 +987,63 @@ async def test_child_image_trace_records_result_without_raw_data(monkeypatch, mo
     assert "cost" not in record and "usage" not in record  # 이미지 generation에만 기록한다.
 
 
-@pytest.mark.parametrize("outcome", ["success", "download_failed", "rate_limited", "timeout", "invalid_image"])
+@pytest.mark.parametrize("outcome", ["success", "download_failed", "rate_limited", "timeout", "invalid_image", "missing_emotions", "neutral", "jev_failed", "jev_timeout", "jev_invalid"])
 async def test_child_image_from_body_sdk_through_edit_http_to_sse(
     client, monkeypatch, install_llm_sdk, outcome,
 ) -> None:
-    """본문 SDK 응답과 외부 HTTP만 대체해 부모 선택부터 최종 SSE까지 연결한다."""
+    """본문 SDK와 외부 HTTP만 대체해 JEV·감정 선택·편집·SSE 전체를 검증한다."""
     from src.core.config import Settings, settings
     from src.services.image import generate_child, openai_api
+    from src.services.llm import registry, typesafe_api
+    from src.services.image.child_prompt import build_child_image_prompt
+    from src.services.image.emotion_selection import SelectedEmotion
+
+    emotions = (SelectedEmotion("fear", "high"), SelectedEmotion("anxiety", "medium"))
+    monkeypatch.setattr(registry.settings, "typesafe_api_key", "test-jev-key")
+    monkeypatch.setattr(registry.settings, "typesafe_api_url", "https://api.typesafe.ai")
+    monkeypatch.setattr(settings, "jev_model", "jev-1.13.0")
+    jev_calls = []
+
+    def evaluate(request):
+        jev_calls.append(request)
+        assert str(request.url) == "https://api.typesafe.ai/v1/systemone"
+        data = json.loads(request.content)
+        state = data["state"]
+        assert state == {
+            "target_character": "레이",
+            "recent_turns": [{"user": "최근1", "assistant": "레이: 답1"},
+                             {"user": "최근2", "assistant": "레이: 답2"}],
+            "current_turn": {"user": "용건이 뭐요?", "assistant": body},
+        }
+        questions = data["questions"]
+        assert len(questions) == 18 and all(q["type"] == "choice" for q in questions.values())
+        if outcome == "jev_failed":
+            return httpx.Response(529)
+        if outcome == "jev_timeout":
+            raise httpx.ReadTimeout("test", request=request)
+        answers = {}
+        for name, question in questions.items():
+            probabilities = dict.fromkeys(question["criteria"], 0.0)
+            if name == "emotion":
+                assert "other" not in probabilities and "unknown" not in probabilities
+                probabilities.update({"fear": .81, "anxiety": .18, "neutral": .01})
+                choice = "fear"
+                if outcome == "neutral":
+                    probabilities = dict.fromkeys(question["criteria"], 0.0)
+                    probabilities["neutral"] = 1.0
+                    choice = "neutral"
+            else:
+                assert "unknown" not in probabilities
+                choice = "medium" if name == "anxiety_intensity" else "high"
+                if outcome == "missing_emotions":
+                    choice = "none"
+                probabilities[choice] = 1.0
+            answers[name] = {"type": "choice", "choice": choice,
+                             "probabilities": probabilities, "confidence": .5}
+        return httpx.Response(200, json={
+            "model": data["model"], "answers": {} if outcome == "jev_invalid" else answers,
+            "usage": {"input_tokens": 500, "output_tokens": 100},
+        })
 
     body = "*문이 열린다.*\n행인: 누구세요?\n레이: 들어와.\n레이: 앉아."
     streams = []
@@ -1032,13 +1081,7 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
         }
         assert fields["model"] == b"gpt-image-2.5-flare"
         assert fields["image"] == parent
-        dialogue = fromstring(fields["prompt"].decode()).find("dialogue_input")
-        assert dialogue.findtext("target_character") == "레이"
-        turns = dialogue.findall("recent_turns/turn")
-        assert [t.findtext("user_message") for t in turns] == ["최근1", "최근2"]
-        assert [t.findtext("ai_response") for t in turns] == ["레이: 답1", "레이: 답2"]
-        assert dialogue.findtext("current_turn/user_message") == "용건이 뭐요?"
-        assert dialogue.findtext("current_turn/ai_response") == body
+        assert fields["prompt"].decode() == build_child_image_prompt(emotions)
         if outcome == "timeout":
             raise httpx.ReadTimeout("test timeout", request=request)
         if outcome == "rate_limited":
@@ -1047,6 +1090,10 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
         return httpx.Response(200, json={"created": 0, "data": [{"b64_json": data}]})
 
     client_type = httpx.AsyncClient
+    monkeypatch.setattr(typesafe_api, "httpx", SimpleNamespace(**{
+        **vars(httpx),
+        "AsyncClient": lambda **kwargs: client_type(transport=httpx.MockTransport(evaluate), **kwargs),
+    }))
     async with AsyncOpenAI(
         api_key="test-key", http_client=client_type(transport=httpx.MockTransport(edit)),
     ) as image_client:
@@ -1090,6 +1137,8 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
         if outcome == "success":
             assert names[0] != names[1]
         assert json.dumps(payload, ensure_ascii=False) == original
-        assert len(downloads) == 2
-        assert len(edits) == (0 if outcome == "download_failed" else 2)  # SDK 자동 재시도 없음
+        jev_failed = outcome in {"missing_emotions", "neutral", "jev_failed", "jev_timeout", "jev_invalid"}
+        assert len(jev_calls) == 2
+        assert len(downloads) == (0 if jev_failed else 2)
+        assert len(edits) == (0 if jev_failed or outcome == "download_failed" else (2 if outcome == "success" else 4))
         assert len(streams) == 2 and all(stream.closed for stream in streams)
