@@ -1,6 +1,6 @@
 ---
-version: 19
-updated: 2026-09-28
+version: 20
+updated: 2026-09-29
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -51,7 +51,7 @@ updated: 2026-09-28
 [3]  AI 서버  →  LLM 호출  →  세분 JSON(StorySpec 구조) 수신
 [4]  AI 서버  →  meta.genre를 입력 태그로, 주인공 이름·성별을 입력값으로 덮어쓰기
 [5]  AI 서버  →  빈 필수 필드·입력 인물 카드 불일치·인물 이름 중복·외형 누락 탐지
-[6]  AI 서버  →  문제 블록과 인물 이름·외형 필드를 한 번에 부분 재호출 — 최대 2회
+[6]  AI 서버  →  문제 블록과 인물 이름·소개·외형 필드를 한 번에 부분 재호출 — 최대 2회
 [7]  AI 서버  →  StorySpec(Pydantic) 파싱
 [8]  AI 서버  →  인물 카드의 외형 필드로 인물별 이미지 병렬 생성 + 표지 썸네일 1장 동시 생성(실패해도 계속)
 [9]  AI 서버  →  세분 명세를 ERD 4테이블 통글 마크다운으로 변환하고 이미지·썸네일·로깅 메타와 함께 응답 조립
@@ -119,14 +119,14 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 파싱 전 dict 단계에서 빈 필수 필드를 직접 탐지합니다(빈 문자열·빈 배열·null·공백만을 빈 값으로 간주).
 
 - 비어 있는 필드가 있으면, 그 필드가 속한 **블록만** 다시 채우도록 부분 재호출합니다. 재호출 프롬프트에는 직전 생성 결과를 맥락으로 주고, 빈 블록만 채워 그 블록만 최상위 키로 갖는 JSON을 돌려받습니다. 잘 나온 다른 블록은 보존하기 위해 응답에 포함하지 않게 합니다.
-- 인물 카드 목록이 정상이라면 빈 이름·공백 이름·중복 이름과 빈 외형 6필드(age·body·face·hair·outfit·visual_identity)는 카드 전체가 아니라 해당 필드만 `character_updates`로 다시 받습니다. 서버는 요청한 인물 index와 필드만 병합하며, LLM이 함께 보낸 다른 필드는 무시합니다. 인물 카드 블록 자체를 다시 받는 차수에는 기존 index가 무효가 되므로 `character_updates`를 함께 요청하지 않습니다.
+- 인물 카드 목록이 정상이라면 빈 이름·공백 이름·중복 이름과 유효하지 않은 소개(description), 빈 외형 6필드(age·body·face·hair·outfit·visual_identity)는 카드 전체가 아니라 해당 필드만 `character_updates`로 다시 받습니다. 서버는 요청한 인물 index와 필드만 병합하며, LLM이 함께 보낸 다른 필드는 무시합니다. 인물 카드 블록 자체를 다시 받는 차수에는 기존 index가 무효가 되므로 `character_updates`를 함께 요청하지 않습니다.
 - 블록 문제와 인물 필드 문제가 동시에 있으면 한 번의 재호출 응답에 모두 담아 고칩니다. 두 문제를 합쳐 **최대 2회**까지 재호출합니다.
-- `null`·빈 문자열·공백이나 개행만 있는 문자열을 모두 빈 필드로 판정합니다. 이름이 2회 후에도 비었거나 중복이면 502로 막습니다. 외형은 이미지 생성의 부가 입력이므로 2회 후에도 비어 있으면 컴파일은 성공시키고 `character_images`에서 해당 인물만 `appearance_missing`으로 처리합니다(표지 썸네일에는 그 인물이 첫 인물로 들어갈 수 있음, → 4-7).
+- `null`·빈 문자열·공백이나 개행만 있는 문자열을 모두 빈 필드로 판정합니다. 이름이 2회 후에도 비었거나 중복이면 502로 막습니다. 소개는 문자열·앞뒤 공백 제거 후 1~80자·줄바꿈/탭 없음을 검사하며, 위반하면 같은 필드 보완 경로에서 다시 받습니다. 2회 후에도 소개가 유효하지 않으면 이미지 생성 전에 502로 막습니다. 마크다운 미사용·1~2문장·스포일러 제외는 프롬프트 지시이며 코드가 의미를 판정하지 않습니다. 외형은 이미지 생성의 부가 입력이므로 2회 후에도 비어 있으면 컴파일은 성공시키고 `character_images`에서 해당 인물만 `appearance_missing`으로 처리합니다(표지 썸네일에는 그 인물이 첫 인물로 들어갈 수 있음, → 4-7).
 - 검증에서 제외하는 예외 필드: `meta.genre`(서버가 입력 태그로 덮어씀), `user_role_setting.preference`(선택 입력이라 비어 있어도 됨). 주인공 `name`·`gender`는 검증 대상이되, 입력값이 있으면 주입이 먼저 채우므로 재호출로 이어지지 않습니다.
 - **입력 인물과 카드가 일대일로 맞지 않으면 재호출합니다**(KNK-1331). 입력이 있을 때 카드 수의 초과·부족, `input_character_id` 누락·중복·미등록 값·형식 오류를 검사합니다. 문제 있으면 `character_setting` 블록만 다시 받고, 매번 같은 검사를 적용합니다. 기존 최대 2회 보완 한도를 공유하며 소진 후에도 불일치하면 인물 이미지·표지를 생성하기 전에 502로 반환합니다. 다른 블록은 별도 문제가 없으면 보존하며, 서술 속 인물 언급을 자동으로 교정하지는 않습니다.
 - 엔딩은 **soft 블록**입니다(KNK-465). 정상 3개를 목표로, 3개가 아니거나 항목 필드(name·achievement_condition·epilogue)가 비었거나 min_turns가 1 이상의 정수가 아니면(0·음수 포함) 다른 빈 블록과 동일하게 `endings` 블록을 부분 재호출로 채웁니다. 다만 재호출 2회 후에도 온전한 3개를 못 채우면 502가 아니라 **빈 배열(`[]`)로 폴백하고 200을 반환**합니다 — 스토리 본체·주요 사건은 살리고 부가물인 엔딩만 비웁니다(선택지 폴백과 같은 원칙). 엔딩은 성취 유형(해피·노말·배드)을 출력하지 않으며 `name`으로 식별합니다.
 
-필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 6개 필드(name·gender·personality·tone·motivation·attitude_to_user), user_role_setting의 preference 제외 5개 필드(name·gender·role·background·personality)), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음), `main_events`(3~5개이며 각 항목의 name·description·key_sentence가 비어 있지 않음), `endings`(정상 3개이며 각 항목의 name·achievement_condition·epilogue가 비어 있지 않고 min_turns가 1 이상의 정수 — 단 재호출로도 못 채우면 빈 배열로 폴백).
+필수 필드 점검 대상: `meta`(title·one_line_intro·description), `prompt_settings`(world_setting·rule_setting·tone_setting·length_ratio, plot_setting의 premise·conflict, character_setting 1개 이상과 각 카드의 7개 필드(name·description·gender·personality·tone·motivation·attitude_to_user), user_role_setting의 preference 제외 5개 필드(name·gender·role·background·personality)), `start`(name·prologue·start_situation), `suggested_inputs`(정확히 3개이며 각 항목이 비어 있지 않음), `main_events`(3~5개이며 각 항목의 name·description·key_sentence가 비어 있지 않음), `endings`(정상 3개이며 각 항목의 name·achievement_condition·epilogue가 비어 있지 않고 min_turns가 1 이상의 정수 — 단 재호출로도 못 채우면 빈 배열로 폴백).
 
 ### 4-5. 세분 → 통글 변환
 
@@ -239,6 +239,9 @@ ERD 4테이블에 1:1 대응하는 nested 구조에 인물 외형·인물 이미
     { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." },
     { "name": "...", "min_turns": 15, "achievement_condition": "...", "epilogue": "..." }
   ],
+  "character_introductions": [
+    { "name": "레이", "description": "원칙을 지키며 주인공과 함께 진실을 좇는 전우." }
+  ],
   "character_appearances": [
     {
       "name": "레이",
@@ -276,6 +279,7 @@ ERD 4테이블에 1:1 대응하는 nested 구조에 인물 외형·인물 이미
 | story_suggested_inputs | string[] | 첫 입력 추천 문구. 정확히 3개 |
 | story_main_events | object[] | 주요 사건 3~5개(`story_main_events` 테이블). 각 항목 name·description·key_sentence. 배열 순서=명목 순서(비강제) |
 | story_endings | object[] | 엔딩(`story_endings` 테이블). 정상 3개(폴백 시 0개). 각 항목 name·min_turns(1 이상 정수)·achievement_condition·epilogue. 성취 유형은 미출력, name으로 식별 |
+| character_introductions | object[] | 작품 페이지용 주변 인물 소개 1~5개. 주인공 제외, 모든 카드와 일대일 대응. name(최종 인물 이름)·description(앞뒤 공백 제거 후 1~80자, 줄바꿈·탭 없는 문자열). name으로 외형·이미지와 연결하며 이미지 실패와 무관하게 포함. 필수 필드이며 채팅 통글에는 넣지 않음 |
 | character_appearances | object[] | 인물별 외형 정보. 각 항목 name·gender·age·body·face·hair·outfit·visual_identity. 인물 전원이 포함되며, 백엔드가 저장해 이미지 재생성에 사용 |
 | character_images | object[] | 인물별 이미지(KNK-414). 각 항목 name(인물 이름 — 백엔드가 외형·인물과 연결하는 키)·image_name(이미지 한 장의 이름, 지금은 인물당 한 장이라 `인물이름_기본`. 백엔드가 uuid를 붙여 파일명으로 쓰고 `story_characters.image_name`에 저장, KNK-1027)·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 사유 코드, 성공 시 null). image_name은 성공·실패 항목 모두에 있음. 인물별로 성공/실패가 독립. 빈 배열은 인물 0명이거나 이미지 로직 자체가 실패한 경우 |
 | thumbnail_image | object | 스토리 표지 썸네일 1장(KNK-1047). 필수 필드(null 없음). image_name(`썸네일_기본` 고정)·image_base64(성공 시 WebP base64, 실패 시 null)·content_type(`"image/webp"`)·error(실패 시 `timeout`·`rate_limited`·`rejected`·`generation_failed` 중 하나, 성공 시 null). 인물 name이 없으므로 인물 매칭에 넣지 말 것. 백엔드 계획(`spec/4-backend-server-spec.md §4-3-9`): 성공이면 S3에 올려 스토리 표지로 쓰고, 실패면 기존 프리셋 유지 |
@@ -300,7 +304,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
     "tone_setting": "...",
     "length_ratio": "묘사 7 : 대사 3",
     "character_setting": [
-      { "input_character_id": "input-1", "name": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
+      { "input_character_id": "input-1", "name": "...", "description": "원칙을 지키며 주인공과 함께 진실을 좇는 전우.", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
     ],
     "user_role_setting": { "name": "...", "gender": "...", "role": "...", "background": "...", "personality": "...", "preference": "" }
   },
@@ -325,7 +329,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | | rule_setting | 전개 속도·긴장 곡선 등 연출 규칙 |
 | | tone_setting | 장면 전체의 서술 톤 |
 | | length_ratio | 묘사와 대사의 비중(`묘사 N : 대사 M`) |
-| | character_setting | 주변 인물 카드 1~5명. 각 카드는 내부용 input_character_id + name·gender·personality·tone·motivation·attitude_to_user + 외형 6필드(age·body·face·hair·outfit·visual_identity). 입력 인물이 있으면 정확히 일대일로 만들고, 입력이 0명이면 1~5명을 자유롭게 생성함. input_character_id는 사용자 이름 주입 후 제거되어 외부 응답에는 실리지 않음. 외형 필드는 이미지 생성 전용이며 통글에는 싣지 않음(KNK-937). 선택 필드라 비어 있어도 컴파일은 성공하고 `character_images`에서 해당 인물만 안 만들어짐(표지 썸네일 규칙은 4-7) |
+| | character_setting | 주변 인물 카드 1~5명. 각 카드는 내부용 input_character_id + name·description·gender·personality·tone·motivation·attitude_to_user + 외형 6필드(age·body·face·hair·outfit·visual_identity). 입력 인물이 있으면 정확히 일대일로 만들고, 입력이 0명이면 1~5명을 자유롭게 생성함. input_character_id는 사용자 이름 주입 후 제거되어 외부 응답에는 실리지 않음. 외형 필드는 이미지 생성 전용이며 통글에는 싣지 않음(KNK-937). 선택 필드라 비어 있어도 컴파일은 성공하고 `character_images`에서 해당 인물만 안 만들어짐(표지 썸네일 규칙은 4-7) |
 | | user_role_setting | 주인공 프로필. name·gender·role·background·personality·preference(선택). name·gender는 입력값이 있으면 서버가 덮어씀 |
 | start | name·prologue·start_situation | 시작 설정 이름·도입 나레이션·첫 장면 |
 | suggested_inputs | string[] | 첫 입력 추천 문구 3개 |
@@ -342,6 +346,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | story_settings | story_settings(통글 4필드) | prompt_settings 7필드를 4통글로 재구성 |
 | story_start_settings | story_start_settings | start |
 | story_suggested_inputs | story_suggested_inputs | suggested_inputs |
+| 인물 소개(별도 저장 연동 필요) | character_introductions | character_setting[]의 name·description. 마크다운에 포함하지 않음 |
 | story_main_events | story_main_events | main_events(항목별 그대로, 통글 아님) |
 | story_endings | story_endings | endings(항목별 그대로, 통글 아님) |
 
@@ -377,11 +382,12 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 - `plot_setting.conflict`: 앞으로 일어날 수 있는 갈등·분기만 적고, 확정된 결과처럼 쓰지 않는다.
 - `length_ratio`: 묘사와 대사의 비중을 `묘사 N : 대사 M` 형식으로 적는다.
 - `character_setting`: 인물 수와 구성은 4-3의 입력 기준을 따른다. 이름은 준 그대로 쓰고, 성별·특징이 정해져 있으면 카드에 반영한다. `gender`는 `남성`·`여성`으로만 쓴다. 인물마다 말투·성격이 서로 구분되게 한다. 모든 설정·서술도 같은 인물 구성을 따르도록 지시하며, 입력 인물이 있으면 스토리라인·추가정보·로어북에 다른 인물이 언급되어도 새 주변 인물을 추가하지 않는다.
+- `character_setting[].description`: 작품 페이지용 공개 소개. 역할·성격·주인공과의 초기 관계를 공백 포함 80자 이내, 1~2개의 짧은 문장으로 쓴다. 마크다운·줄바꿈·탭 없이 쓰고 숨겨진 정체·동기·반전·결말은 제외한다. 기존 컴파일 호출에서 함께 생성한다.
 - `suggested_inputs`: 첫 입력 추천 문구 **정확히 3개**. 행동 묘사는 `*...*`로 감쌀 수 있다.
 - `main_events`: 주요 사건 3~5개(name·description·key_sentence). 이야기의 갈림길로 짜되 기본 순서만 두고 건너뛰기를 허용한다. `key_sentence`는 "사용자가 ~한다" 사용자 시점의 유도 문장으로, 사용자가 자연스럽게 떠올려 입력할 만하게 직관적으로 쓴다.
 - `endings`: 엔딩 3개. 성취 유형(해피·노말·배드)을 **내부 기준으로만** 삼아 하나씩 만들되 **유형은 출력하지 않고 `name`으로 식별**한다. 사건들의 조합·해결에 뿌리내리게 하되, 성취 스펙트럼(온전한 성공 / 그 사이 전부 / 파멸)으로 나눠 결말 상태를 빈틈없이 덮는다(상호배타+총망라, 노말이 중간대 흡수). 조건은 `min_turns`(최소 턴, 정수)와 `achievement_condition`(목적·거친 사건을 한 문장에 담되 특정 사건 경유 비강제)로 나누고, `epilogue`엔 완성 글이 아니라 방향을 담되 "사용자의 행적을 반드시 반영해 그 행동이 세계를 바꾼 결과로 마무리하라"는 지시를 포함한다.
 
-**가독성**: 모든 서술형 값은 채팅 플레이에 그대로 노출되므로, 어려운 한자어·번역체를 피하고 쉬운 말·자연스러운 어순으로 쓴다. 한 명사 앞에 관형어를 3개 이상 쌓지 않는다. 여러 문장으로 이루어진 값은 문장마다 이중 개행(`\n\n`)으로 한 문장씩 출력한다.
+**가독성**: 모든 서술형 값은 채팅 플레이에 그대로 노출되므로, 어려운 한자어·번역체를 피하고 쉬운 말·자연스러운 어순으로 쓴다. 한 명사 앞에 관형어를 3개 이상 쌓지 않는다. 인물 소개(`character_setting[].description`)를 제외한 여러 문장으로 이루어진 값은 문장마다 이중 개행(`\n\n`)으로 한 문장씩 출력한다.
 
 **특징 반영**: 인물의 특징은 형용사를 그대로 옮기지 말고, 그 특징이 드러나는 구체적 행동·습관·선택·말버릇으로 풀어 쓴다. 입력에 없는 특징을 임의로 지어내지 않는다.
 
@@ -395,15 +401,17 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 |---|---|
 | 응답 형식 | 응답이 4테이블 nested 구조의 유효한 JSON인지 확인 |
 | 필수 필드 | meta·story_settings·story_start_settings 슬롯이 비어 있지 않은지 확인 |
-| 인물 카드 | character_setting이 1~5명이고 각 카드 6필드가 채워졌는지 확인 |
+| 인물 카드 | character_setting이 1~5명이고 각 카드 7필드가 채워졌는지 확인 |
 | 입력 인물 등장 | 이름 지은 주변 인물이 카드에 있는지, 없으면 카드 블록만 재호출하는지 확인 |
 | 입력 인물 수·ID | 1~5명·이름 미정 입력에 카드가 일대일 대응하는지, 초과·누락·중복·잘못된 ID는 최대 2회 보완 후에도 남으면 이미지·표지 호출 없이 502인지 확인 |
 | 자유 생성 | 입력이 0명이면 생성 카드 1~5명이 추가 보완 없이 통과하고 기존 필수 필드 검증은 유지되는지 확인 |
 | 추천 입력 | story_suggested_inputs가 정확히 3개인지 확인 |
 | genre 주입 | 노출 genre가 LLM 출력이 아니라 입력 태그로 채워졌는지 확인 |
 | 주인공 주입 | 입력한 주인공 이름·성별이 통글의 최종 값인지, 비운 항목은 LLM 값이 남는지, 재호출 뒤에도 유지되는지 확인 |
+| 인물 소개 | 모든 주변 인물의 최종 name·description이 별도 배열에 포함되고, 채팅 통글은 유지되며 소개가 유입되지 않는지 확인 |
+| 소개 보완 | 누락·빈값·비문자열·80자 초과·줄바꿈/탭을 해당 필드만 최대 2회 보완하고, 미해결 시 이미지 생성 전에 502인지 확인 |
 | 통글 변환 | story_settings 4필드가 약속된 마크다운 헤더 구조로 조립됐는지 확인 |
-| 부분 재호출 | 문제 블록과 인물 이름·외형 필드를 한 호출에 함께 요청하고, 요청한 값만 병합하는지 확인 |
+| 부분 재호출 | 문제 블록과 인물 이름·소개·외형 필드를 한 호출에 함께 요청하고, 요청한 값만 병합하는지 확인 |
 | 인물 이름 | 빈값·공백·중복 이름만 다시 받고, 2회 후에도 해결되지 않으면 502인지 확인 |
 | 외형 부분 재호출 | null·빈 문자열·공백뿐인 외형 필드만 다시 받고, 다른 카드 내용은 보존하는지 확인 |
 | 주요 사건 | story_main_events가 3~5개이고 각 항목 name·description·key_sentence가 채워졌는지 확인 |
