@@ -7,6 +7,7 @@ LLM은 검증·재호출이 쉽도록 세분 JSON으로 답하고, 이 모듈이
 
 from src.schemas.story_compile import (
     CharacterAppearanceOut,
+    CharacterIntroductionOut,
     CharacterSetting,
     PromptSettings,
     StoriesOut,
@@ -132,6 +133,10 @@ def spec_to_response(spec: StorySpec, *, thumbnail_image: ThumbnailImageOut) -> 
                 epilogue=e.epilogue,
             )
             for e in spec.endings
+        ],
+        character_introductions=[
+            CharacterIntroductionOut(name=c.name, description=c.description)
+            for c in ps.character_setting
         ],
         character_appearances=_render_character_appearances(ps.character_setting),
         thumbnail_image=thumbnail_image,

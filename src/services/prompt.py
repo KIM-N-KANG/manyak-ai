@@ -169,7 +169,7 @@ def build_refill_prompt(
 ) -> tuple[str, str]:
     """누락 블록과 인물의 빈 필드·중복 이름을 한 번에 고치는 프롬프트를 만든다.
 
-    블록은 기존처럼 통째로 다시 받고, 이름·외형만 문제가 있는 인물 카드는 해당 필드만
+    블록은 기존처럼 통째로 다시 받고, 이름·소개·외형만 문제가 있는 인물 카드는 해당 필드만
     ``character_updates``로 받는다. 잘 나온 값은 서버가 보존한다.
     provider가 Google이면 Gemini용 system prompt를 쓴다(KNK-958).
     """

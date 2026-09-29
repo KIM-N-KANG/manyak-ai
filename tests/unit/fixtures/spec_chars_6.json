@@ -18,6 +18,7 @@
       {
         "input_character_id": "input-1",
         "name": "레이",
+        "description": "주인공과 함께 사건의 진실을 좇는 동료.",
         "gender": "남성",
         "personality": "충직한 원칙주의자.",
         "tone": "직설적인 말투.",
@@ -32,6 +33,7 @@
       },
       {
         "name": "세린",
+        "description": "주인공과 함께 사건의 진실을 좇는 동료.",
         "gender": "여성",
         "personality": "냉철하고 계산적.",
         "tone": "에두르는 화법.",
@@ -46,6 +48,7 @@
       },
       {
         "name": "칸",
+        "description": "주인공과 함께 사건의 진실을 좇는 동료.",
         "gender": "남성",
         "personality": "거칠고 카리스마 있다.",
         "tone": "도발적인 말투.",
@@ -60,6 +63,7 @@
       },
       {
         "name": "에단",
+        "description": "주인공과 함께 사건의 진실을 좇는 동료.",
         "gender": "여성",
         "personality": "소심한 시종.",
         "tone": "조심스러운 말투.",
@@ -74,6 +78,7 @@
       },
       {
         "name": "미라",
+        "description": "주인공과 함께 사건의 진실을 좇는 동료.",
         "gender": "남성",
         "personality": "냉소적인 정보상.",
         "tone": "빈정대는 말투.",
@@ -88,6 +93,7 @@
       },
       {
         "name": "보른",
+        "description": "주인공과 함께 사건의 진실을 좇는 동료.",
         "gender": "여성",
         "personality": "과묵한 노병.",
         "tone": "무뚝뚝한 말투.",

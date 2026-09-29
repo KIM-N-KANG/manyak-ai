@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException, status
+from pydantic import TypeAdapter, ValidationError
 
 from src.core.config import settings
 from src.core.sentry import (
@@ -30,6 +31,7 @@ from src.schemas.story import CharacterInput, StoryItem, StorylinesRequest, Stor
 from src.schemas.story_compile import (
     THUMBNAIL_ERROR_CODES,
     THUMBNAIL_IMAGE_NAME,
+    CharacterDescription,
     CharacterImageOut,
     CharacterSetting,
     Ending,
@@ -55,6 +57,7 @@ from src.services.prompt import (
 from src.services.story_compile_render import spec_to_response
 
 logger = logging.getLogger(__name__)
+_CHARACTER_DESCRIPTION_ADAPTER = TypeAdapter(CharacterDescription)
 
 
 class _InvalidAiResponse(Exception):
@@ -813,9 +816,10 @@ def _find_character_field_repairs(
     data: dict,
     protected_name_indexes: set[int] | None = None,
 ) -> dict[int, tuple[str, ...]]:
-    """인물 카드 전체를 갈아끼우지 않고 고칠 이름·외형 필드를 찾는다.
+    """인물 카드 전체를 갈아끼우지 않고 고칠 이름·소개·외형 필드를 찾는다.
 
-    이름은 빈값·공백·비문자열과 앞 카드에 이미 나온 중복을 잡는다. 외형은 이미지
+    이름은 빈값·공백·비문자열과 앞 카드에 이미 나온 중복을 잡는다. 소개는 응답과
+    같은 타입·길이·줄바꿈 제약으로 검사한다. 외형은 이미지
     생성용 선택 필드라 빈값만 잡고, 두 번의 재호출로도 못 채우면 컴파일은 살린다.
     """
     cards = _as_dict(data.get("prompt_settings")).get("character_setting")
@@ -835,6 +839,11 @@ def _find_character_field_repairs(
         else:
             normalized = unicodedata.normalize("NFC", name.strip()).casefold()
             name_groups.setdefault(normalized, []).append(index)
+
+        try:
+            _CHARACTER_DESCRIPTION_ADAPTER.validate_python(raw.get("description"))
+        except ValidationError:
+            fields.append("description")
 
         for field_name in _CHARACTER_APPEARANCE_FIELDS:
             value = raw.get(field_name)
@@ -1026,7 +1035,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     """시점 A-1: 희소 입력을 스토리 명세로 컴파일해 백엔드 계약(nested 통글)으로 반환한다.
 
     흐름: LLM 세분 JSON → genre·주인공 이름/성별 주입 → 빈 필수키·사용자 인물 카드 검증(KNK-833) →
-    모자란 블록과 이름·외형 필드를 한 번에 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
+    모자란 블록과 이름·소개·외형 필드를 한 번에 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
     → StorySpec 파싱 → nested 통글 변환.
     PromptCompiler 추상 경계는 spec/chat/4-SERVICE-IMPLEMENTATION.md §6.
     """
@@ -1076,7 +1085,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
             character_fields = {}
         return found, character_fields
 
-    # 빈 필수 블록과 인물 이름·외형 문제를 한 요청에 모아 다시 채운다(최대 _MAX_REFILL회).
+    # 빈 필수 블록과 인물 이름·소개·외형 문제를 한 요청에 모아 다시 채운다(최대 _MAX_REFILL회).
     missing, character_fields = _current_issues()
     if missing or character_fields:
         logger.info(
@@ -1134,15 +1143,15 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
         data["endings"] = []
 
     # 외형은 이미지 생성의 부가 입력이므로 끝까지 비어 있어도 컴파일을 살린다.
-    # 이름은 저장·이미지 매칭 기준이라 빈값·중복이 남으면 필수 블록 누락과 함께 502로 막는다.
-    name_repairs = {
+    # 이름은 저장·이미지 매칭 기준이고 소개는 공개 필수 값이므로, 미해결 시 502로 막는다.
+    required_character_repairs = {
         index: fields
         for index, fields in character_fields.items()
-        if "name" in fields
+        if "name" in fields or "description" in fields
     }
-    if missing or name_repairs:
+    if missing or required_character_repairs:
         exc = _InvalidAiResponse(
-            f"재호출 후에도 필수 필드 누락: blocks={missing}, character_names={name_repairs}"
+            f"재호출 후에도 필수 필드 누락: blocks={missing}, character_fields={required_character_repairs}"
         )
         capture_ai_exception(
             exc,

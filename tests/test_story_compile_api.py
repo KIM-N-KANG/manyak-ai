@@ -104,6 +104,14 @@ async def test_compile_endpoint_returns_nested_contract(
     assert "promptVersions" not in meta  # camelCase 아님(story는 snake)
     # KNK-940: 이미지 생성을 빈 배열로 대체했으므로 빈 배열이 내려온다
     assert body["character_images"] == []
+    assert body["character_introductions"] == [
+        {"name": card["name"], "description": card["description"]}
+        for card in _spec_valid()["prompt_settings"]["character_setting"]
+    ]
+    assert all(
+        item["description"] not in body["story_settings"]["character_setting"]
+        for item in body["character_introductions"]
+    )
     # KNK-1047: 썸네일은 항상 객체로 내려온다(성공: image_base64 문자열, error null)
     assert body["thumbnail_image"] == {
         "image_name": "썸네일_기본",
