@@ -142,10 +142,10 @@ def _image_payload(image: CharacterImageMapping) -> dict:
     }
 
 
-def find_first_parent_image(
+def select_first_parent_scene(
     text: str, character_images: list[CharacterImageMapping]
-) -> CharacterImageMapping | None:
-    """부모 이미지가 있는 인물 중 본문에서 가장 먼저 말한 인물의 부모를 고른다.
+) -> tuple[CharacterImageMapping, str] | None:
+    """첫 화자의 부모 이미지와 본문 시작부터 해당 첫 대사 줄 끝까지를 반환한다.
 
     별칭 충돌은 전체 이미지 매핑으로 판정한다. 기본 이미지가 없는 인물을 먼저 빼면
     그 인물의 정식 이름·별칭을 다른 인물로 잘못 해석할 수 있다.
@@ -158,10 +158,14 @@ def find_first_parent_image(
         for image in character_images
         if image.name and image.image_name == f"{image.name}_기본"
     }
-    for match in _speaker_label_re(images).finditer(_strip_speaker_bold(text)):
+    normalized = _strip_speaker_bold(text)
+    for match in _speaker_label_re(images).finditer(normalized):
         parent = parents.get(images[match.group(2)].name)
         if parent is not None and parent.image_url.strip():
-            return parent
+            # 대사 안의 문장 수와 무관하게 첫 줄 전체를 포함한다.
+            line_end = normalized.find("\n", match.end())
+            scene = normalized if line_end == -1 else normalized[:line_end]
+            return parent, scene.removesuffix("\r")
     return None
 
 

@@ -68,7 +68,7 @@ async def test_invalid_upload_target_skips_generation_and_keeps_parent(monkeypat
     assert observation.reason == "invalid_upload_url" and observation.parent_fallback
 
 
-async def test_child_once_at_first_eligible_speaker_and_full_current_turn(monkeypatch, request_data) -> None:
+async def test_child_uses_first_dialogue_prefix_and_delivers_full_turn(monkeypatch, request_data) -> None:
     text = "*문이 열린다.*\n행인: 안녕.\n라떼: 반가워.\n모카: 들어와.\n라떼: 앉아."
     generate = AsyncMock(return_value=ChildImageResult("라떼", "라떼_실시간_test", "base64"))
     monkeypatch.setattr(service, "generate_child_image", generate)
@@ -84,7 +84,9 @@ async def test_child_once_at_first_eligible_speaker_and_full_current_turn(monkey
     assert result[-1]["ai_output"].count(f"[[{request_data.image_slots[0].public_url}]]") == 1
     assert "base64" not in str(result[-1])
     generate.assert_awaited_once()
-    assert generate.call_args.args[0].current_turn.ai_response == text
+    assert generate.call_args.args[0].current_turn.ai_response == "*문이 열린다.*\n행인: 안녕.\n라떼: 반가워."
+    assert "".join(event["text"] for event in result if event["event"] == "token") == text
+    assert result[-1]["ai_output"].endswith("라떼: 앉아.")
     assert generate.call_args.args[0].parent_image.image_name == "라떼_기본"
 
 
