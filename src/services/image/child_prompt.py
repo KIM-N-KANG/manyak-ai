@@ -1,30 +1,27 @@
-"""선택된 감정·강도만 부모 이미지 편집 프롬프트에 삽입한다(KNK-1450)."""
+"""부모 편집 지시에 인물 이름과 대화를 XML 텍스트로 삽입한다."""
 
 from pathlib import Path
-import re
+from xml.etree.ElementTree import Element, SubElement, tostring
 
-from src.services.image.base import ImageGenerationError
-from src.services.image.emotion_selection import SelectedEmotion
+from src.services.image.child_input import ChildImageInput
 from src.services.prompt_meta import read_version
 
 _PATH = Path(__file__).resolve().parents[3] / "prompt/image/CHILD-IMAGE-TEMPLATE.md"
 CHILD_IMAGE_VERSION = read_version(_PATH)
 _RAW = _PATH.read_text(encoding="utf-8")
-_TEMPLATE = _RAW.split("---", 2)[2].strip()
+_TEMPLATE = _RAW[_RAW.index("<image_edit_request>"):].strip()
 
 
-def build_child_image_prompt(emotions: tuple[SelectedEmotion, ...]) -> str:
-    """감정 1~2개를 순서대로 넣는다. 대화 원문은 받지 않는다."""
-    if not 1 <= len(emotions) <= 2:
-        raise ImageGenerationError("이미지 편집에는 감정 1~2개가 필요합니다.")
-    for item in emotions:
-        if (not re.fullmatch(r"[a-z]+", item.emotion)
-                or item.emotion in {"other", "unknown"}
-                or (item.emotion == "neutral" and (len(emotions) != 1 or item.intensity != "none"))
-                or (item.emotion != "neutral" and item.intensity not in {"low", "medium", "high"})):
-            raise ImageGenerationError("이미지 편집 감정·강도가 잘못됐습니다.")
-    lines = "\n".join(
-        f"{index}. {item.emotion}, {item.intensity}"
-        for index, item in enumerate(emotions, start=1)
-    )
-    return _TEMPLATE.replace("{{emotions}}", lines)
+def build_child_image_prompt(inputs: ChildImageInput) -> str:
+    """대화의 태그·자리표시자를 명령으로 재해석하지 않고 한 번만 치환한다."""
+    root = Element("dialogue_input")
+    SubElement(root, "target_character").text = inputs.parent_image.name
+    recent = SubElement(root, "recent_turns")
+    for index, turn in enumerate(inputs.recent_turns, start=-len(inputs.recent_turns)):
+        node = SubElement(recent, "turn", relative_to_current=str(index))
+        SubElement(node, "user_message").text = turn.user_message
+        SubElement(node, "ai_response").text = turn.ai_response
+    current = SubElement(root, "current_turn")
+    SubElement(current, "user_message").text = inputs.current_turn.user_message
+    SubElement(current, "ai_response").text = inputs.current_turn.ai_response
+    return _TEMPLATE.replace("{{dialogue_input}}", tostring(root, encoding="unicode"))
