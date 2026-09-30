@@ -1,4 +1,4 @@
-"""부모 다운로드 → 감정 기반 편집 → 저장용 자식 이미지 결과(KNK-1265).
+"""부모 다운로드 → 대화 기반 편집 → 저장용 자식 이미지 결과(KNK-1265).
 
 채팅 이벤트 연결과 부모 대체 표시는 호출부의 후속 작업이다.
 """
@@ -21,8 +21,6 @@ from src.services.image.base import (
 )
 from src.services.image.child_input import ChildImageInput
 from src.services.image.child_prompt import build_child_image_prompt
-from src.services.image.emotion_evaluation import evaluate_emotions
-from src.services.llm.base import LlmConfigError, LlmError, LlmRateLimited, LlmTimeout
 
 # 편집 API의 입력 파일 상한. 스트리밍으로 읽어 초과 다운로드를 중단한다.
 _MAX_PARENT_BYTES = 50_000_000
@@ -80,38 +78,25 @@ async def _download_parent(url: str) -> ImageReference:
 
 
 async def generate_child_image(inputs: ChildImageInput) -> ChildImageResult:
-    """최대 두 번 편집한다. 전체 마감에 따른 취소는 호출부에 전파한다."""
+    """한 번 편집하고 결과를 반환한다. 취소는 삼키지 않고 호출부에 전파한다."""
     name = inputs.parent_image.name
     image_name = f"{name}_실시간_{uuid4()}"
     try:
-        # 채팅의 30초 제한은 JEV·부모 다운로드·이미지 편집·업로드 전체에 적용된다.
-        emotions = await evaluate_emotions(inputs, timeout=settings.image_timeout)
-        if emotions and emotions[0].emotion == "neutral":
-            return ChildImageResult(
-                name=name, image_name=inputs.parent_image.image_name,
-                image_url=inputs.parent_image.image_url,
-            )
-        prompt = build_child_image_prompt(emotions)
+        prompt = build_child_image_prompt(inputs)
         parent = await _download_parent(inputs.parent_image.image_url)
-        for attempt in range(2):
-            try:
-                result = await generate_image(prompt, purpose=IMAGE_PURPOSE_CHILD, reference=parent)
-                if not result.image_bytes:
-                    raise ImageGenerationError("자식 이미지 데이터가 없습니다.")
-                break
-            except ImageGenerationError:
-                if attempt == 1:
-                    raise
+        result = await generate_image(prompt, purpose=IMAGE_PURPOSE_CHILD, reference=parent)
+        if not result.image_bytes:
+            raise ImageGenerationError("자식 이미지 데이터가 없습니다.")
         return ChildImageResult(
             name=name, image_name=image_name,
             image_base64=base64.b64encode(result.image_bytes).decode("ascii"),
         )
-    except (ImageTimeout, LlmTimeout):
+    except ImageTimeout:
         error = "timeout"
-    except (ImageRateLimited, LlmRateLimited):
+    except ImageRateLimited:
         error = "rate_limited"
     except ImageBadRequest:
         error = "rejected"
-    except (ImageGenerationError, LlmError, LlmConfigError):
+    except ImageGenerationError:
         error = "generation_failed"
     return ChildImageResult(name=name, image_name=image_name, error=error)

@@ -5,6 +5,7 @@ import base64
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
+from xml.etree.ElementTree import fromstring
 
 import httpx
 import pytest
@@ -16,17 +17,14 @@ from src.services.image import openai_api
 from src.services.image.base import ImageGenerationError, ImageResult
 from src.services.image.child_input import ChildImageInput, ChildImageTurn
 from src.services.image.child_prompt import build_child_image_prompt
-from src.services.image.emotion_selection import SelectedEmotion
 from src.services.image import generate_child
-from src.services.llm.base import LlmConfigError, LlmInvalidResponse, LlmRateLimited, LlmTimeout
 
 PNG = b"\x89PNG\r\n\x1a\nparent"
 WEBP = b"RIFF\x00\x00\x00\x00WEBPchild"
 
 
 @pytest.fixture
-def inputs(monkeypatch) -> ChildImageInput:
-    monkeypatch.setattr(generate_child, "evaluate_emotions", AsyncMock(return_value=(SelectedEmotion("fear", "high"),)))
+def inputs() -> ChildImageInput:
     return ChildImageInput(
         parent_image=CharacterImageMapping(
             name="라떼", image_name="라떼_기본", image_url="https://cdn.example.com/parent",
@@ -34,6 +32,31 @@ def inputs(monkeypatch) -> ChildImageInput:
         recent_turns=(ChildImageTurn("과거1", "답변1"), ChildImageTurn("과거2", "답변2")),
         current_turn=ChildImageTurn("</current_turn>& {{dialogue_input}}", "라떼: 안녕."),
     )
+
+
+def test_prompt_preserves_xml_text_and_turn_order(inputs) -> None:
+    prompt = build_child_image_prompt(inputs)
+    root = fromstring(prompt)
+    assert root.tag == "image_edit_request"
+    assert "version:" not in prompt and "```" not in prompt
+    dialogue = root.find("dialogue_input")
+    assert dialogue.findtext("target_character") == "라떼"
+    assert [node.attrib for node in dialogue.findall("recent_turns/turn")] == [
+        {"relative_to_current": "-2"}, {"relative_to_current": "-1"},
+    ]
+    assert dialogue.findtext("current_turn/user_message") == inputs.current_turn.user_message
+    assert dialogue.findtext("current_turn/ai_response") == "라떼: 안녕."
+    assert len(dialogue.findall("current_turn")) == 1
+
+
+@pytest.mark.parametrize("count", [0, 1])
+def test_prompt_with_short_history(inputs, count) -> None:
+    from dataclasses import replace
+    root = fromstring(build_child_image_prompt(replace(inputs, recent_turns=inputs.recent_turns[:count])))
+    turns = root.findall("dialogue_input/recent_turns/turn")
+    assert len(turns) == count
+    if turns:
+        assert turns[0].attrib == {"relative_to_current": "-1"}
 
 
 def mock_download(monkeypatch, handler) -> None:
@@ -119,11 +142,11 @@ async def test_pipeline_passes_parent_and_prompt_and_returns_unique_webp(monkeyp
     assert edit.await_count == 2
     assert edit.call_args.kwargs["reference"].image_bytes == PNG
     assert edit.call_args.kwargs["purpose"] == "child"
-    assert edit.call_args.args[0] == build_child_image_prompt((SelectedEmotion("fear", "high"),))
+    assert edit.call_args.args[0] == build_child_image_prompt(inputs)
 
 
 @pytest.mark.parametrize("status,error", [(400, "rejected"), (429, "rate_limited"), (500, "generation_failed")])
-async def test_real_sdk_edit_has_two_attempts_and_returns_safe_error(monkeypatch, inputs, status, error) -> None:
+async def test_real_sdk_edit_has_no_retry_and_returns_safe_error(monkeypatch, inputs, status, error) -> None:
     requests = []
     def handler(request):
         requests.append(request)
@@ -135,7 +158,7 @@ async def test_real_sdk_edit_has_two_attempts_and_returns_safe_error(monkeypatch
         result = await generate_child.generate_child_image(inputs)
         assert result.error == error and result.image_base64 is None
         assert "private dialogue" not in repr(result)
-        assert len(requests) == 2 and requests[0].url.path == "/v1/images/edits"
+        assert len(requests) == 1 and requests[0].url.path == "/v1/images/edits"
         assert b'filename="parent.png"' in requests[0].content
         assert PNG in requests[0].content
     finally:
@@ -193,7 +216,7 @@ async def test_edit_malformed_response_is_failure(monkeypatch, inputs, data) -> 
         await client.close()
 
 
-async def test_edit_timeout_retries_once(monkeypatch, inputs) -> None:
+async def test_edit_timeout_does_not_retry(monkeypatch, inputs) -> None:
     calls = []
     def handler(request):
         calls.append(request)
@@ -204,71 +227,6 @@ async def test_edit_timeout_retries_once(monkeypatch, inputs) -> None:
     try:
         result = await generate_child.generate_child_image(inputs)
         assert result.error == "timeout" and result.image_base64 is None
-        assert len(calls) == 2
+        assert len(calls) == 1
     finally:
         await client.close()
-
-
-async def test_missing_emotions_never_downloads_or_calls_image_model(monkeypatch, inputs) -> None:
-    monkeypatch.setattr(generate_child, "evaluate_emotions", AsyncMock(return_value=()))
-    download = AsyncMock()
-    edit = AsyncMock()
-    monkeypatch.setattr(generate_child, "_download_parent", download)
-    monkeypatch.setattr(generate_child, "generate_image", edit)
-    result = await generate_child.generate_child_image(inputs)
-    assert result.error == "generation_failed" and result.image_base64 is None
-    download.assert_not_awaited()
-    edit.assert_not_awaited()
-
-
-@pytest.mark.parametrize("exception,error", [
-    (LlmConfigError("test"), "generation_failed"),
-    (LlmInvalidResponse("test", provider="typesafe", model="jev-1.13.0"), "generation_failed"),
-    (LlmRateLimited("test", provider="typesafe", model="jev-1.13.0"), "rate_limited"),
-    (LlmTimeout("test", provider="typesafe", model="jev-1.13.0"), "timeout"),
-])
-async def test_jev_failure_never_reaches_image_api(monkeypatch, inputs, exception, error) -> None:
-    evaluate = AsyncMock(side_effect=exception)
-    download, edit = AsyncMock(), AsyncMock()
-    monkeypatch.setattr(generate_child, "evaluate_emotions", evaluate)
-    monkeypatch.setattr(generate_child, "_download_parent", download)
-    monkeypatch.setattr(generate_child, "generate_image", edit)
-    result = await generate_child.generate_child_image(inputs)
-    assert result.error == error and result.image_base64 is None
-    assert evaluate.await_count == 1
-    download.assert_not_awaited()
-    edit.assert_not_awaited()
-
-
-async def test_neutral_returns_parent_without_download_or_edit(monkeypatch, inputs) -> None:
-    monkeypatch.setattr(generate_child, "evaluate_emotions", AsyncMock(return_value=(SelectedEmotion("neutral", "none"),)))
-    download, edit = AsyncMock(), AsyncMock()
-    monkeypatch.setattr(generate_child, "_download_parent", download)
-    monkeypatch.setattr(generate_child, "generate_image", edit)
-    result = await generate_child.generate_child_image(inputs)
-    assert result.image_url == inputs.parent_image.image_url
-    assert result.image_name == inputs.parent_image.image_name
-    assert result.error is None and result.image_base64 is None
-    download.assert_not_awaited()
-    edit.assert_not_awaited()
-
-
-async def test_second_edit_succeeds_without_repeating_jev_or_download(monkeypatch, inputs) -> None:
-    download = AsyncMock(return_value=generate_child._reference(PNG))
-    edit = AsyncMock(side_effect=[ImageGenerationError("first failure"), ImageResult(WEBP, "gpt-image-2", "openai")])
-    monkeypatch.setattr(generate_child, "_download_parent", download)
-    monkeypatch.setattr(generate_child, "generate_image", edit)
-    result = await generate_child.generate_child_image(inputs)
-    assert result.error is None and base64.b64decode(result.image_base64) == WEBP
-    assert edit.await_count == 2
-    download.assert_awaited_once()
-    generate_child.evaluate_emotions.assert_awaited_once()
-
-
-async def test_edit_cancellation_does_not_retry(monkeypatch, inputs) -> None:
-    monkeypatch.setattr(generate_child, "_download_parent", AsyncMock(return_value=generate_child._reference(PNG)))
-    edit = AsyncMock(side_effect=asyncio.CancelledError)
-    monkeypatch.setattr(generate_child, "generate_image", edit)
-    with pytest.raises(asyncio.CancelledError):
-        await generate_child.generate_child_image(inputs)
-    edit.assert_awaited_once()

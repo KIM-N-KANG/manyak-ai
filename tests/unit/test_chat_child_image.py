@@ -47,44 +47,6 @@ async def run(req: ChatTurnRequest, text: str) -> list[dict]:
     return [event async for event in service.stream_with_child_image(events(text), req, deadline=time.monotonic() + 5)]
 
 
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_jev_shares_image_deadline_and_propagates_cancellation(monkeypatch, request_data, cancel):
-    from src.services.image import emotion_evaluation, generate_child
-
-    entered, stopped = asyncio.Event(), asyncio.Event()
-
-    async def evaluate(request):
-        entered.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            stopped.set()
-
-    monkeypatch.setattr(emotion_evaluation.llm, "evaluate", evaluate)
-    download, edit, upload = AsyncMock(), AsyncMock(), AsyncMock()
-    monkeypatch.setattr(generate_child, "_download_parent", download)
-    monkeypatch.setattr(generate_child, "generate_image", edit)
-    monkeypatch.setattr(service, "upload_child_image", upload)
-    inputs = service.build_child_image_input(
-        character_images=request_data.character_images, history=[],
-        user_input="test", ai_output="라떼: 안녕",
-    )
-    observation = service.ChildImageObservation()
-    task = asyncio.create_task(service._generate_before_deadline(
-        inputs, time.monotonic() + (5 if cancel else .05), observation, request_data.image_slots[0],
-    ))
-    await asyncio.wait_for(entered.wait(), timeout=1)
-    if cancel:
-        task.cancel()
-    with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
-        await task
-    assert stopped.is_set()
-    assert observation.reason == ("cancelled" if cancel else "timeout")
-    download.assert_not_awaited()
-    edit.assert_not_awaited()
-    upload.assert_not_awaited()
-
-
 @pytest.mark.parametrize("allowed_hosts", [[], ["other.s3.amazonaws.com"]])
 async def test_invalid_upload_target_skips_generation_and_keeps_parent(monkeypatch, request_data, allowed_hosts):
     from src.core.config import settings
@@ -538,29 +500,3 @@ async def test_disconnect_during_replay_stops_delivery(monkeypatch, request_data
         assert (await anext(stream))["event"] == "token"
     with pytest.raises(StopAsyncIteration):
         await anext(stream)
-
-
-async def test_neutral_keeps_parent_in_sse_and_completion_without_upload(monkeypatch, request_data) -> None:
-    from src.services.image import generate_child
-    from src.services.image.emotion_selection import SelectedEmotion
-
-    monkeypatch.setattr(generate_child, "evaluate_emotions", AsyncMock(return_value=(SelectedEmotion("neutral", "none"),)))
-    download, edit, upload = AsyncMock(), AsyncMock(), AsyncMock()
-    monkeypatch.setattr(generate_child, "_download_parent", download)
-    monkeypatch.setattr(generate_child, "generate_image", edit)
-    monkeypatch.setattr(service, "upload_child_image", upload)
-    observation = service.ChildImageObservation()
-    result = [event async for event in service.stream_with_child_image(
-        events("라떼: 안녕."), request_data, deadline=time.monotonic() + 5, observation=observation,
-    )]
-    parent = request_data.character_images[0]
-    assert result[0]["image_url"] == parent.image_url
-    assert result[0]["image_name"] == parent.image_name
-    assert result[-1]["event"] == "completed"
-    assert result[-1]["character_images"][0]["image_url"] == parent.image_url
-    assert parent.image_url in result[-1]["ai_output"]
-    assert observation.parent_fallback is True
-    assert observation.status == "success" and observation.reason is None
-    download.assert_not_awaited()
-    edit.assert_not_awaited()
-    upload.assert_not_awaited()
