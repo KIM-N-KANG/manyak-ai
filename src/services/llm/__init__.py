@@ -8,7 +8,9 @@
 - `openai_sdk.py` — OpenAI SDK 어댑터(DeepSeek·GPT 공용). 뜻을 회사 문법으로 옮긴다
 - `anthropic_sdk.py` — Anthropic SDK 어댑터. 같은 뜻을 이 회사 문법으로 옮긴다
 
-호출용 공개 함수는 `complete`·`stream` 둘이다. **둘 다 단발 호출이다** — 재호출·시간 예산·
+- `typesafe_api.py` — TypeSafe HTTP 어댑터. 선택형 질문들을 한 요청으로 판정한다
+
+호출용 공개 함수는 `complete`·`stream`·`evaluate`다. 모두 단발 호출이다 — 재호출·시간 예산·
 검증은 호출부가 관장한다(스토리라인 invalid 재호출 KNK-312이 통로로 올라오면 이관 범위가
 폭발한다). 여기에 기동 검사용 `validate_startup`과 로깅 메타·Sentry 태그용 `provider_of`가
 더해진다. `request_body`는 호출부가 전송 전에 검사할 수 있도록 최종 본문만 반환한다.
@@ -22,7 +24,10 @@ from src.services.llm.base import (
     ADAPTER_ANTHROPIC_SDK,
     ADAPTER_GOOGLE_SDK,
     ADAPTER_OPENAI_SDK,
+    ADAPTER_TYPESAFE_API,
     PROVIDER_DEEPSEEK,
+    EvaluationRequest,
+    EvaluationResult,
     LlmAdapter,
     LlmConfigError,
     LlmRequest,
@@ -32,7 +37,7 @@ from src.services.llm.base import (
     message_has_images,
 )
 
-__all__ = ["complete", "observation_metadata", "provider_of", "request_body", "stream", "validate_startup"]
+__all__ = ["complete", "evaluate", "observation_metadata", "provider_of", "request_body", "stream", "validate_startup"]
 
 
 def observation_metadata(model: str) -> dict[str, str]:
@@ -78,6 +83,11 @@ def validate_startup() -> None:
     registry.validate_selected_models()
     for env_name, model in registry.selected_models():
         try:
+            if registry.resolve(model).adapter == ADAPTER_TYPESAFE_API:
+                from src.services.llm import typesafe_api
+
+                typesafe_api.check_supported(registry.resolve(model))
+                continue
             adapter, resolved = _adapter_of(model)
             adapter.check_supported(resolved)
             if env_name in registry.STREAMING_ENVS and not adapter.SUPPORTS_STREAMING:
@@ -163,6 +173,14 @@ async def complete(req: LlmRequest) -> LlmResult:
     """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·판정·검수)."""
     adapter, resolved = _request_adapter(req)
     return await adapter.complete(req, resolved)
+
+
+async def evaluate(req: EvaluationRequest) -> EvaluationResult:
+    """선택형 질문을 단발 판정한다. 후보 선택·임계값·대체 처리는 호출부의 책임이다."""
+    from src.services.llm import typesafe_api
+
+    resolved = registry.resolve(req.model)
+    return await typesafe_api.evaluate(req, resolved)
 
 
 def stream(req: LlmRequest) -> AsyncIterator[StreamEvent]:
