@@ -13,16 +13,16 @@ from src.services.llm.base import LlmConfigError, LlmRequest, LlmUnavailable, im
 from src.services.moderation.models import ModelDecision
 
 
-def request(model="gpt-5.6-luna"):
+def request(model="gpt-6-luna"):
     return LlmRequest(
         model=model, timeout=60, max_retries=0,
         messages=[{"role": "user", "content": [text_part("JSON 검수"), image_part(data=b"abc", content_type="image/png")]}],
-        response_schema=ModelDecision.model_json_schema() if model == "gpt-5.6-luna" else None,
-        json_mode=model == "deepseek-flash", reasoning_effort="high" if model == "gpt-5.6-luna" else None,
+        response_schema=ModelDecision.model_json_schema() if model in {"gpt-5.6-luna", "gpt-6-luna"} else None,
+        json_mode=model == "deepseek-flash", reasoning_effort="high" if model in {"gpt-5.6-luna", "gpt-6-luna"} else None,
     )
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-luna", "deepseek-flash"])
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna", "deepseek-flash"])
 async def test_preflight_body_matches_sdk_body_without_network(monkeypatch, model):
     captured = []
 
@@ -42,7 +42,7 @@ async def test_preflight_body_matches_sdk_body_without_network(monkeypatch, mode
         await llm.complete(req)
         assert captured == [body]
         assert "timeout" not in body and "max_retries" not in body and "metadata" not in body
-        if model == "gpt-5.6-luna":
+        if model in {"gpt-5.6-luna", "gpt-6-luna"}:
             assert body["reasoning_effort"] == "high"
             assert body["response_format"]["json_schema"]["strict"] is True
             assert registry.resolve(model).reasoning_effort == "none"

@@ -605,3 +605,29 @@ async def test_disabled_langfuse_does_not_access_sdk(client, dependencies, monke
     assert response.status_code == 200
     assert response.json()["decision"] == "APPROVED"
     dependencies[1].assert_awaited_once()
+
+
+@pytest.mark.parametrize("rule", ["GAMBLING_PROMOTION"])
+@pytest.mark.parametrize("path,kind", [("title", "TEXT"), ("thumbnailUrl", "IMAGE")])
+async def test_new_content_rules_reach_response_without_fallback(client, dependencies, rule, path, kind):
+    """새 판정 코드가 모델·API 검증을 통과하며 호출 실패로 바뀌지 않는다."""
+    dependencies[1].return_value = output("REJECTED", [{
+        "path": path, "rule": rule, "reason": "금지 조건에 해당함.",
+    }])
+
+    response = await client.post(URL, json=POST)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "decision": "REJECTED",
+        "issues": [{"path": path, "type": kind, "rule": rule, "reason": "금지 조건에 해당함."}],
+        "error_code": None,
+        "image_errors": [],
+    }
+    dependencies[1].assert_awaited_once()
+    schema = dependencies[1].call_args.args[0].response_schema
+    assert rule in schema["$defs"]["ModelIssue"]["properties"]["rule"]["anyOf"][0]["enum"]
+    assert set(schema["$defs"]["ModelIssue"]["properties"]["rule"]["anyOf"][0]["enum"]) == {
+        "EXPLICIT_SEXUAL_CONTENT", "DRUGS", "EXTREME_GORE",
+        "SELF_HARM_PROMOTION", "HATE_VIOLENCE_INCITEMENT", "GAMBLING_PROMOTION",
+    }
