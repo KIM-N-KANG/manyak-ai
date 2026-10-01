@@ -51,6 +51,7 @@ from src.schemas.response_meta import ChatResponseMeta, StoryResponseMeta
 from src.services import llm
 from src.services.chat_assembler import LAYER_VERSIONS, assemble
 from src.services.chat_llm import stream_chat_turn
+from src.services.chat_selected_images import stream_with_selected_images
 from src.services.chat_child_image import ChildImageObservation, stream_with_child_image
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
 from src.services.chat_judgement import JUDGEMENT_VERSION, generate_judgement
@@ -143,6 +144,11 @@ async def _event_stream(
                 deadline=turn_started + _TURN_BUDGET_SECONDS - _SAFETY_MARGIN_SECONDS,
                 on_body_completed=start_judgement,
                 observation=image_observation,
+            )
+        else:
+            events = stream_with_selected_images(
+                events, req,
+                on_body_completed=start_judgement,
             )
         try:
             async with aclosing(events):
