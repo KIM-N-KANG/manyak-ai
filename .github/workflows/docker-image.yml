@@ -319,9 +319,7 @@ jobs:
     name: Deploy to ECS (prod)
     needs: docker
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    # manyak-server 의 같은 잡과 그룹명을 공유한다. 두 레포가 같은 ECS 서비스를 갱신하므로
-    # 레포별로 큐를 나누면 동시 배포가 겹칠 수 있다(GitHub concurrency 는 레포 스코프라
-    # 완전한 상호배제는 아니지만, 같은 레포 안의 연속 푸시는 이걸로 직렬화된다).
+    # AI 전용 서비스를 배포한다. 같은 레포의 연속 운영 배포는 기존 그룹에서 직렬화한다.
     # cancel-in-progress=false — 이미 ECS 로 dispatch 된 배포는 잡을 취소해도 되돌릴 수 없다.
     concurrency:
       group: manyak-prod-deploy
@@ -329,7 +327,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ECS_CLUSTER: manyak-prod
-      ECS_SERVICE: manyak-prod
+      ECS_SERVICE: manyak-prod-ai
     steps:
       # 배포 대상은 "이 실행의 커밋"이 아니라 "현재 main HEAD"다.
       # 예전처럼 "내가 HEAD 가 아니면 skip" 하면 최신 커밋이 아무 데서도 배포되지 않을 수 있다 —
@@ -388,11 +386,7 @@ jobs:
           echo "::error::이미지 조회가 매니페스트 부재가 아닌 이유로 실패했습니다(인증·네트워크 등) — 위 출력 확인"
           exit 1
 
-      # 진행 중인 배포가 끝날 때까지 기다린 뒤에 승격·배포한다. server·ai 두 레포가 같은 manyak-prod
-      # 서비스를 갱신하는데 GitHub concurrency 는 레포 스코프라 상호배제가 되지 않아서,
-      # 한쪽 배포가 끝나기 전에 다른 쪽이 force-new-deployment 를 걸면 앞 배포를 대체해 버린다.
-      # 이 대기는 그 경합 창을 초 단위로 줄일 뿐 완전한 직렬화가 아니다(이 스텝 통과 직후에
-      # 상대 레포가 칠 수 있다). 근본 해법인 외부 락 또는 단일 조정 워크플로는 후속 티켓 몫이다.
+      # AI 서비스의 진행 중인 배포(Terraform·수동 배포 포함)가 끝난 뒤 승격·배포한다.
       - name: Wait for service to settle
         if: steps.image.outputs.exists == 'true'
         run: |
@@ -444,8 +438,7 @@ jobs:
       # (CI 역할에 RegisterTaskDefinition·iam:PassRole 권한이 없다).
       # force-new-deployment 가 같은 정의로 태스크를 다시 띄우면서 위에서 승격한 :latest 를 다시 pull 한다.
       #
-      # 운영도 server·ai 가 태스크 정의 하나에 함께 있어, 이 배포는 두 컨테이너를 모두 재시작한다.
-      # 둘 다 :latest 라 server 는 그 시점의 manyak-server 최신 이미지로 함께 뜬다.
+      # AI 전용 태스크(ai + log_router)만 교체하며 server 서비스는 재시작하지 않는다.
       - name: Force new ECS deployment
         if: steps.image.outputs.exists == 'true'
         run: |
@@ -468,21 +461,18 @@ jobs:
               --query "services[0].deployments[?id=='$DEPLOY_ID'].rolloutState | [0]" --output text)
             case "$STATE" in
               COMPLETED) echo "✅ 배포 $DEPLOY_ID COMPLETED"; break ;;
-              FAILED) echo "::error::배포 $DEPLOY_ID 가 FAILED — circuit breaker 롤백 발생. CloudWatch /ecs/manyak-prod 확인"; exit 1 ;;
-              None|"") echo "::error::배포 $DEPLOY_ID 가 사라졌습니다(롤백으로 교체) — CloudWatch /ecs/manyak-prod 확인"; exit 1 ;;
+              FAILED) echo "::error::배포 $DEPLOY_ID 가 FAILED — circuit breaker 롤백 발생. CloudWatch /ecs/manyak-prod-ai 확인"; exit 1 ;;
+              None|"") echo "::error::배포 $DEPLOY_ID 가 사라졌습니다(롤백으로 교체) — CloudWatch /ecs/manyak-prod-ai 확인"; exit 1 ;;
               *) echo "배포 $STATE — 대기 $i/60 (10s)"; sleep 10 ;;
             esac
           done
           [ "$STATE" = "COMPLETED" ]
 
-      # 서비스가 안정화돼도 ai 는 죽어 있을 수 있다 — ai 컨테이너는 essential=false 라
-      # 태스크를 죽이지 않고, ALB 헬스는 server 만 본다. AI 레포의 배포는 특히 이걸 봐야 한다.
-      - name: Verify container health (ai 포함)
+      # 독립 서비스의 ai는 essential=true다. 이번 배포의 모든 ai 컨테이너가 HEALTHY인지 확인한다.
+      - name: Verify AI container health
         if: steps.image.outputs.exists == 'true'
         run: |
-          # 단발 검사는 안 된다. 배포 완료 시점에도 ai 는 아직 UNKNOWN 일 수 있다 —
-          # 태스크 헬스체크에 start period 와 재시도가 있고, ai 는 essential=false 라
-          # 배포 완료 판정이 ai 의 healthy 를 기다려 주지 않는다.
+          # ECS 조회 결과의 반영 지연을 고려해 재시도한다.
           # 부분일치를 쓰지 않는다 — UNHEALTHY 도 "HEALTHY" 로 끝나서 비정상을 정상으로 오판한다.
           # 검사는 ai 컨테이너만 본다. 운영 태스크의 로그 사이드카 log_router(aws-for-fluent-bit)는
           # healthCheck 가 없어 healthStatus 가 영원히 UNKNOWN 이라, 전 컨테이너 검사는 매번 타임아웃한다.
@@ -526,27 +516,20 @@ jobs:
             AI_BAD=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks $TASKS \
               --query "length(tasks[].containers[?name=='ai' && (healthStatus=='UNHEALTHY' || lastStatus=='STOPPED')][])" --output text)
             if [ "$AI_BAD" != "0" ]; then
-              echo "::error::ai 컨테이너가 기동에 실패했습니다 — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-prod 로그에서 확인"
+              echo "::error::ai 컨테이너가 기동에 실패했습니다 — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-prod-ai 로그에서 확인"
               exit 1
             fi
             echo "ai 기동 대기 $i/20 (15s)..."; sleep 15
           done
-          echo "::error::제한 시간 안에 ai 가 HEALTHY 가 되지 않았습니다 — CloudWatch /ecs/manyak-prod 로그 확인"; exit 1
+          echo "::error::제한 시간 안에 ai 가 HEALTHY 가 되지 않았습니다 — CloudWatch /ecs/manyak-prod-ai 로그 확인"; exit 1
 
-      - name: Smoke test (server /actuator/health)
-        if: steps.image.outputs.exists == 'true'
-        run: |
-          for i in $(seq 1 12); do
-            if curl -fsS --max-time 10 https://api.manyak.app/actuator/health | grep -q '"status":"UP"'; then
-              echo "✅ health UP"; exit 0
-            fi
-            echo "health 대기 $i/12 (15s)..."; sleep 15
-          done
-          echo "::error::health 200/UP 확인 실패 — CloudWatch /ecs/manyak-prod 로그 확인"; exit 1
+      # server /actuator/health는 독립 AI의 상태를 검증하지 않아 사용하지 않는다.
+      # 위 ECS HEALTHY는 AI 태스크 내부 /api/v1/health 검사 결과다.
+      # private Cloud Map 주소는 GitHub 호스팅 러너에서 직접 호출하지 않는다.
 
-      # 배포·헬스·스모크가 실패하면 :latest 를 승격 전 이미지로 되돌린다.
+      # 배포·헬스가 실패하면 :latest 를 승격 전 이미지로 되돌린다.
       # circuit breaker 가 태스크를 롤백해도 :latest 는 실패 이미지를 가리킨 채라,
-      # 다음 force-new-deployment(상대 레포 릴리스 포함)가 실패 이미지를 다시 띄운다.
+      # 다음 AI force-new-deployment가 실패 이미지를 다시 띄운다.
       - name: Restore :latest on failure
         if: (failure() || cancelled()) && steps.promote.outputs.promoted == 'true'
         run: |
