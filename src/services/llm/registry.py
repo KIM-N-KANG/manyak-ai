@@ -165,7 +165,6 @@ _REGISTRY: dict[str, ResolvedModel] = {
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
         ),
         # 이미지 입력: 모델 페이지의 "Input modalities: text, image"로 확인했다(KNK-1359).
-        # 게시물 검수의 기본 모델이다.
         supports_image_input=True,
         capabilities_verified_on=date(2026, 9, 23),
         capabilities_source_urls=(
@@ -219,7 +218,9 @@ _REGISTRY: dict[str, ResolvedModel] = {
         structured_output_modes=frozenset(
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
         ),
-        capabilities_verified_on=date(2026, 9, 23),
+        # 게시물 검수의 기본 모델. 공식 모델 문서에서 이미지 입력 지원을 확인함.
+        supports_image_input=True,
+        capabilities_verified_on=date(2026, 9, 30),
         capabilities_source_urls=(
             "https://developers.openai.com/api/docs/models/gpt-6-luna",
         ),

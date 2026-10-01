@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # 장당 상한 32MiB는 DeepSeek Vision 가이드의 한도다 — 두 검수 모델 중 작은 값을 따른다.
     moderation_image_timeout: float = 30.0  # 게시물 한 건의 이미지 전체를 내려받는 제한 시간(초)
     moderation_image_max_bytes: int = 32 * 1024 * 1024
-    moderation_model: str = "gpt-5.6-luna"
+    moderation_model: str = "gpt-6-luna"
     moderation_fallback_model: str = "deepseek-flash"
     moderation_call_timeout: float = 60.0
     moderation_request_timeout: float = 150.0

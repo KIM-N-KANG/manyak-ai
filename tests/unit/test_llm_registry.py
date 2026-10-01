@@ -195,7 +195,7 @@ def test_every_registered_model_has_pricing() -> None:
             128_000,
             "none",
             {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA},
-            date(2026, 9, 23),
+            date(2026, 9, 30),
         ),
         (
             "gpt-5.4-mini",
@@ -531,7 +531,7 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
         ("CHAT_MODEL", "deepseek-flash"),
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
-        ("MODERATION_MODEL", "gpt-5.6-luna"),
+        ("MODERATION_MODEL", "gpt-6-luna"),
         ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
         ("JEV_MODEL", "jev-1.13.0"),
     )
