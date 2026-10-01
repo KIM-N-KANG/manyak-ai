@@ -59,7 +59,7 @@ def test_message_has_images_detects_only_image_parts() -> None:
 
 
 # ── 등록부 ───────────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("model", ["gpt-5.6-luna", "deepseek-flash"])
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna", "deepseek-flash"])
 def test_moderation_models_declare_image_input(model: str) -> None:
     """검수 기본·대체 모델은 이미지 입력을 받는다고 문서로 확인해 적어 두었다."""
     assert registry.resolve(model).supports_image_input is True
@@ -67,7 +67,7 @@ def test_moderation_models_declare_image_input(model: str) -> None:
 
 def test_image_input_defaults_to_false_for_other_models() -> None:
     """확인하지 않은 모델은 못 받는 것으로 둔다 — 새 모델은 문서 확인 뒤에만 True."""
-    others = [m for m in registry._REGISTRY if m not in {"gpt-5.6-luna", "deepseek-flash"}]
+    others = [m for m in registry._REGISTRY if m not in {"gpt-5.6-luna", "gpt-6-luna", "deepseek-flash"}]
     assert others  # 등록부에 다른 모델이 있어야 이 테스트가 의미 있다
     assert all(registry.resolve(m).supports_image_input is False for m in others)
 
