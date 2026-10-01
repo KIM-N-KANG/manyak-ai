@@ -15,6 +15,7 @@ from src.services.llm import registry
 from src.services.llm.base import (
     ADAPTER_ANTHROPIC_SDK,
     ADAPTER_OPENAI_SDK,
+    ADAPTER_TYPESAFE_API,
     PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
     PROVIDER_OPENAI,
@@ -42,6 +43,9 @@ def _clear_llm_env(monkeypatch) -> None:
         "CHAT_CHOICE_MODEL",
         "MODERATION_MODEL",
         "MODERATION_FALLBACK_MODEL",
+        "JEV_MODEL",
+        "TYPESAFE_API_KEY",
+        "TYPESAFE_API_URL",
         "OPENAI_API_KEY",
         "OPENAI_API_URL",
         "ANTHROPIC_API_KEY",
@@ -235,12 +239,18 @@ def test_every_registered_model_has_complete_valid_capabilities() -> None:
     """앞으로 모델 등록 시 한도·추론 목록·구조화 출력·근거 누락이나 모순을 막는다."""
     for resolved in registry._REGISTRY.values():
         assert resolved.context_window_tokens is not None
-        assert resolved.max_output_tokens is not None
-        assert 0 < resolved.max_output_tokens <= resolved.context_window_tokens
-        assert resolved.supported_reasoning_efforts
+        if resolved.adapter == ADAPTER_TYPESAFE_API:
+            assert resolved.context_window_tokens == 64_000
+            assert resolved.max_output_tokens is None
+            assert not resolved.supported_reasoning_efforts
+            assert not resolved.structured_output_modes
+        else:
+            assert resolved.max_output_tokens is not None
+            assert 0 < resolved.max_output_tokens <= resolved.context_window_tokens
+            assert resolved.supported_reasoning_efforts
+            assert resolved.structured_output_modes
         if resolved.reasoning_effort is not None:
             assert resolved.reasoning_effort in resolved.supported_reasoning_efforts
-        assert resolved.structured_output_modes
         assert resolved.capabilities_verified_on is not None
         assert resolved.capabilities_source_urls
 
@@ -522,6 +532,7 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
         ("MODERATION_MODEL", "gpt-6-luna"),
         ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
+        ("JEV_MODEL", "jev-1.13.0"),
     )
 
 

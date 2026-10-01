@@ -6,7 +6,7 @@
 
 import base64
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Protocol, TypeAlias
@@ -17,12 +17,14 @@ from typing import Protocol, TypeAlias
 ADAPTER_OPENAI_SDK = "openai_sdk"
 ADAPTER_ANTHROPIC_SDK = "anthropic_sdk"
 ADAPTER_GOOGLE_SDK = "google_sdk"
+ADAPTER_TYPESAFE_API = "typesafe_api"
 
 # 공급자 식별자 — 로깅 메타(meta.provider)와 Sentry provider 태그(AN-4-8)에 그대로 실린다.
 PROVIDER_DEEPSEEK = "deepseek"
 PROVIDER_OPENAI = "openai"
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_GOOGLE = "google"
+PROVIDER_TYPESAFE = "typesafe"
 
 # 구조화 출력 능력. 요청 문법은 어댑터가 만들고, 등록부에는 모델이 받아들이는 방식만 적는다.
 STRUCTURED_OUTPUT_JSON_OBJECT = "json_object"
@@ -230,6 +232,39 @@ class LlmResult:
 
 
 @dataclass(frozen=True)
+class ChoiceQuestion:
+    """선택형 판정 한 개. 최초 통로는 문자열 지시·후보 설명만 지원한다."""
+
+    instructions: str = field(repr=False)
+    criteria: dict[str, str] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class EvaluationRequest:
+    """같은 자료에 대한 선택형 질문들을 한 번에 판정한다. 시간 예산은 호출부가 정한다."""
+
+    model: str
+    state: str | dict[str, object] | list[object] = field(repr=False)
+    questions: dict[str, ChoiceQuestion] = field(repr=False)
+    timeout: float
+
+
+@dataclass(frozen=True)
+class ChoiceAnswer:
+    choice: str
+    probabilities: dict[str, float]
+    confidence: float
+
+
+@dataclass(frozen=True)
+class EvaluationResult:
+    answers: dict[str, ChoiceAnswer] = field(repr=False)
+    model: str
+    provider: str
+    usage: TokenUsage
+
+
+@dataclass(frozen=True)
 class TextDelta:
     """스트림 도중의 부분 문장."""
 
@@ -333,9 +368,14 @@ class LlmUnavailable(LlmError):
     """
 
 
+class LlmInvalidResponse(LlmError):
+    """판정 API 응답을 안전한 공통 결과로 해석할 수 없다. 자동 재시도하지 않는다."""
+
+
 class LlmConfigError(Exception):
     """설정 오류 — 미등록 모델, 선택된 모델의 키 부재 등. 서버 기동에서 드러나야 하는 문제다.
 
+    검수·JEV 키 부재는 다른 기능의 기동을 막지 않고 해당 호출에서 검사한다.
     LlmError를 상속하지 않는다. 호출부의 `except LlmError`가 설정 오류까지 삼켜 502로 바꾸면
     "모델 이름을 잘못 적었다"는 사실이 provider 장애로 위장된다.
     """
