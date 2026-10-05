@@ -176,6 +176,37 @@ class _Trace:
         """분석 metadata를 버퍼에 모은다. 실제 기록은 블록 종료 시 _flush가 1회 수행한다."""
         self._metadata.update(kwargs)
 
+    def set_output(self, output: object) -> None:
+        """최종 응답을 기록한다. 관측 실패가 응답을 바꾸지 않도록 SDK 오류를 격리한다."""
+        if self._span is None:
+            return
+        try:
+            self._span.update(output=output)
+        except Exception as e:  # noqa: BLE001 — 관측 실패는 응답에 전파하지 않는다
+            logger.warning("Langfuse 결과 기록 실패(%s) — 응답에는 영향 없음", type(e).__name__)
+
+    def mark_failed(self, exc: BaseException) -> None:
+        """호출 실패·취소를 오류로 표시하되 예외 원문은 기록하지 않는다."""
+        if self._span is None:
+            return
+        try:
+            self._span.update(level="ERROR", status_message=type(exc).__name__)
+        except Exception as e:  # noqa: BLE001 — 관측 실패는 응답에 전파하지 않는다
+            logger.warning("Langfuse 실패 기록 오류(%s) — 응답에는 영향 없음", type(e).__name__)
+
+    def set_usage(self, *, model: str, usage_details: dict[str, int]) -> None:
+        """수동 generation의 실제 모델명과 사용량을 기록한다."""
+        if self._span is None:
+            return
+        try:
+            # 일부 사용량만 알려진 경우도 나머지를 입력 길이로 추정하지 않게 한다.
+            fields: dict[str, object] = {"usage_details": usage_details}
+            if "input" in usage_details and "output" in usage_details:
+                fields["model"] = model
+            self._span.update(**fields)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Langfuse 사용량 기록 실패(%s) — 응답에는 영향 없음", type(e).__name__)
+
     def _flush(self) -> None:
         if self._span is None or not self._metadata:
             return
@@ -263,7 +294,50 @@ def observe_request(
         _close_observation(stack, "트레이스")
 
 
-def _close_observation(stack: ExitStack, what: str) -> None:
+@contextmanager
+def observe_model_call(
+    name: str, *, model: str, provider: str, attempt: int,
+    input_data: object, metadata: dict[str, object] | None = None,
+) -> Iterator[_Trace]:
+    """자동 계측을 끈 호출을 민감 입력 없이 수동 generation으로 기록한다.
+
+    호출부가 정리한 입력만 SDK에 넘기며, 시간 초과·취소 때도 오류 표시와 종료를 보장한다.
+    """
+    if not _state.enabled:
+        yield _Trace()
+        return
+
+    stack = ExitStack()
+    try:
+        from langfuse import get_client
+
+        span = stack.enter_context(get_client().start_as_current_observation(
+            # model을 먼저 주면 사용량 없는 실패도 Langfuse가 토큰·비용을 추정한다.
+            # 모델명은 metadata에 보존하고 실제 사용량을 받은 set_usage에서만 연결한다.
+            name=name, as_type="generation", input=input_data,
+        ))
+    except Exception as exc:  # noqa: BLE001 — 관측 시작 실패는 모델 호출을 막지 않는다
+        logger.warning("Langfuse 호출 관측 시작 실패(%s)", type(exc).__name__)
+        _close_observation(stack, "호출 관측", include_exception=False)
+        yield _Trace()
+        return
+
+    trace = _Trace(span)
+    trace.set_metadata(model=model, provider=provider, attempt=attempt)
+    if metadata:
+        trace.set_metadata(**metadata)
+    try:
+        yield trace
+    except BaseException as exc:
+        trace.mark_failed(exc)
+        raise
+    finally:
+        trace._flush()
+        # 공급자 예외 원문에는 요청 이미지가 포함될 수 있으므로 오류 타입만 기록한다.
+        _close_observation(stack, "호출 관측", include_exception=False)
+
+
+def _close_observation(stack: ExitStack, what: str, *, include_exception: bool = True) -> None:
     """관측 컨텍스트를 닫는다 — 본작업 예외가 진행 중이면 그 정보를 SDK에 넘긴다.
 
     스팬 종료 실패가 응답을 깨면 안 된다. 본작업 예외가 진행 중이면 exc_info를 넘겨
@@ -273,7 +347,7 @@ def _close_observation(stack: ExitStack, what: str) -> None:
     """
     exc = sys.exc_info()
     try:
-        if exc[0] is not None:
+        if include_exception and exc[0] is not None:
             stack.__exit__(*exc)
         else:
             stack.close()

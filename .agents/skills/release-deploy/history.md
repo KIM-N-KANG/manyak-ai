@@ -19,6 +19,19 @@
 
 ---
 
+## v0.4.2 — 2026-09-24 배포 완료
+
+- 범위: KNK-1410(채팅 후보 `gpt-6-luna` 등록, gpt-5.6-luna 단가 구간 추가, Sonnet 5 단가 정정, #133), KNK-1416(선택지 모델을 `CHAT_CHOICE_MODEL`로 분리, #134), KNK-1406(v0.4.1 기록, #132), KNK-1420(버전 0.4.2, #135).
+  - **외부 계약 변경 없음 — AI 단독 배포·단독 롤백 안전.** 새 env `CHAT_CHOICE_MODEL`은 선택값이고 운영에 넣지 않았다(없으면 기본값 `deepseek-flash`). 운영 Parameter Store·terraform 변경 없이 나갔고, 호출 모델은 배포 전과 같다.
+  - 이 배포 뒤로 운영 `chat-model`만 바꾸면 본문·판정만 바뀌고 선택지는 `deepseek-flash`에 남는다. 판정은 계속 `CHAT_MODEL`을 쓴다(본문·판정 토큰을 한 모델 이름으로 합산하는 meta 때문에 분리 보류).
+- PR #136 → main `61ef8d8`(사용자 직접 Merge Commit). 워크플로 `35973932633` 성공(Test·Image smoke·Docker build·Deploy to ECS (prod)). 태그 `v0.4.2`는 이 main 커밋을 가리킨다.
+  - 버전 올림 PR #135(→ release, Squash)를 에이전트가 머지하려다 권한 확인에서 막혀 사용자가 머지했다. 그 사이 Codex가 #136에 "release 트리 버전이 0.4.1"이라는 P1을 달았고, #135 머지로 해소됐다.
+- 운영 검증: ECS `manyak-prod` 배포 COMPLETED(태스크 정의 `manyak-prod:15`), 태스크·ai HEALTHY, AI digest가 ECR `61ef8d8`와 일치(`sha256:44ff4987…`).
+- QA: 도커 유닛·API 1107 passed·8 skipped, 라이브 통합 10 passed(120.30초), `qa.sh` 종료코드 0(release + 버전 올림 커밋 기준).
+- 계약·기동·런타임 리뷰에서 차단 결함은 발견하지 못했다.
+- release 원격 브랜치가 머지 직후 또 자동 삭제됐다(v0.4.1과 같은 현상). release 끝 커밋 `60ce19e`를 같은 이름으로 다시 push해 역류 PR #137을 만들었다.
+- 같은 날 dev는 terraform KNK-1417(manyak-terraform #62, `manyak-dev:24`)로 `CHAT_MODEL=gpt-6-luna`가 됐다. 선택지는 dev에서도 기본값 `deepseek-flash`.
+
 ## v0.4.1 — 2026-09-23 배포 완료
 
 - 범위: KNK-1097(Gemini 단발 호출 Langfuse 관측, #128), KNK-1336(스토리라인 생성 준비·응답 조립 서비스 이동 리팩터, #127), KNK-1329(사용자 설정 주변 인물 수와 스토리라인 인물 유지), KNK-1406(버전 0.4.1, #129).

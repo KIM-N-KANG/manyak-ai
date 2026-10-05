@@ -61,6 +61,7 @@ FEATURE_CHARACTER_IMAGE = "character_image_generation"
 # 컴파일 스토리 썸네일(표지) 생성(KNK-1047)의 AI측 오류 그룹용 태그. 인물 이미지와 같은
 # 통로를 쓰지만 실패 원인(세로 크기 거부 등)을 따로 보려고 태그를 나눈다. AI 서버 전용 태그.
 FEATURE_THUMBNAIL_IMAGE = "thumbnail_image_generation"
+FEATURE_STORY_MODERATION = "story_moderation"
 
 # AN-4-7 실패 코드.
 ERROR_PROVIDER_TIMEOUT = "provider_timeout"

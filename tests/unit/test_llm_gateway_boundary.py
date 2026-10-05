@@ -32,8 +32,9 @@ _LLM_PACKAGE = "src.services.llm"
 
 _SERVICES_PACKAGE = "src.services"
 _SERVICES_DIR = Path(src.services.__file__).parent
-# `src/services/`의 모듈 전부. 통로 자신(`llm/`)은 하위 디렉터리라 glob에 걸리지 않는다.
+# 기존 최상위 호출부와 검수 하위 모듈을 검사한다. 통로 내부(`llm/`)는 제외한다.
 _CALL_SITE_FILES = sorted(p for p in _SERVICES_DIR.glob("*.py") if p.name != "__init__.py")
+_CALL_SITE_FILES += sorted((_SERVICES_DIR / "moderation").rglob("*.py"))
 
 
 def _absolute_module(node: ast.ImportFrom, package: str) -> str | None:
@@ -98,7 +99,8 @@ def test_call_sites_use_only_the_gateway(module_file: Path) -> None:
 
     쓸 수 있는 것은 통로 자체(`src.services.llm`)와 공용 타입(`...llm.base`)뿐이다.
     """
-    offenders = _gateway_offenders(module_file, _SERVICES_PACKAGE)
+    package = ".".join((_SERVICES_PACKAGE, *module_file.parent.relative_to(_SERVICES_DIR).parts))
+    offenders = _gateway_offenders(module_file, package)
     assert not offenders, f"{module_file.name}이 통로를 우회한다: {offenders}"
 
 

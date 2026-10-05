@@ -33,6 +33,7 @@ def _char(name: str = "레이", **overrides) -> CharacterSetting:
         "tone": "직설적인 말투.",
         "motivation": "진실 규명.",
         "attitude_to_user": "신뢰하는 전우.",
+        "description": "원칙을 지키며 주인공과 함께 진실을 좇는 전우.",
         "age": "20대 후반",
         "body": "건장한",
         "face": "각진 턱선, 굳은 표정",

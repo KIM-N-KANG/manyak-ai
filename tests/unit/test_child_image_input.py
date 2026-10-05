@@ -32,7 +32,9 @@ def test_first_speaker_uses_basic_image_regardless_of_mapping_order(label: str) 
     assert result.parent_image == parent
     assert result.recent_turns == ()
     assert result.current_turn.user_message == "문을 연다."
-    assert "모카: 안녕." in result.current_turn.ai_response
+    assert result.current_turn.ai_response.startswith("*모카가 라떼를 부른다.*\n")
+    assert result.current_turn.ai_response.endswith("들어와.")
+    assert "모카: 안녕." not in result.current_turn.ai_response
 
 
 @pytest.mark.parametrize("first_label", ["행인:", "**행인:**", "**행인**:"])
@@ -197,3 +199,26 @@ def test_no_speaking_character_with_parent_skips_generation(images: list[Charact
     assert build_child_image_input(
         character_images=images, history=[], user_input="인사한다.", ai_output="라떼: 안녕.",
     ) is None
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+@pytest.mark.parametrize("suffix", ["", "*의자에 앉는다.*\n라떼: 다음 대사.", "이름 없는 이어진 대사"])
+def test_current_scene_stops_at_first_dialogue_line(line_ending: str, suffix: str) -> None:
+    prefix = f"*문을 연다.*{line_ending}라떼: 기다렸어? 미안해."
+    output = prefix + (line_ending + suffix if suffix else "")
+    result = build_child_image_input(
+        character_images=[_image("라떼")], history=[], user_input="인사한다.", ai_output=output,
+    )
+    assert result is not None
+    assert result.current_turn.ai_response == prefix
+
+
+def test_scene_boundary_uses_selected_parent_after_ineligible_alias() -> None:
+    output = "한결: 먼저 온 사람.\n*문이 열린다.*\n**라떼:** 안녕. 잘 지냈어?\n모카: 다음 대사."
+    result = build_child_image_input(
+        character_images=[_image("지한결"), _image("김한결"), _image("라떼"), _image("모카")],
+        history=[], user_input="인사한다.", ai_output=output,
+    )
+    assert result is not None
+    assert result.parent_image.name == "라떼"
+    assert result.current_turn.ai_response == "한결: 먼저 온 사람.\n*문이 열린다.*\n라떼: 안녕. 잘 지냈어?"

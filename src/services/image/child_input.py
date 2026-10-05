@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from src.schemas.chat_turn import CharacterImageMapping, ChatHistoryItem
 from src.services.chat_image_markers import strip_character_image_syntax
-from src.services.chat_llm import find_first_parent_image
+from src.services.chat_llm import select_first_parent_scene
 
 
 @dataclass(frozen=True)
@@ -33,12 +33,14 @@ def build_child_image_input(
     """부모 이미지가 있는 인물 중 첫 화자를 선택한다. history는 이번 턴을 제외한 요청 이력이다.
 
     재생성도 백엔드가 이전 답변을 뺀 history와 같은 user_input을 보내므로 동일하게 조립한다.
+    현재 AI 응답은 대상 인물의 첫 대사 줄 끝까지만 이미지 입력에 넣는다.
     짝 없는 ASSISTANT(오프닝 포함)·USER는 턴으로 세지 않는다. 요청 원본은 수정하지 않는다.
     """
     clean_output = strip_character_image_syntax(ai_output)
-    parent = find_first_parent_image(clean_output, character_images)
-    if parent is None:
+    selected = select_first_parent_scene(clean_output, character_images)
+    if selected is None:
         return None
+    parent, scene = selected
 
     recent_turns: list[ChildImageTurn] = []
     for index in range(len(history) - 2, -1, -1):
@@ -56,5 +58,5 @@ def build_child_image_input(
     return ChildImageInput(
         parent_image=parent,
         recent_turns=tuple(reversed(recent_turns)),
-        current_turn=ChildImageTurn(user_message=user_input, ai_response=clean_output),
+        current_turn=ChildImageTurn(user_message=user_input, ai_response=scene),
     )

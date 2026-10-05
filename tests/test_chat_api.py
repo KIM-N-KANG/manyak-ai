@@ -4,7 +4,6 @@ import json
 from email.parser import BytesParser
 from email.policy import default
 from types import SimpleNamespace
-from xml.etree.ElementTree import fromstring
 
 import httpx
 from openai import AsyncOpenAI
@@ -1013,7 +1012,7 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
     monkeypatch.setattr(settings, "image_parent_allowed_hosts", ["cdn.manyak.app"])
     parent = b"\x89PNG\r\n\x1a\nparent"
     child_base64 = base64.b64encode(b"RIFF\x00\x00\x00\x00WEBPchild").decode()
-    downloads, edits = [], []
+    downloads, edits, validated_outcomes = [], [], []
 
     def download(request):
         downloads.append(request)
@@ -1032,13 +1031,24 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
         }
         assert fields["model"] == b"gpt-image-2.5-flare"
         assert fields["image"] == parent
-        dialogue = fromstring(fields["prompt"].decode()).find("dialogue_input")
-        assert dialogue.findtext("target_character") == "레이"
-        turns = dialogue.findall("recent_turns/turn")
-        assert [t.findtext("user_message") for t in turns] == ["최근1", "최근2"]
-        assert [t.findtext("ai_response") for t in turns] == ["레이: 답1", "레이: 답2"]
-        assert dialogue.findtext("current_turn/user_message") == "용건이 뭐요?"
-        assert dialogue.findtext("current_turn/ai_response") == body
+        prompt = fields["prompt"].decode()
+        expected_dialogue = (
+            "## dialogue_input\n\ntarget_character:\n> 레이\n\n"
+            "### recent_turns\n\n"
+            "#### turn (relative_to_current: -2)\n\n"
+            "user_message:\n> 최근1\n\nai_response:\n> 레이: 답1\n\n"
+            "#### turn (relative_to_current: -1)\n\n"
+            "user_message:\n> 최근2\n\nai_response:\n> 레이: 답2\n\n"
+            "### current_turn\n\n"
+            "user_message:\n> 용건이 뭐요?\n\n"
+            "ai_response:\n> *문이 열린다.*\n> 행인: 누구세요?\n> 레이: 들어와."
+        )
+        assert expected_dialogue in prompt
+        assert "레이: 앉아." not in prompt
+        assert "제외할 과거" not in prompt
+        assert "https://cdn.manyak.app/old.webp" not in prompt
+        # 콜백의 단언 실패도 서비스가 부모 대체로 처리하므로, 바깥에서 도달 횟수를 확인한다.
+        validated_outcomes.append(outcome)
         if outcome == "timeout":
             raise httpx.ReadTimeout("test timeout", request=request)
         if outcome == "rate_limited":
@@ -1084,6 +1094,7 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
             completed = _data_of(response.text, "completed")
             assert completed["characterImages"] == [{k: v for k, v in image.items() if k != "generatedImage"}]
             assert completed["aiOutput"].count(f"[[{expected_url}]]") == 1
+            assert completed["aiOutput"].endswith("레이: 앉아.")
             assert "generatedImage" not in json.dumps(completed)
             assert child_base64 not in response.text
             assert "event: error" not in response.text
@@ -1092,4 +1103,5 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
         assert json.dumps(payload, ensure_ascii=False) == original
         assert len(downloads) == 2
         assert len(edits) == (0 if outcome == "download_failed" else 2)  # SDK 자동 재시도 없음
+        assert validated_outcomes == ([] if outcome == "download_failed" else [outcome, outcome])
         assert len(streams) == 2 and all(stream.closed for stream in streams)

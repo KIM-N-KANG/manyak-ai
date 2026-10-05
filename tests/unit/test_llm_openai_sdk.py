@@ -71,6 +71,21 @@ _STRICT = ResolvedModel(
 
 
 # ── 목 SDK ───────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_common_adapter_does_not_measure_request_size(monkeypatch, streaming) -> None:
+    def unexpected_encoder(*args, **kwargs):
+        pytest.fail("공통 어댑터가 용량 검사를 위해 JSON을 만들면 안 된다")
+
+    monkeypatch.setattr(openai_sdk.json, "JSONEncoder", unexpected_encoder)
+    completions = _FakeCompletions(result=_agen([]) if streaming else _response())
+    _install(monkeypatch, completions)
+    if streaming:
+        [event async for event in openai_sdk.stream(_req(), _FLASH)]
+    else:
+        await openai_sdk.complete(_req(), _FLASH)
+    assert completions.captured is not None
+
+
 class _FakeCompletions:
     def __init__(self, result: object = None, error: BaseException | None = None) -> None:
         self.captured: dict | None = None

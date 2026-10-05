@@ -1,6 +1,6 @@
 ---
-version: 11
-updated: 2026-09-18
+version: 13
+updated: 2026-09-29
 ---
 
 # 스토리 컴파일 프롬프트 (희소 입력 → 스토리 명세 JSON)
@@ -61,7 +61,8 @@ updated: 2026-09-18
   - (밋밋) 멸문당한 세가의 후예가 회귀했다  →  (자극) 날 버린 세가, 회귀한 내가 짓밟는다
   - (밋밋) 정략혼 상대가 내 약점을 쥐었다  →  (자극) 계약 결혼 첫날, 남편이 내 비밀을 알아버렸다
   점검: 밋밋한 설명조면 가장 센 한 방을 앞세워 다시 짓는다. 목록 UI에서 잘리지 않게 한 문장·공백 포함 25자 이내 권장.
-- `meta.one_line_intro` / `meta.description`: 상세 화면에 노출될 한 줄 소개와 소개문. `description`은 세계관 자체 서술이 아니라 독자를 끌어들이는 소개여야 한다(세계관 본문은 `world_setting`이 담당).
+- `meta.one_line_intro`: 상세 화면에 노출될 짧은 한 줄 소개.
+- `meta.description`: 상세 화면의 "주요 내용"에 노출될 소개문을 **6~8문장**으로 쓴다. 주인공이 처한 상황, 핵심 갈등, 선택에 따른 위험이나 기대를 구체적으로 보여주어 독자가 이야기에 들어가고 싶게 만든다. 한 줄 소개를 반복하거나 세계관 설정만 나열하지 않고, 결말은 밝히지 않는다(세계관 본문은 `world_setting`이 담당).
 - `meta.genre`: 비워 두거나 입력 장르를 그대로 적는다(최종 값은 시스템이 입력 태그로 덮어쓴다).
 - `world_setting`: 거시 세계관·설정. 주변 인물 구성 규칙을 지킨다.
 - `plot_setting.premise`: 플레이가 시작되는 도입 상황(주인공이 처한 처지).
@@ -70,6 +71,7 @@ updated: 2026-09-18
 - `tone_setting`: 장면 전체의 서술 톤·분위기(개별 인물 말투 아님).
 - `length_ratio`: 묘사와 대사의 비중을 "묘사 N : 대사 M" 형식으로 적는다.
 - `character_setting`: 위 주변 인물 구성 규칙에 맞춰 카드를 만든다. 이름이 있으면 `name`에 그 이름을 바꾸지 말고 그대로 쓰고, 성별·특징이 정해져 있으면 카드에 그대로 반영한다. 각 인물은 `name`(이름·호칭), `gender`(성별 — **"남성" 또는 "여성"으로만** 쓴다. 입력에 성별이 있으면 그대로, (미정)이면 이야기에 어울리게 정한다), `personality`(성격), `tone`(말투), `motivation`(원하는 것), `attitude_to_user`(주인공을 대하는 **초기** 태도)를 채운다. 모든 카드의 `name`은 비어 있지 않고 서로 달라야 한다. 인물마다 말투·성격이 서로 구분되게 한다.
+  - `description`: 작품 페이지에 공개할 짧은 인물 소개. 역할·눈에 띄는 성격·주인공과의 초기 관계를 공백 포함 80자 이내, 1~2개의 짧은 문장으로 쓴다. 마크다운·줄바꿈·탭 없이 일반 문자열로 쓰며, 아직 공개되지 않은 정체·숨겨진 동기·반전·결말은 밝히지 않는다. 예: "무뚝뚝한 말투 뒤에 배려를 숨긴 사서. 주인공의 조사를 조용히 돕는다." 채팅용 상세 설정과 구분되는 공개 소개다.
   - 입력 주변 인물 앞의 `[input_character_id: input-N]`은 그 인물을 식별하는 내부 표시다. 해당 인물 카드의 `input_character_id`에 같은 값을 그대로 넣는다. 입력이 0명일 때 자유롭게 구성한 인물은 `input_character_id`를 `null`로 둔다. 이 값은 이름이 바뀌어도 입력 인물을 찾는 기준이므로 다른 카드로 옮기거나 바꾸지 않는다.
   - **외형 필드 6개**도 함께 채운다. 이 필드는 인물 이미지를 그리는 데 쓰인다. 이미지 모델이 그대로 그릴 수 있는 **시각 묘사로만** 쓴다. 감정·성격·관계·서사 같은 추상적 표현을 쓰지 않는다.
     - (X) "냉혹한 눈빛", "배신의 흔적", "슬픈 분위기"
@@ -142,11 +144,11 @@ updated: 2026-09-18
 
 일반 호출과 부분 재호출 모두 설명, 머리말, 코드 펜스를 절대 포함하지 않는다.
 - 모든 값은 한국어로 쓴다. 중국어·일본어를 비롯한 외국어는 단 한 글자도 섞지 않는다. 단 입력 인물 이름은 예외다 — 외국어 이름이어도 번역·음차하지 말고 입력 그대로 쓴다.
-- 여러 문장으로 이루어진 서술형 값(`world_setting`, `plot_setting`의 `premise`·`conflict`, `rule_setting`, `tone_setting`, `character_setting` 각 항목의 `personality`·`motivation`·`attitude_to_user`, `user_role_setting`의 `background`·`personality`, `start.prologue`·`start_situation` 등)은 **각 문장이 끝날 때마다 이중 개행(`\n\n`)하여 한 문장씩 출력하고, 문장 사이에 빈 줄을 하나 둔다.** 즉 `문장1.\n\n문장2.\n\n문장3.` 형태로 쓴다. 한 문장짜리 짧은 값(`name`, `length_ratio` 등)은 그대로 둔다.
+- `character_setting[].description`을 제외한 여러 문장으로 이루어진 서술형 값(`world_setting`, `plot_setting`의 `premise`·`conflict`, `rule_setting`, `tone_setting`, `character_setting` 각 항목의 `personality`·`motivation`·`attitude_to_user`, `user_role_setting`의 `background`·`personality`, `start.prologue`·`start_situation` 등)은 **각 문장이 끝날 때마다 이중 개행(`\n\n`)하여 한 문장씩 출력하고, 문장 사이에 빈 줄을 하나 둔다.** 즉 `문장1.\n\n문장2.\n\n문장3.` 형태로 쓴다. 한 문장짜리 짧은 값(`name`, `length_ratio` 등)은 그대로 둔다.
 
 ### 출력 직전 자기 점검 (점검만 하고, JSON 외에는 출력하지 않는다)
 
-- 서술형 값이 한 문장마다 이중 개행(`\n\n`)으로 구분되어, 문장 사이에 빈 줄이 하나씩 있는가?
+- `character_setting[].description`을 제외한 서술형 값이 한 문장마다 이중 개행(`\n\n`)으로 구분되어, 문장 사이에 빈 줄이 하나씩 있는가?
 - 일상에서 안 쓰는 어려운 한자어·영어 직역투(번역체)나, 관형어를 3개 이상 쌓은 명사 더미로 읽기 힘든 곳은 없는가? 웹소설 독자가 바로 읽을 쉬운 말·자연스러운 어순인가?
 - 입력의 주변 인물이 빠짐없이 `character_setting` 카드에 있고, 각 카드의 `input_character_id`가 입력 표시와 정확히 같으며, 이름 있는 인물은 그 이름 그대로인가?
 - 모든 인물 카드와 주인공의 `gender`가 "남성" 또는 "여성"으로 채워져 있고, 입력에 성별이 있는 인물은 그 값 그대로인가?
@@ -168,7 +170,7 @@ updated: 2026-09-18
     "tone_setting": "...",
     "length_ratio": "...",
     "character_setting": [
-      { "input_character_id": "input-1", "name": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
+      { "input_character_id": "input-1", "name": "...", "description": "무뚝뚝하지만 주인공의 조사를 돕는 사서.", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
     ],
     "user_role_setting": { "name": "...", "gender": "...", "role": "...", "background": "...", "personality": "...", "preference": "" }
   },

@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import CharacterInput, SupportingCharacters, _check_duplicate_names
@@ -53,6 +53,12 @@ class PlotSetting(BaseModel):
     conflict: str
 
 
+CharacterDescription = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=80, pattern=r"^[^\r\n\t]*$"),
+]
+
+
 class CharacterSetting(BaseModel):
     """CHARACTER — 주변 인물 카드. 주인공은 포함하지 않는다(USER 소유).
 
@@ -61,6 +67,7 @@ class CharacterSetting(BaseModel):
     """
 
     name: str
+    description: CharacterDescription  # 작품 페이지 소개. 채팅용 통글에는 포함하지 않는다.
     gender: str
     personality: str
     tone: str
@@ -199,6 +206,13 @@ class StoryEndingOut(BaseModel):
     epilogue: str
 
 
+class CharacterIntroductionOut(BaseModel):
+    """작품 페이지용 주변 인물 소개. name으로 외형·이미지와 연결한다."""
+
+    name: str
+    description: CharacterDescription
+
+
 class CharacterAppearanceOut(BaseModel):
     """인물별 외형 정보 — 컴파일 LLM이 생성한 시각 묘사를 백엔드에 전달한다.
 
@@ -274,6 +288,7 @@ class StoryCompileResponse(BaseModel):
     story_suggested_inputs: list[str] = Field(min_length=3, max_length=3)
     story_main_events: list[StoryMainEventOut] = Field(min_length=3, max_length=5)  # 주요 사건 3~5개(KNK-417)
     story_endings: list[StoryEndingOut] = Field(default_factory=list)  # 0개(폴백) 또는 3개(KNK-465)
+    character_introductions: list[CharacterIntroductionOut] = Field(min_length=1, max_length=5)
     # 인물별 외형 정보. 컴파일 LLM이 생성한 시각 묘사를 백엔드가 DB에 저장한다.
     # 썸네일 생성·인물 이미지 재생성 등에 활용한다. 통글(character_setting)과 별도다.
     # 주의: 인물 전원이 포함되며, 외형 필드가 비어있어도(LLM이 못 채운 경우) 항목은 존재한다.
