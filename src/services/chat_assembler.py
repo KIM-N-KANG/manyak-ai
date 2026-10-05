@@ -72,7 +72,9 @@ def _start_setting_blob(start: ChatStartSettings) -> str:
     같은 세계관이어도 시작 설정이 다르면 전개가 갈리므로, 이 플레이의 출발점을 매 턴
     STORY 슬롯에 고정 삽입한다(명세 3.3). 첫 턴 History 시드(백엔드 담당)와 병행한다.
     """
-    return f"# 시작 설정: {start.name}\n\n{start.prologue}\n\n{start.start_situation}"
+    prologue = strip_character_image_syntax(start.prologue)
+    start_situation = strip_character_image_syntax(start.start_situation)
+    return f"# 시작 설정: {start.name}\n\n{prologue}\n\n{start_situation}"
 
 
 def format_main_events(events: list[MainEvent]) -> str:
