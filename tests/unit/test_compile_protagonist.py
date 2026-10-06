@@ -199,3 +199,70 @@ def test_missing_gender_detected_as_refill_target() -> None:
     missing = story_llm._find_missing_keys(data)
     assert "prompt_settings.character_setting[0].gender" in missing
     assert "prompt_settings.user_role_setting.gender" in missing
+
+
+@pytest.mark.parametrize(('original', 'expected'), [
+    ('도준은 왔다.', '{username}은(는) 왔다.'),
+    ('도준는 왔다.', '{username}은(는) 왔다.'),
+    ('도준이, 도준가', '{username}이(가), {username}이(가)'),
+    ('도준을/도준를', '{username}을(를)/{username}을(를)'),
+    ('도준과 도준와', '{username}과(와) {username}과(와)'),
+    ('도준으로 도준로', '{username}으로(로) {username}으로(로)'),
+    ('도준아! 도준야!', '{username}아(야)! {username}아(야)!'),
+    ('도준이랑 도준랑', '{username}이랑(랑) {username}이랑(랑)'),
+    ('도준의 도준에게는 도준이라는', '{username}의 {username}에게는 {username}이라는'),
+    ('도준은(는) 왔다.', '{username}은(는) 왔다.'),
+    ('{username}은(는) 왔다.', '{username}은(는) 왔다.'),
+])
+def test_protagonist_name_and_common_particles(original: str, expected: str) -> None:
+    from src.services.story_compile_render import _tokenize_name
+
+    assert _tokenize_name(original, '도준') == expected
+
+
+def test_compile_replaces_literal_name_in_all_prose() -> None:
+    data = _spec()
+    original = '도준은 사건을 조사한다.'
+    expected = '{username}은(는) 사건을 조사한다.'
+    ps = data['prompt_settings']
+    ps['user_role_setting']['name'] = '도준'
+    ps['user_role_setting']['background'] = original
+    for key in ('world_setting', 'rule_setting', 'tone_setting'):
+        ps[key] = original
+    ps['plot_setting']['premise'] = original
+    ps['character_setting'][0]['attitude_to_user'] = original
+    ps['character_setting'][0]['description'] = original
+    for key in ('title', 'one_line_intro', 'description'):
+        data['meta'][key] = original
+    for key in ('name', 'prologue', 'start_situation'):
+        data['start'][key] = original
+    data['suggested_inputs'] = [original] * 3
+    for event in data['main_events']:
+        for key in ('name', 'description', 'key_sentence'):
+            event[key] = original
+    for ending in data['endings']:
+        for key in ('name', 'achievement_condition', 'epilogue'):
+            ending[key] = original
+    spec = StorySpec(**data)
+    before = spec.model_dump()
+    result = spec_to_response(spec, thumbnail_image=ThumbnailImageOut(error='generation_failed'))
+    assert result.story_settings.protagonist_name == '도준'
+    assert result.stories.one_line_intro == expected
+    assert spec.model_dump() == before  # 이미지 생성에도 쓰는 원본을 건드리지 않는다.
+    prose = result.model_dump(include={
+        'stories', 'story_settings', 'story_start_settings', 'story_suggested_inputs',
+        'story_main_events', 'story_endings', 'character_introductions',
+    })
+    del prose['story_settings']['protagonist_name']
+    assert '도준' not in json.dumps(prose, ensure_ascii=False)
+    assert result.story_settings.world_setting.count(expected) == 2
+    assert result.character_introductions[0].description == expected
+    assert result.character_appearances[0].name == ps['character_setting'][0]['name']
+    assert result.story_endings[0].min_turns == data['endings'][0]['min_turns']
+
+
+def test_name_is_literal_not_regex_and_empty_name_is_safe() -> None:
+    from src.services.story_compile_render import _tokenize_name
+
+    assert _tokenize_name('A.B는 A+B와 왔다.', 'A.B') == '{username}은(는) A+B와 왔다.'
+    assert _tokenize_name('이름 없음', '') == '이름 없음'
