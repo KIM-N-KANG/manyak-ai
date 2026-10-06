@@ -1,6 +1,6 @@
 ---
-version: 20
-updated: 2026-09-29
+version: 21
+updated: 2026-10-06
 ---
 
 # 스토리 컴파일 시스템 명세
@@ -130,7 +130,7 @@ LLM이 답하는 JSON은 최종 출력 형태가 아니라, 검증·재호출에
 
 ### 4-5. 세분 → 통글 변환
 
-검증을 통과한 세분 명세를 ERD 4테이블에 1:1로 대응하는 nested 형태로 재구성합니다. `story_settings`의 4개 필드는 사람이 읽기 좋은 통글 마크다운으로 조립합니다(→ 5-3). 별도 템플릿 파일 없이 서버 코드가 조립합니다.
+검증을 통과한 세분 명세를 ERD 4테이블에 1:1로 대응하는 nested 형태로 재구성합니다. `story_settings`에는 기본 주인공 이름 `protagonist_name`과 통글 마크다운 4개 필드를 반환합니다(→ 5-3). 내부 `user_role_setting.name`은 `protagonist_name`으로 분리하고, 주인공 통글에는 이름 항목을 넣지 않습니다. 별도 템플릿 파일 없이 서버 코드가 조립합니다.
 
 ### 4-6. 에러 처리
 
@@ -274,7 +274,8 @@ ERD 4테이블에 1:1 대응하는 nested 구조에 인물 외형·인물 이미
 |---|---|---|
 | stories | object | 노출 메타(`stories` 테이블). genre는 백엔드가 입력 태그로 채우므로 제외 |
 | stories.title / one_line_intro / description | string | 제목·한 줄 소개·소개문 |
-| story_settings | object | 채팅 AI 프롬프트 재료(`story_settings` 테이블). 4필드 모두 통글 마크다운 |
+| story_settings | object | 채팅 AI 프롬프트 재료. 기본 주인공 이름과 통글 마크다운 4필드 |
+| story_settings.protagonist_name | string | 기본 주인공 이름. 입력 이름이 있으면 그대로, 없으면 AI가 정한 이름 |
 | story_start_settings | object | 시작 설정(`story_start_settings` 테이블). name·start_situation·prologue |
 | story_suggested_inputs | string[] | 첫 입력 추천 문구. 정확히 3개 |
 | story_main_events | object[] | 주요 사건 3~5개(`story_main_events` 테이블). 각 항목 name·description·key_sentence. 배열 순서=명목 순서(비강제) |
@@ -343,7 +344,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | ERD 테이블 | 출력 필드 | 세분 명세 출처 |
 |---|---|---|
 | stories | stories | meta(genre 제외) |
-| story_settings | story_settings(통글 4필드) | prompt_settings 7필드를 4통글로 재구성 |
+| story_settings | story_settings(이름 + 통글 4필드) | prompt_settings를 4통글로 재구성하고 user_role_setting.name을 protagonist_name으로 분리 |
 | story_start_settings | story_start_settings | start |
 | story_suggested_inputs | story_suggested_inputs | suggested_inputs |
 | 인물 소개(별도 저장 연동 필요) | character_introductions | character_setting[]의 name·description. 마크다운에 포함하지 않음 |
@@ -356,7 +357,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 |---|---|---|
 | world_setting | world_setting + plot_setting | `# 세계관` / `# 전제` / `# 갈등` |
 | character_setting | character_setting[] | `# 등장인물` + 인물마다 `## 이름` / `### 성별`·`### 성격`·`### 말투`·`### 동기`·`### 주인공을 대하는 태도` |
-| user_role_setting | user_role_setting | `# 주인공` / `## 호칭`·`## 성별`·`## 역할`·`## 배경`·`## 성격`·`## 입력 선호` |
+| user_role_setting | user_role_setting | `# 주인공` / `## 성별`·`## 역할`·`## 배경`·`## 성격`·`## 입력 선호` |
 | rule_setting | rule_setting + tone_setting + length_ratio | `# 전개 규칙` / `# 문체 톤` / `# 분량 배분` |
 
 ---
@@ -372,6 +373,8 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | 주인공(사용자가 1인칭으로 연기) | `user_role_setting` (절대 `character_setting`에 넣지 않음) |
 | 주변 인물(주인공이 아닌 등장인물) | `character_setting` (AI가 연기할 NPC) |
 | 세계관·전개·분위기 | `world_setting` / `plot_setting` / `rule_setting` / `tone_setting` / `length_ratio` |
+
+**주인공 이름 표기**: 실제 이름은 내부 `prompt_settings.user_role_setting.name`에만 생성하고, 응답의 `story_settings.protagonist_name`으로 분리합니다. 입력 이름이 있으면 코드가 보존하고, 없으면 AI가 정합니다. 나머지 생성하는 글(제목·소개, 세계관·전제·갈등, 인물·규칙 설정, 주인공 설명, 시작 설정, 추천 입력, 주요 사건, 엔딩 조건·에필로그 안내, 인물 소개)에서 주인공 이름을 적을 자리에는 `{username}`을 쓰도록 지시합니다. 이름에 따라 달라지는 조사는 `{username}은(는)`처럼 표현합니다. 주변 인물 이름은 유지합니다. 토큰을 실제 이름으로 치환하는 것은 백엔드 책임이며, 본문 전체의 토큰 사용 여부는 라이브 실측으로 확인합니다.
 
 **필드별 작성 규칙**(요지):
 
@@ -391,7 +394,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 
 **특징 반영**: 인물의 특징은 형용사를 그대로 옮기지 말고, 그 특징이 드러나는 구체적 행동·습관·선택·말버릇으로 풀어 쓴다. 입력에 없는 특징을 임의로 지어내지 않는다.
 
-**출력 형식**: 코드 펜스·머리말 없이 JSON만 반환한다. 모든 값은 한국어로 쓰고 외국어를 섞지 않되, 입력 인물 이름은 예외로 외국어여도 그대로 쓴다.
+**출력 형식**: 코드 펜스·머리말 없이 JSON만 반환한다. 모든 값은 한국어로 쓰고 외국어를 섞지 않되, `{username}` 토큰과 입력 인물 이름은 예외이며, 입력 이름은 외국어여도 그대로 쓴다.
 
 ---
 
@@ -407,7 +410,7 @@ LLM이 답하고 서버가 검증·재호출에 쓰는 중간 JSON입니다. 백
 | 자유 생성 | 입력이 0명이면 생성 카드 1~5명이 추가 보완 없이 통과하고 기존 필수 필드 검증은 유지되는지 확인 |
 | 추천 입력 | story_suggested_inputs가 정확히 3개인지 확인 |
 | genre 주입 | 노출 genre가 LLM 출력이 아니라 입력 태그로 채워졌는지 확인 |
-| 주인공 주입 | 입력한 주인공 이름·성별이 통글의 최종 값인지, 비운 항목은 LLM 값이 남는지, 재호출 뒤에도 유지되는지 확인 |
+| 주인공 주입 | 입력한 주인공 이름이 protagonist_name에, 성별이 통글에 반영되는지, 비운 항목은 LLM 값이 남는지, 재호출 뒤에도 유지되는지 확인 |
 | 인물 소개 | 모든 주변 인물의 최종 name·description이 별도 배열에 포함되고, 채팅 통글은 유지되며 소개가 유입되지 않는지 확인 |
 | 소개 보완 | 누락·빈값·비문자열·80자 초과·줄바꿈/탭을 해당 필드만 최대 2회 보완하고, 미해결 시 이미지 생성 전에 502인지 확인 |
 | 통글 변환 | story_settings 4필드가 약속된 마크다운 헤더 구조로 조립됐는지 확인 |

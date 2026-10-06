@@ -48,10 +48,9 @@ def _render_character_setting(characters: list[CharacterSetting]) -> str:
 
 
 def _render_user_role_setting(ur: UserRoleSetting) -> str:
-    """USER 통글 — 주인공 프로필. preference는 비어 있을 수 있다."""
+    """USER 통글 — 이름을 제외한 주인공 프로필. preference는 비어 있을 수 있다."""
     return (
         f"# 주인공\n"
-        f"## 호칭\n{ur.name}\n"
         f"## 성별\n{ur.gender}\n"
         f"## 역할\n{ur.role}\n"
         f"## 배경\n{ur.background}\n"
@@ -106,6 +105,7 @@ def spec_to_response(spec: StorySpec, *, thumbnail_image: ThumbnailImageOut) -> 
             description=spec.meta.description,
         ),
         story_settings=StorySettingsOut(
+            protagonist_name=ps.user_role_setting.name,
             world_setting=_render_world_setting(ps),
             character_setting=_render_character_setting(ps.character_setting),
             user_role_setting=_render_user_role_setting(ps.user_role_setting),

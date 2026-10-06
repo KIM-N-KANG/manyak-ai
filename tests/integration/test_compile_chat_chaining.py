@@ -76,7 +76,7 @@ def test_compiled_settings_flow_into_chat_slots() -> None:
     # 통글 헤더가 올바른 슬롯에 렌더됐는지(렌더러 f-string 산출물).
     assert "# 세계관" in system_front and "# 전제" in system_front and "# 갈등" in system_front
     assert "## 레이" in system_front  # 인물 카드 헤더
-    assert "## 호칭" in system_front  # 주인공 프로필 헤더
+    assert "# 주인공\n## 성별" in system_front  # 이름을 분리한 주인공 프로필 헤더
     # 시작 설정은 name+prologue+start_situation 통글로 STORY {{start_setting}}에.
     assert "# 시작 설정: 선왕의 장례식 날" in system_front
     assert res.story_start_settings.prologue in system_front
