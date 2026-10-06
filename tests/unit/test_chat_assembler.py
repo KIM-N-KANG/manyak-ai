@@ -121,6 +121,22 @@ def test_system_front_contains_all_slot_materials() -> None:
     assert "카이" in front  # user_role_setting
 
 
+def test_protagonist_name_and_description_fill_user_layer() -> None:
+    payload = _request().model_dump()
+    payload["story_settings"]["protagonist_name"] = "민우"
+    payload["story_settings"]["user_role_setting"] = "신중한 성격의 사립 탐정."
+    req = ChatTurnRequest.model_validate(payload)
+
+    messages = assemble(req)
+    user_layer = messages[0]["content"].split("# USER-PROMPT", 1)[1]
+
+    assert "주인공 이름: 민우" in user_layer
+    assert "신중한 성격의 사립 탐정." in user_layer
+    assert "카이" not in user_layer
+    assert "민우" not in messages[-1]["content"]  # USER는 PHI에 재주입하지 않는다.
+    assert req.model_dump() == payload
+
+
 def test_character_images_are_not_sent_to_the_llm() -> None:
     # 이미지 매핑은 AI 서버가 출력의 `인물명:` 줄에 붙일 때만 쓴다(KNK-1006). 이름 목록도
     # URL도 프롬프트에 들어가지 않고, 옛 태그 문법도 어디에도 남지 않는다.
