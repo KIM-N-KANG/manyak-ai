@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from src.core.tracing import start_span
 from src.core.config import settings
 from src.services.llm.base import ContentPart, image_part
 from src.services.moderation.limits import MAX_REQUEST_BYTES
@@ -132,37 +133,40 @@ class _ImageBudget:
 
 async def _download_one(client: httpx.AsyncClient, source: ImageSource, budget: _ImageBudget) -> ModerationImage:
     """한 장을 내려받아 형식·크기를 확인한다. URL·본문은 로그에 남기지 않는다."""
-    url = _validate_url(source)
-    max_bytes = settings.moderation_image_max_bytes
-    data = bytearray()
-    retained = False
-    try:
-        async with client.stream("GET", url) as response:
-            if not 200 <= response.status_code < 300:
-                raise ImageDownloadFailed(source.path, f"HTTP {response.status_code}")
-            declared = response.headers.get("content-length")
-            if declared is not None and declared.isdigit() and int(declared) > max_bytes:
-                # 본문을 받기 전에 끊는다 — 32MiB 넘는 파일을 다 받고 버리지 않는다.
-                raise ImageInvalid(source.path, "이미지 크기 제한 초과")
-            async for chunk in response.aiter_bytes(chunk_size=_CHUNK_SIZE):
-                new_size = len(data) + len(chunk)
-                if new_size > max_bytes:
+    with start_span(
+        "image.download", {"operation": "download"},
+    ):
+        url = _validate_url(source)
+        max_bytes = settings.moderation_image_max_bytes
+        data = bytearray()
+        retained = False
+        try:
+            async with client.stream("GET", url) as response:
+                if not 200 <= response.status_code < 300:
+                    raise ImageDownloadFailed(source.path, f"HTTP {response.status_code}")
+                declared = response.headers.get("content-length")
+                if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+                    # 본문을 받기 전에 끊는다 — 32MiB 넘는 파일을 다 받고 버리지 않는다.
                     raise ImageInvalid(source.path, "이미지 크기 제한 초과")
-                budget.reserve(source.path, len(data), new_size)
-                data.extend(chunk)
-        content_type = detect_content_type(data)
-        if content_type is None:
-            raise ImageInvalid(source.path, "이미지가 아니거나 지원하지 않는 형식")
-        image = ModerationImage(path=source.path, content_type=content_type, data=bytes(data))
-        retained = True
-        return image
-    except httpx.TimeoutException as exc:
-        raise ImageDownloadFailed(source.path, "이미지 다운로드 시간 초과") from exc
-    except httpx.HTTPError as exc:
-        raise ImageDownloadFailed(source.path, "이미지 다운로드 실패") from exc
-    finally:
-        if not retained:
-            budget.release(len(data))
+                async for chunk in response.aiter_bytes(chunk_size=_CHUNK_SIZE):
+                    new_size = len(data) + len(chunk)
+                    if new_size > max_bytes:
+                        raise ImageInvalid(source.path, "이미지 크기 제한 초과")
+                    budget.reserve(source.path, len(data), new_size)
+                    data.extend(chunk)
+            content_type = detect_content_type(data)
+            if content_type is None:
+                raise ImageInvalid(source.path, "이미지가 아니거나 지원하지 않는 형식")
+            image = ModerationImage(path=source.path, content_type=content_type, data=bytes(data))
+            retained = True
+            return image
+        except httpx.TimeoutException as exc:
+            raise ImageDownloadFailed(source.path, "이미지 다운로드 시간 초과") from exc
+        except httpx.HTTPError as exc:
+            raise ImageDownloadFailed(source.path, "이미지 다운로드 실패") from exc
+        finally:
+            if not retained:
+                budget.release(len(data))
 
 
 @dataclass(frozen=True)

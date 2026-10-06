@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     app_version: str = "0.4.2"
     debug: bool = False
 
+    # KNK-1554: Langfuse와 분리된 인프라 추적. endpoint는 /v1/traces까지 포함합니다.
+    manyak_tracing_enabled: bool = False
+    manyak_otlp_traces_endpoint: str = ""
+
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
     # 대체 공급자 접속 정보(KNK-703). 기동 검사는 *선택된* 모델의 공급자 키만 본다.
@@ -75,6 +79,8 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
+    # SDK 환경 변수 정책 유지. 변환 오류도 init_langfuse의 관측 실패 격리 안에서 처리합니다.
+    langfuse_sample_rate: str = "1.0"
 
 
 settings = Settings()

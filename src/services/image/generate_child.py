@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import httpx
 
+from src.core.tracing import start_span
 from src.core.config import settings
 from src.services.image import generate_image
 from src.services.image.base import (
@@ -49,32 +50,35 @@ def _reference(data: bytes) -> ImageReference:
 
 
 async def _download_parent(url: str) -> ImageReference:
-    try:
-        parsed = httpx.URL(url)
-    except httpx.InvalidURL as exc:
-        raise ImageGenerationError("부모 이미지 URL이 잘못됐습니다.") from exc
-    if (
-        parsed.scheme != "https"
-        or parsed.host not in settings.image_parent_allowed_hosts
-        or parsed.port not in (None, 443)
-        or parsed.userinfo
+    with start_span(
+        "image.download", {"operation": "download"},
     ):
-        raise ImageGenerationError("허용되지 않은 부모 이미지 주소입니다.")
-    try:
-        # 리다이렉트로 내부 주소에 접근하지 못하게 한다. URL·본문은 로그에 남기지 않는다.
-        async with httpx.AsyncClient(timeout=settings.image_timeout, follow_redirects=False) as client:
-            async with client.stream("GET", parsed) as response:
-                response.raise_for_status()
-                data = bytearray()
-                async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
-                    data.extend(chunk)
-                    if len(data) >= _MAX_PARENT_BYTES:
-                        raise ImageGenerationError("부모 이미지 크기 제한을 초과했습니다.")
-        return _reference(bytes(data))
-    except httpx.TimeoutException as exc:
-        raise ImageTimeout("부모 이미지 다운로드 시간 초과") from exc
-    except httpx.HTTPError as exc:
-        raise ImageGenerationError("부모 이미지 다운로드 실패") from exc
+        try:
+            parsed = httpx.URL(url)
+        except httpx.InvalidURL as exc:
+            raise ImageGenerationError("부모 이미지 URL이 잘못됐습니다.") from exc
+        if (
+            parsed.scheme != "https"
+            or parsed.host not in settings.image_parent_allowed_hosts
+            or parsed.port not in (None, 443)
+            or parsed.userinfo
+        ):
+            raise ImageGenerationError("허용되지 않은 부모 이미지 주소입니다.")
+        try:
+            # 리다이렉트로 내부 주소에 접근하지 못하게 한다. URL·본문은 로그에 남기지 않는다.
+            async with httpx.AsyncClient(timeout=settings.image_timeout, follow_redirects=False) as client:
+                async with client.stream("GET", parsed) as response:
+                    response.raise_for_status()
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                        data.extend(chunk)
+                        if len(data) >= _MAX_PARENT_BYTES:
+                            raise ImageGenerationError("부모 이미지 크기 제한을 초과했습니다.")
+            return _reference(bytes(data))
+        except httpx.TimeoutException as exc:
+            raise ImageTimeout("부모 이미지 다운로드 시간 초과") from exc
+        except httpx.HTTPError as exc:
+            raise ImageGenerationError("부모 이미지 다운로드 실패") from exc
 
 
 async def generate_child_image(inputs: ChildImageInput) -> ChildImageResult:
