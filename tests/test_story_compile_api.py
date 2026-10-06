@@ -81,6 +81,9 @@ async def test_compile_endpoint_returns_nested_contract(
     assert body["stories"]["title"] == "잿빛 왕관"
     assert "genre" not in body["stories"]  # genre는 백엔드가 입력 태그로 채움
     assert body["story_settings"]["world_setting"].startswith("# 세계관")
+    assert body["story_settings"]["protagonist_name"] == "카일"
+    assert "## 호칭" not in body["story_settings"]["user_role_setting"]
+    assert "카일" not in body["story_settings"]["user_role_setting"]
     assert "## 레이" in body["story_settings"]["character_setting"]
     assert len(body["story_suggested_inputs"]) == 3
     # KNK-417/465: 엔딩·주요 사건이 응답 계약에 실린다(엔딩은 이름 기반)

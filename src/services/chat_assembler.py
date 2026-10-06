@@ -120,6 +120,7 @@ def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
         "{{main_events}}": format_main_events(req.main_events),
         "{{target_main_event}}": format_target_main_event(req.target_main_event),
         "{{endings}}": _format_endings(req.endings),
+        "{{protagonist_name}}": ss.protagonist_name,
     }
 
 

@@ -5,6 +5,8 @@ LLM은 검증·재호출이 쉽도록 세분 JSON으로 답하고, 이 모듈이
 조립한다. genre는 백엔드가 입력 태그로 채우므로 여기서 제외한다.
 """
 
+import re
+
 from src.schemas.story_compile import (
     CharacterAppearanceOut,
     CharacterIntroductionOut,
@@ -48,10 +50,9 @@ def _render_character_setting(characters: list[CharacterSetting]) -> str:
 
 
 def _render_user_role_setting(ur: UserRoleSetting) -> str:
-    """USER 통글 — 주인공 프로필. preference는 비어 있을 수 있다."""
+    """USER 통글 — 이름을 제외한 주인공 프로필. preference는 비어 있을 수 있다."""
     return (
         f"# 주인공\n"
-        f"## 호칭\n{ur.name}\n"
         f"## 성별\n{ur.gender}\n"
         f"## 역할\n{ur.role}\n"
         f"## 배경\n{ur.background}\n"
@@ -92,6 +93,27 @@ def _render_character_appearances(
     ]
 
 
+_JOSA = {
+    "은": "은(는)", "는": "은(는)", "이": "이(가)", "가": "이(가)",
+    "을": "을(를)", "를": "을(를)", "과": "과(와)", "와": "과(와)",
+    "으로": "으로(로)", "로": "으로(로)", "아": "아(야)", "야": "아(야)",
+    "이랑": "이랑(랑)", "랑": "이랑(랑)",
+}
+
+
+def _tokenize_name(text: str, name: str) -> str:
+    """이름을 치환하고, 단독으로 붙은 흔한 조사만 백엔드 치환 표기로 바꾼다."""
+    if not name:
+        return text
+    particles = "|".join(sorted(_JOSA, key=len, reverse=True))
+    pattern = re.escape(name) + rf"(?:(?P<josa>{particles})(?!\w|\())?"
+    return re.sub(
+        pattern,
+        lambda match: "{username}" + _JOSA.get(match.group("josa"), ""),
+        text,
+    )
+
+
 def spec_to_response(spec: StorySpec, *, thumbnail_image: ThumbnailImageOut) -> StoryCompileResponse:
     """세분 StorySpec을 ERD 4테이블 nested 계약(StoryCompileResponse)으로 변환한다.
 
@@ -99,43 +121,48 @@ def spec_to_response(spec: StorySpec, *, thumbnail_image: ThumbnailImageOut) -> 
     그 값이 응답으로 새어 나갈 수 있다(KNK-1047).
     """
     ps = spec.prompt_settings
+
+    def prose(text: str) -> str:
+        return _tokenize_name(text, ps.user_role_setting.name)
+
     return StoryCompileResponse(
         stories=StoriesOut(
-            title=spec.meta.title,
-            one_line_intro=spec.meta.one_line_intro,
-            description=spec.meta.description,
+            title=prose(spec.meta.title),
+            one_line_intro=prose(spec.meta.one_line_intro),
+            description=prose(spec.meta.description),
         ),
         story_settings=StorySettingsOut(
-            world_setting=_render_world_setting(ps),
-            character_setting=_render_character_setting(ps.character_setting),
-            user_role_setting=_render_user_role_setting(ps.user_role_setting),
-            rule_setting=_render_rule_setting(ps),
+            protagonist_name=ps.user_role_setting.name,
+            world_setting=prose(_render_world_setting(ps)),
+            character_setting=prose(_render_character_setting(ps.character_setting)),
+            user_role_setting=prose(_render_user_role_setting(ps.user_role_setting)),
+            rule_setting=prose(_render_rule_setting(ps)),
         ),
         story_start_settings=StoryStartSettingsOut(
-            name=spec.start.name,
-            start_situation=spec.start.start_situation,
-            prologue=spec.start.prologue,
+            name=prose(spec.start.name),
+            start_situation=prose(spec.start.start_situation),
+            prologue=prose(spec.start.prologue),
         ),
-        story_suggested_inputs=spec.suggested_inputs,
+        story_suggested_inputs=[prose(text) for text in spec.suggested_inputs],
         story_main_events=[
             StoryMainEventOut(
-                name=ev.name,
-                description=ev.description,
-                key_sentence=ev.key_sentence,
+                name=prose(ev.name),
+                description=prose(ev.description),
+                key_sentence=prose(ev.key_sentence),
             )
             for ev in spec.main_events
         ],
         story_endings=[
             StoryEndingOut(
-                name=e.name,
+                name=prose(e.name),
                 min_turns=e.min_turns,
-                achievement_condition=e.achievement_condition,
-                epilogue=e.epilogue,
+                achievement_condition=prose(e.achievement_condition),
+                epilogue=prose(e.epilogue),
             )
             for e in spec.endings
         ],
         character_introductions=[
-            CharacterIntroductionOut(name=c.name, description=c.description)
+            CharacterIntroductionOut(name=c.name, description=prose(c.description))
             for c in ps.character_setting
         ],
         character_appearances=_render_character_appearances(ps.character_setting),
