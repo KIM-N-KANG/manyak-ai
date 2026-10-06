@@ -1,6 +1,6 @@
 ---
-version: 23
-updated: 2026-10-01
+version: 24
+updated: 2026-10-06
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -482,6 +482,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 1. 백엔드 request 도착: 통글 4필드 + 장르 + 시작 설정 + 최근 10턴 History(오프닝 시드 포함)
    + 사용자 입력 + 메모리 요약(summary) + 이미지 보유 인물 매핑(character_images). session_id 없음.
 2. 슬롯 치환: 통글·장르·시작 설정을 STORY/CHARACTER/USER 슬롯에 결정적 치환(LLM 없음). 이미지 보유 인물 매핑(이름·URL)은 프롬프트에 넣지 않는다(KNK-1002).
+   시작 설정의 prologue·start_situation은 요청 원문을 유지하고, LLM 입력 복사본에서 History와 같은 규칙으로 이미지 저장 마커를 제거한다(KNK-1550).
 3. History 정규화: role 대문자(USER/ASSISTANT) → LLM 호출용 소문자(user/assistant) 변환, SYSTEM 제외.
    저장 원문은 유지하고 LLM 입력 복사본에서 `[[URL]]` 저장 마커와 그 뒤 줄바꿈(최대 2개)을 제거한다. 겹대괄호 안의 모양은 따지지 않으므로 옛 모양 `[[인물이름:URL]]`(개발 서버 기록)도 같이 지워진다(KNK-1025). 옛 `[character:이름]` 태그는 지우지 않는다(KNK-1007).
    · 사용자 입력(*지문*/대사/선택지)은 별도 필드(`user_input`)로 받아, 조립기가 변환 없이

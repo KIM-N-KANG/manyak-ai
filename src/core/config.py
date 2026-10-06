@@ -10,8 +10,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
-    app_version: str = "0.4.2"
+    app_version: str = "0.4.3"
     debug: bool = False
+
+    # KNK-1554: Langfuse와 분리된 인프라 추적. endpoint는 /v1/traces까지 포함합니다.
+    manyak_tracing_enabled: bool = False
+    manyak_otlp_traces_endpoint: str = ""
 
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
@@ -80,6 +84,8 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
+    # SDK 환경 변수 정책 유지. 변환 오류도 init_langfuse의 관측 실패 격리 안에서 처리합니다.
+    langfuse_sample_rate: str = "1.0"
 
 
 settings = Settings()

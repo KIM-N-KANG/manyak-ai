@@ -1,5 +1,9 @@
 import os
 
+# 앱 import 이전에 차단해 로컬 .env의 collector로 테스트 트레이스가 나가지 않게 합니다.
+os.environ["MANYAK_TRACING_ENABLED"] = "false"
+os.environ["MANYAK_OTLP_TRACES_ENDPOINT"] = ""
+
 # F3(KNK-266 리뷰): 테스트는 실제 Sentry로 이벤트를 보내지 않는다. SENTRY_DSN을 비워(.env 값을
 # 무시) init_sentry()를 no-op으로 만든다 — src.main import(=init 호출 시점)보다 먼저 설정해야 한다.
 os.environ["SENTRY_DSN"] = ""

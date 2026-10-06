@@ -32,6 +32,7 @@ from anthropic import (
     RateLimitError,
 )
 
+from src.core.tracing import start_span
 from src.services.llm.base import (
     LlmBadRequest,
     LlmConfigError,
@@ -422,25 +423,28 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
     LlmError가 아니라 LlmConfigError인 것은 의도다. 이건 공급자 장애가 아니라 호출부가 값을
     빠뜨린 우리 쪽 결함이라, 502로 접히면 공급자 장애로 위장된다(STYLEGUIDE §4).
     """
-    if req.max_tokens is None:
-        raise LlmConfigError(
-            f"모델 '{resolved.model}'은 Anthropic 어댑터를 쓰는데 단발 호출에 max_tokens가 "
-            f"없습니다 — 이 공급자는 이 값으로 응답 대기 시간을 계산하므로 비워둘 수 없습니다."
+    with start_span(
+        "llm.complete", {"provider": resolved.provider, "model": resolved.model, "operation": "complete"},
+    ):
+        if req.max_tokens is None:
+            raise LlmConfigError(
+                f"모델 '{resolved.model}'은 Anthropic 어댑터를 쓰는데 단발 호출에 max_tokens가 "
+                f"없습니다 — 이 공급자는 이 값으로 응답 대기 시간을 계산하므로 비워둘 수 없습니다."
+            )
+        client = _client(resolved.provider)
+        try:
+            response = await client.messages.create(**_build_kwargs(req, resolved))
+        except AnthropicError as exc:
+            raise _translate(exc, resolved) from exc
+        return LlmResult(
+            text=_text_of(response),
+            # 응답이 돌려준 실제 모델명. 비어 오면 요청에 쓴 이름으로 채운다 — 빈 값을 올리면
+            # 응답 meta 조립에서 터진다.
+            model=getattr(response, "model", None) or req.model,
+            provider=resolved.provider,
+            usage=_usage_of(response),
+            finish_reason=_finish_reason_of(response),
         )
-    client = _client(resolved.provider)
-    try:
-        response = await client.messages.create(**_build_kwargs(req, resolved))
-    except AnthropicError as exc:
-        raise _translate(exc, resolved) from exc
-    return LlmResult(
-        text=_text_of(response),
-        # 응답이 돌려준 실제 모델명. 비어 오면 요청에 쓴 이름으로 채운다 — 빈 값을 올리면
-        # 응답 meta 조립에서 터진다.
-        model=getattr(response, "model", None) or req.model,
-        provider=resolved.provider,
-        usage=_usage_of(response),
-        finish_reason=_finish_reason_of(response),
-    )
 
 
 async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[StreamEvent]:
@@ -482,94 +486,97 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
     사용자 연결 취소(`CancelledError`)는 여기서 잡지 않는다 — BaseException이라 아래
     except들에 걸리지 않고, 취소는 오류가 아니라 그냥 스트림이 끊기는 것이다.
     """
-    client = _client(resolved.provider)
-    kwargs = _build_kwargs(req, resolved)
-    kwargs["stream"] = True
+    with start_span(
+        "llm.stream", {"provider": resolved.provider, "model": resolved.model, "operation": "stream"},
+    ):
+        client = _client(resolved.provider)
+        kwargs = _build_kwargs(req, resolved)
+        kwargs["stream"] = True
 
-    try:
-        events = await client.messages.create(**kwargs)
-    except AnthropicError as exc:
-        raise _translate(exc, resolved) from exc
-
-    model = req.model
-    parts: dict[str, int | None] = dict.fromkeys(_USAGE_FIELDS, None)
-    finish_reason: str | None = None
-    told_it_finished = False  # 마무리 신호(`message_delta`)를 받았는지 — 아래 잘림 판정에 쓴다
-    try:
-        async for event in events:
-            kind = getattr(event, "type", None)
-            if kind == "message_start":
-                # 모델 이름과 입력 토큰은 이 신호에만 온다.
-                message = getattr(event, "message", None)
-                model = getattr(message, "model", None) or model
-                _absorb_usage(parts, message)
-            elif kind == "message_delta":
-                told_it_finished = True
-                _absorb_usage(parts, event)
-                # 종료 이유는 이벤트가 아니라 그 안의 delta에 있다.
-                reason = getattr(getattr(event, "delta", None), "stop_reason", None)
-                if isinstance(reason, str) and reason:
-                    finish_reason = reason
-            elif kind == "content_block_delta":
-                delta = getattr(event, "delta", None)
-                if getattr(delta, "type", None) != "text_delta":
-                    continue  # 추론·서명 조각. 사용자에게 보낼 글이 아니다
-                # 글자인지 확인하고 쓴다 — `_text_of`와 같은 규칙이다. 이상한 값을 그대로
-                # 흘리면 사용자 화면에 그 표기가 뜨거나, 이어 붙이는 쪽에서 터진다.
-                text = getattr(delta, "text", None)
-                if isinstance(text, str) and text:
-                    yield TextDelta(text)
-        if not told_it_finished:
-            # **끝났다는 말을 못 듣고 스트림이 닫혔다 — 정상 종료가 아니다.**
-            # 이 회사는 답을 마무리할 때 반드시 `message_delta`를 보낸다. 그것 없이 연결이
-            # 조용히 닫히는 경우가 있는데(중간 프록시가 본문을 자르면서 정상 종료로 닫는 경우),
-            # SDK는 예외를 내지 않는다. 그대로 두면 **잘린 본문이 완성된 답으로 저장되고**
-            # 출력 토큰도 시작 시점 값(보통 1)으로 굳는다 — 오류가 없으니 아무도 모른다
-            # (KNK-696 리뷰 P1, 실제 SDK + 가짜 전송으로 재현 확인).
-            #
-            # 판정 기준을 **신호가 왔는지**로 두고 종료 이유 값으로 두지 않는다. 값이 이상하게
-            # 온 것("끝났다고는 하는데 알아볼 수 없는 말")과 아예 못 들은 것은 다른 상황이다.
-            # 앞은 meta를 비우고 넘기면 되지만, 뒤는 답이 잘렸다는 뜻이라 넘기면 안 된다.
-            raise LlmUnavailable(
-                "응답이 끝나기 전에 스트림이 닫혔습니다(종료 신호 없음).",
-                provider=resolved.provider,
-                model=resolved.model,
-            )
-    except AnthropicError as exc:
-        # 일부를 이미 흘려보낸 뒤여도 중립 예외로 바꿔 던진다 — 호출부가 SSE error 이벤트로 옮긴다.
-        # 스트림 도중의 `error` 신호도 여기 걸린다(SDK가 그 신호를 자기 예외로 바꿔 올린다).
-        raise _translate(exc, resolved) from exc
-    except httpx.TimeoutException as exc:
-        # 스트림이 열린 뒤의 읽기 타임아웃. SDK는 요청 단계의 타임아웃만 APITimeoutError로 접고
-        # 반복 중의 것은 그대로 올려보낸다 — 아래 분기에 맡기면 같은 시간 초과가 발생 시점에 따라
-        # provider_timeout / provider_unavailable로 갈린다.
-        raise LlmTimeout(
-            f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
-        ) from exc
-    except (httpx.HTTPError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        # SDK 밖으로 새는 **전송·파싱 오류만** 접는다. 이 SDK의 스트림 반복도 try/finally로만
-        # 감싸져(except 없음) 연결 끊김(httpx)·깨진 SSE 줄(json)이 번역 없이 통과한다.
-        #
-        # `UnicodeDecodeError`가 따로 필요하다 — 이 SDK는 SSE 원문 바이트를 자기가 UTF-8로
-        # 푸는데, 중간에 바이트가 깨지면 이 예외가 그대로 새어 나온다. 위 둘 중 어느 계열도
-        # 아니라 번역되지 않고, 채팅은 오류 이벤트도 못 내고 끊긴다(KNK-696 리뷰 P1, 재현 확인).
-        #
-        # 모든 예외를 잡지 않는 이유: 우리 코드의 결함(오타·형 실수)까지 접으면 그것이
-        # "공급자 장애"로 기록돼 원인 추적이 헛돈다(STYLEGUIDE §4).
-        raise LlmUnavailable(
-            f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
-        ) from exc
-    finally:
-        # 스트림을 명시적으로 닫아 커넥션을 바로 반납한다. SDK도 자체 finally에서 닫지만 그것은
-        # 내부 제너레이터가 정리될 때(GC 시점) 실행돼, 사용자가 채팅 도중 창을 닫으면 반납이
-        # 늦어진다 — 흔한 경로라 여기서 결정적으로 닫는다.
         try:
-            await events.close()
-        except Exception:  # 정리 실패가 원래 오류·취소를 덮으면 안 된다 — 삼키되 로그로 남긴다.
-            logger.warning("스트림 정리에 실패했다 — 원래 결과를 그대로 둔다", exc_info=True)
-    yield StreamCompleted(
-        model=model,
-        provider=resolved.provider,
-        usage=_usage_from_parts(parts),
-        finish_reason=finish_reason,
-    )
+            events = await client.messages.create(**kwargs)
+        except AnthropicError as exc:
+            raise _translate(exc, resolved) from exc
+
+        model = req.model
+        parts: dict[str, int | None] = dict.fromkeys(_USAGE_FIELDS, None)
+        finish_reason: str | None = None
+        told_it_finished = False  # 마무리 신호(`message_delta`)를 받았는지 — 아래 잘림 판정에 쓴다
+        try:
+            async for event in events:
+                kind = getattr(event, "type", None)
+                if kind == "message_start":
+                    # 모델 이름과 입력 토큰은 이 신호에만 온다.
+                    message = getattr(event, "message", None)
+                    model = getattr(message, "model", None) or model
+                    _absorb_usage(parts, message)
+                elif kind == "message_delta":
+                    told_it_finished = True
+                    _absorb_usage(parts, event)
+                    # 종료 이유는 이벤트가 아니라 그 안의 delta에 있다.
+                    reason = getattr(getattr(event, "delta", None), "stop_reason", None)
+                    if isinstance(reason, str) and reason:
+                        finish_reason = reason
+                elif kind == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if getattr(delta, "type", None) != "text_delta":
+                        continue  # 추론·서명 조각. 사용자에게 보낼 글이 아니다
+                    # 글자인지 확인하고 쓴다 — `_text_of`와 같은 규칙이다. 이상한 값을 그대로
+                    # 흘리면 사용자 화면에 그 표기가 뜨거나, 이어 붙이는 쪽에서 터진다.
+                    text = getattr(delta, "text", None)
+                    if isinstance(text, str) and text:
+                        yield TextDelta(text)
+            if not told_it_finished:
+                # **끝났다는 말을 못 듣고 스트림이 닫혔다 — 정상 종료가 아니다.**
+                # 이 회사는 답을 마무리할 때 반드시 `message_delta`를 보낸다. 그것 없이 연결이
+                # 조용히 닫히는 경우가 있는데(중간 프록시가 본문을 자르면서 정상 종료로 닫는 경우),
+                # SDK는 예외를 내지 않는다. 그대로 두면 **잘린 본문이 완성된 답으로 저장되고**
+                # 출력 토큰도 시작 시점 값(보통 1)으로 굳는다 — 오류가 없으니 아무도 모른다
+                # (KNK-696 리뷰 P1, 실제 SDK + 가짜 전송으로 재현 확인).
+                #
+                # 판정 기준을 **신호가 왔는지**로 두고 종료 이유 값으로 두지 않는다. 값이 이상하게
+                # 온 것("끝났다고는 하는데 알아볼 수 없는 말")과 아예 못 들은 것은 다른 상황이다.
+                # 앞은 meta를 비우고 넘기면 되지만, 뒤는 답이 잘렸다는 뜻이라 넘기면 안 된다.
+                raise LlmUnavailable(
+                    "응답이 끝나기 전에 스트림이 닫혔습니다(종료 신호 없음).",
+                    provider=resolved.provider,
+                    model=resolved.model,
+                )
+        except AnthropicError as exc:
+            # 일부를 이미 흘려보낸 뒤여도 중립 예외로 바꿔 던진다 — 호출부가 SSE error 이벤트로 옮긴다.
+            # 스트림 도중의 `error` 신호도 여기 걸린다(SDK가 그 신호를 자기 예외로 바꿔 올린다).
+            raise _translate(exc, resolved) from exc
+        except httpx.TimeoutException as exc:
+            # 스트림이 열린 뒤의 읽기 타임아웃. SDK는 요청 단계의 타임아웃만 APITimeoutError로 접고
+            # 반복 중의 것은 그대로 올려보낸다 — 아래 분기에 맡기면 같은 시간 초과가 발생 시점에 따라
+            # provider_timeout / provider_unavailable로 갈린다.
+            raise LlmTimeout(
+                f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
+            ) from exc
+        except (httpx.HTTPError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # SDK 밖으로 새는 **전송·파싱 오류만** 접는다. 이 SDK의 스트림 반복도 try/finally로만
+            # 감싸져(except 없음) 연결 끊김(httpx)·깨진 SSE 줄(json)이 번역 없이 통과한다.
+            #
+            # `UnicodeDecodeError`가 따로 필요하다 — 이 SDK는 SSE 원문 바이트를 자기가 UTF-8로
+            # 푸는데, 중간에 바이트가 깨지면 이 예외가 그대로 새어 나온다. 위 둘 중 어느 계열도
+            # 아니라 번역되지 않고, 채팅은 오류 이벤트도 못 내고 끊긴다(KNK-696 리뷰 P1, 재현 확인).
+            #
+            # 모든 예외를 잡지 않는 이유: 우리 코드의 결함(오타·형 실수)까지 접으면 그것이
+            # "공급자 장애"로 기록돼 원인 추적이 헛돈다(STYLEGUIDE §4).
+            raise LlmUnavailable(
+                f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
+            ) from exc
+        finally:
+            # 스트림을 명시적으로 닫아 커넥션을 바로 반납한다. SDK도 자체 finally에서 닫지만 그것은
+            # 내부 제너레이터가 정리될 때(GC 시점) 실행돼, 사용자가 채팅 도중 창을 닫으면 반납이
+            # 늦어진다 — 흔한 경로라 여기서 결정적으로 닫는다.
+            try:
+                await events.close()
+            except Exception:  # 정리 실패가 원래 오류·취소를 덮으면 안 된다 — 삼키되 로그로 남긴다.
+                logger.warning("스트림 정리에 실패했다 — 원래 결과를 그대로 둔다", exc_info=True)
+        yield StreamCompleted(
+            model=model,
+            provider=resolved.provider,
+            usage=_usage_from_parts(parts),
+            finish_reason=finish_reason,
+        )

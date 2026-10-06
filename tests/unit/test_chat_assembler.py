@@ -81,6 +81,28 @@ def test_history_removes_character_image_syntax_only_from_llm_copy() -> None:
     assert history[0].content == stored
 
 
+def test_start_settings_remove_image_markers_only_from_llm_copy() -> None:
+    req = _request()
+    req.start_settings.prologue = (
+        "*밤이 깊었다.*\n\n"
+        "[[https://cdn.example.com/scenes/originals/story/night.webp]]\n\n"
+        "*문이 열렸다.*"
+    )
+    req.start_settings.start_situation = (
+        "[[https://cdn.example.com/scenes/originals/story/door.webp]]\n\n"
+        "*복도에 들어섰다.*\n\n"
+        "[[https://cdn.example.com/scenes/originals/story/hall.webp]]\n\n"
+        "*발소리가 들렸다.*"
+    )
+    original = req.model_dump()
+    clean_req = req.model_copy(deep=True)
+    clean_req.start_settings.prologue = "*밤이 깊었다.*\n\n*문이 열렸다.*"
+    clean_req.start_settings.start_situation = "*복도에 들어섰다.*\n\n*발소리가 들렸다.*"
+
+    assert assemble(req) == assemble(clean_req)
+    assert req.model_dump() == original
+
+
 # ── 슬롯 치환 ────────────────────────────────────────────────────────────────
 def test_no_unsubstituted_slots() -> None:
     messages = assemble(_request())
