@@ -12,6 +12,7 @@ from src.core.json_logging import configure_json_logging
 from src.core.langfuse import init_langfuse, shutdown_langfuse
 from src.core.middleware import RequestContextMiddleware
 from src.core.sentry import init_sentry
+from src.core.tracing import bounded_shutdown, instrument_app, shutdown_tracing
 from src.services.image import validate_startup as validate_image_startup
 from src.services.llm import validate_startup
 
@@ -43,8 +44,11 @@ async def lifespan(_app: FastAPI):
     Langfuse는 배치 전송이라 flush 없이 프로세스가 죽으면 마지막 구간의 관측이 유실된다.
     시작 쪽은 모듈 로드 시점(init_langfuse)이 이미 처리하므로 여기서는 종료만 맡는다.
     """
-    yield
-    shutdown_langfuse()
+    try:
+        yield
+    finally:
+        await shutdown_tracing()
+        await bounded_shutdown(shutdown_langfuse)
 
 
 app = FastAPI(
@@ -70,3 +74,4 @@ async def chat_validation_error(request: Request, exc: RequestValidationError) -
 app.add_middleware(RequestContextMiddleware)
 
 app.include_router(api_router)
+instrument_app(app)

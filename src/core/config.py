@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     app_version: str = "0.4.2"
     debug: bool = False
 
+    # KNK-1554: Langfuse와 분리된 인프라 추적. endpoint는 /v1/traces까지 포함합니다.
+    manyak_tracing_enabled: bool = False
+    manyak_otlp_traces_endpoint: str = ""
+
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
     # 대체 공급자 접속 정보(KNK-703). 기동 검사는 *선택된* 모델의 공급자 키만 본다.

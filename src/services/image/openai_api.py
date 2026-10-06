@@ -24,6 +24,7 @@ from openai import (
     RateLimitError,
 )
 
+from src.core.tracing import start_span
 from src.core.langfuse import observe_generation
 from src.services.image.base import (
     IMAGE_PURPOSE_CHARACTER,
@@ -123,74 +124,77 @@ async def generate(req: ImageRequest) -> ImageResult:
     "png"/"webp"/"jpeg"만 받되, 결과는 b64_json 필드에 base64로 준다.
     WebP는 PNG 대비 파일 크기가 작아 base64 응답 전송에 유리하다(KNK-940).
     """
-    from src.core.config import settings
+    with start_span(
+        "image.generate", {"provider": "openai", "model": req.model, "operation": "generate"},
+    ):
+        from src.core.config import settings
 
-    client = _client(settings.openai_api_key, settings.openai_api_url)
-    # 관측 블록 안에서 나가는 예외(공급자 실패·응답 해석 실패)는 관측에 ERROR로 남고 그대로
-    # 전파된다. 이미지 바이너리는 관측에 싣지 않고 형식·크기만 요약한다.
-    with observe_generation(
-        _observation_name(req.purpose),
-        model=req.model,
-        model_parameters={
-            "size": req.size,
-            "quality": req.quality,
-            "output_format": _OUTPUT_FORMAT,
-        },
-        input_data=req.prompt,
-    ) as generation:
-        try:
-            # 부모 첨부 편집만 재시도를 끈다. 컴파일 생성의 기존 설정은 유지한다.
-            call = client.images.generate
-            reference_args = {}
-            if req.reference is not None:
-                call = client.with_options(max_retries=0).images.edit
-                reference_args = {"image": (
-                    req.reference.filename, req.reference.image_bytes, req.reference.content_type,
-                )}
-            response = await call(
-                **reference_args,
-                model=req.model,
-                prompt=req.prompt,
-                n=1,
-                size=req.size,
-                quality=req.quality,
-                output_format=_OUTPUT_FORMAT,
-                timeout=httpx.Timeout(req.timeout, connect=10.0),
-            )
-        except APITimeoutError as exc:
-            raise ImageTimeout(f"이미지 생성 시간 초과 ({req.timeout}초): {exc}") from exc
-        except RateLimitError as exc:
-            raise ImageRateLimited(f"이미지 생성 속도 제한: {exc}") from exc
-        except BadRequestError as exc:
-            raise ImageBadRequest(f"이미지 생성 요청 거부: {exc}") from exc
-        except OpenAIError as exc:
-            raise ImageGenerationError(f"이미지 생성 실패: {exc}") from exc
+        client = _client(settings.openai_api_key, settings.openai_api_url)
+        # 관측 블록 안에서 나가는 예외(공급자 실패·응답 해석 실패)는 관측에 ERROR로 남고 그대로
+        # 전파된다. 이미지 바이너리는 관측에 싣지 않고 형식·크기만 요약한다.
+        with observe_generation(
+            _observation_name(req.purpose),
+            model=req.model,
+            model_parameters={
+                "size": req.size,
+                "quality": req.quality,
+                "output_format": _OUTPUT_FORMAT,
+            },
+            input_data=req.prompt,
+        ) as generation:
+            try:
+                # 부모 첨부 편집만 재시도를 끈다. 컴파일 생성의 기존 설정은 유지한다.
+                call = client.images.generate
+                reference_args = {}
+                if req.reference is not None:
+                    call = client.with_options(max_retries=0).images.edit
+                    reference_args = {"image": (
+                        req.reference.filename, req.reference.image_bytes, req.reference.content_type,
+                    )}
+                response = await call(
+                    **reference_args,
+                    model=req.model,
+                    prompt=req.prompt,
+                    n=1,
+                    size=req.size,
+                    quality=req.quality,
+                    output_format=_OUTPUT_FORMAT,
+                    timeout=httpx.Timeout(req.timeout, connect=10.0),
+                )
+            except APITimeoutError as exc:
+                raise ImageTimeout(f"이미지 생성 시간 초과 ({req.timeout}초): {exc}") from exc
+            except RateLimitError as exc:
+                raise ImageRateLimited(f"이미지 생성 속도 제한: {exc}") from exc
+            except BadRequestError as exc:
+                raise ImageBadRequest(f"이미지 생성 요청 거부: {exc}") from exc
+            except OpenAIError as exc:
+                raise ImageGenerationError(f"이미지 생성 실패: {exc}") from exc
 
-        # 토큰 사용량은 응답을 받은 즉시 기록한다 — 아래 해석이 실패해도 과금은 이미 일어났으므로
-        # 원가 집계에서 빠지면 안 된다. 출력 요약은 해석이 끝난 뒤 따로 기록한다.
-        generation.finish(usage_details=_usage_details(response))
+            # 토큰 사용량은 응답을 받은 즉시 기록한다 — 아래 해석이 실패해도 과금은 이미 일어났으므로
+            # 원가 집계에서 빠지면 안 된다. 출력 요약은 해석이 끝난 뒤 따로 기록한다.
+            generation.finish(usage_details=_usage_details(response))
 
-        # 응답 해석 실패도 반드시 ImageGenerationError로 접는다. 인물 단위 실패 처리
-        # (generate_characters._generate_one)는 이 예외만 "해당 인물 실패"로 알아듣고,
-        # 다른 예외는 병렬 생성 전체를 중단시켜 성공한 인물 이미지까지 버린다(PR #92 리뷰).
-        data = response.data or []
-        first_image = data[0] if data else None
-        b64_data = getattr(first_image, "b64_json", None)
-        if not b64_data:
-            raise ImageGenerationError("이미지 응답에 데이터가 없습니다.")
-        if not isinstance(b64_data, str):
-            raise ImageGenerationError("이미지 응답의 base64가 문자열이 아닙니다.")
+            # 응답 해석 실패도 반드시 ImageGenerationError로 접는다. 인물 단위 실패 처리
+            # (generate_characters._generate_one)는 이 예외만 "해당 인물 실패"로 알아듣고,
+            # 다른 예외는 병렬 생성 전체를 중단시켜 성공한 인물 이미지까지 버린다(PR #92 리뷰).
+            data = response.data or []
+            first_image = data[0] if data else None
+            b64_data = getattr(first_image, "b64_json", None)
+            if not b64_data:
+                raise ImageGenerationError("이미지 응답에 데이터가 없습니다.")
+            if not isinstance(b64_data, str):
+                raise ImageGenerationError("이미지 응답의 base64가 문자열이 아닙니다.")
 
-        try:
-            # validate=True: base64가 아닌 글자가 섞이면 조용히 건너뛰지 않고 실패시킨다.
-            image_bytes = base64.b64decode(b64_data, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ImageGenerationError(f"이미지 응답의 base64가 잘못됐습니다: {exc}") from exc
+            try:
+                # validate=True: base64가 아닌 글자가 섞이면 조용히 건너뛰지 않고 실패시킨다.
+                image_bytes = base64.b64decode(b64_data, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ImageGenerationError(f"이미지 응답의 base64가 잘못됐습니다: {exc}") from exc
 
-        generation.finish(output={"format": _OUTPUT_FORMAT, "bytes": len(image_bytes)})
+            generation.finish(output={"format": _OUTPUT_FORMAT, "bytes": len(image_bytes)})
 
-    return ImageResult(
-        image_bytes=image_bytes,
-        model=req.model,
-        provider=PROVIDER_OPENAI,
-    )
+        return ImageResult(
+            image_bytes=image_bytes,
+            model=req.model,
+            provider=PROVIDER_OPENAI,
+        )

@@ -103,9 +103,12 @@ def init_langfuse() -> None:
     # 여기가 뚫려 있으면 관측 도구 고장이 앱 부팅 실패가 된다.
     try:
         from langfuse import Langfuse
+        from opentelemetry.sdk.trace import TracerProvider
         from sentry_sdk.integrations.logging import ignore_logger
 
+        # 첫 생성부터 전용 provider를 지정합니다. infra exporter에 원문이 섞이지 않습니다.
         Langfuse(
+            tracer_provider=TracerProvider(),
             public_key=settings.langfuse_public_key,
             secret_key=settings.langfuse_secret_key,
             host=host,  # 가드가 검증한 정규화 값 — 비교와 전달이 같은 값이어야 한다

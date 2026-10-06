@@ -7,6 +7,7 @@ from dataclasses import replace
 import httpx
 
 from src.core.config import settings
+from src.core.tracing import start_span
 from src.schemas.chat_turn import ChatImageSlot
 from src.services.image.generate_child import ChildImageResult
 
@@ -25,24 +26,25 @@ async def upload_child_image(child: ChildImageResult, slot: ChatImageSlot) -> Ch
     if child.error:
         return child
     try:
-        url = validate_upload_url(slot)
-        data = base64.b64decode(child.image_base64 or "", validate=True)
-        if not data or child.content_type != "image/webp":
-            raise ValueError("업로드 이미지 데이터 오류")
-        request = httpx.Request(
-            "PUT", url, content=data, headers={"Content-Type": child.content_type},
-            extensions={"timeout": {key: settings.image_timeout for key in ("connect", "read", "write", "pool")}},
-        )
-        # AsyncClient.send는 서명 URL을 INFO 로그에 기록한다. 전송 계층을 직접 사용해
-        # URL 로그와 자동 리다이렉트를 피하고, 응답 본문도 읽거나 기록하지 않는다.
-        async with httpx.AsyncHTTPTransport(retries=0, trust_env=False) as transport:
-            response = await transport.handle_async_request(request)
-            try:
-                if not 200 <= response.status_code < 300:
-                    raise ValueError("업로드 실패")
-            finally:
-                await response.aclose()
-        return replace(child, image_url=slot.public_url)
+        with start_span("image.upload", {"provider": "s3", "operation": "put"}):
+            url = validate_upload_url(slot)
+            data = base64.b64decode(child.image_base64 or "", validate=True)
+            if not data or child.content_type != "image/webp":
+                raise ValueError("업로드 이미지 데이터 오류")
+            request = httpx.Request(
+                "PUT", url, content=data, headers={"Content-Type": child.content_type},
+                extensions={"timeout": {key: settings.image_timeout for key in ("connect", "read", "write", "pool")}},
+            )
+            # AsyncClient.send는 서명 URL을 INFO 로그에 기록한다. 전송 계층을 직접 사용해
+            # URL 로그와 자동 리다이렉트를 피하고, 응답 본문도 읽거나 기록하지 않는다.
+            async with httpx.AsyncHTTPTransport(retries=0, trust_env=False) as transport:
+                response = await transport.handle_async_request(request)
+                try:
+                    if not 200 <= response.status_code < 300:
+                        raise ValueError("업로드 실패")
+                finally:
+                    await response.aclose()
+            return replace(child, image_url=slot.public_url)
     except httpx.TimeoutException:
         return replace(child, image_base64=None, error="timeout")
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, binascii.Error):

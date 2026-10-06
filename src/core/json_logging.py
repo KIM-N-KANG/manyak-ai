@@ -18,6 +18,7 @@ import logging
 import sys
 
 from src.core.request_context import get_correlation_ids
+from src.core.tracing import log_context
 
 SERVICE_NAME = "manyak-ai"
 
@@ -26,7 +27,7 @@ SERVICE_NAME = "manyak-ai"
 # 이스케이프 문자가 든 필드가 OpenSearch 매핑에 생기고 message와 내용이 겹친다(실제 기동 로그에서 확인).
 _RESERVED = frozenset(
     logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
-    | {"asctime", "message", "taskName", "color_message"}
+    | {"asctime", "message", "taskName", "color_message", "traceId", "spanId"}
 )
 
 
@@ -105,6 +106,8 @@ class JsonLogFormatter(logging.Formatter):
         for key, value in record.__dict__.items():
             if key not in _RESERVED and not key.startswith("_"):
                 payload[key] = value
+
+        payload.update(log_context())
 
         # ensure_ascii=False 라야 한글이 \uXXXX 로 부풀지 않는다.
         # 한 줄이어야 하므로 개행이 들어간 값은 json.dumps 가 \n 으로 이스케이프한다(기본 동작).
