@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
+    # SDK 환경 변수 정책 유지. 변환 오류도 init_langfuse의 관측 실패 격리 안에서 처리합니다.
+    langfuse_sample_rate: str = "1.0"
 
 
 settings = Settings()

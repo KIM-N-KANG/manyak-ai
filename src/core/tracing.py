@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from opentelemetry.context import Context
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SpanExporter
+    from opentelemetry.trace import Span
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,29 @@ def _attributes(attributes: Mapping[str, object]) -> dict[str, str]:
     }
 
 
+def _matched_route_template(app: FastAPI, scope: Scope) -> str | None:
+    """매칭된 등록 경로만 반환한다. host 등의 raw-path fallback은 허용하지 않는다."""
+    from fastapi import routing
+    from starlette.routing import Match, Route
+
+    # include_router의 prefix까지 반영하는 공개 API(신규 FastAPI)를 우선한다.
+    flatten = getattr(routing, "iter_route_contexts", None)
+    if flatten is not None:
+        routes = flatten(app.routes)
+    else:
+        routes = (
+            context for route in app.routes
+            for context in (route.effective_route_contexts()
+                            if hasattr(route, "effective_route_contexts") else (route,))
+        )
+    for route in routes:
+        match, _ = Route.matches(route, scope) if isinstance(route, Route) else route.matches(scope)
+        if match == Match.FULL:
+            template = getattr(route, "path", None)
+            return template if isinstance(template, str) and template.startswith("/") else None
+    return None
+
+
 def _create_provider(exporter: SpanExporter) -> TracerProvider:
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
@@ -71,8 +95,19 @@ def _create_provider(exporter: SpanExporter) -> TracerProvider:
                 for key, value in (span.attributes or {}).items():
                     if key in _HTTP_KEYS and isinstance(value, (str, int)):
                         attributes[key] = value
+                name = span.name
+                if span.kind == SpanKind.SERVER:
+                    name = "HTTP request"
+                    # 자동 계측의 http.route/name은 host fallback에서 실제 path일 수 있다.
+                    # hook이 등록 라우트 매칭으로 확인한 별도 표식만 신뢰한다.
+                    template = (span.attributes or {}).get("manyak.route_template")
+                    if isinstance(template, str):
+                        method = (span.attributes or {}).get("http.request.method", attributes.get("http.method"))
+                        method = method if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"} else "HTTP"
+                        attributes["http.route"] = template
+                        name = f"{method} {template}"
                 safe = ReadableSpan(
-                    name="HTTP request" if span.kind == SpanKind.SERVER else span.name,
+                    name=name,
                     # tracestate도 외부 입력이므로 전송 복사본에는 ID와 sampling flag만 남긴다.
                     context=SpanContext(
                         trace_id=span.context.trace_id, span_id=span.context.span_id,
@@ -151,8 +186,11 @@ def instrument_app(app: FastAPI) -> None:
         provider = _create_provider(OTLPSpanExporter(endpoint=endpoint, timeout=2))
         set_global_textmap(TraceContextTextMapPropagator())
 
-        def save_request_span(span: object, scope: dict[str, object]) -> None:
+        def save_request_span(span: Span, scope: Scope) -> None:
             scope["manyak.infra_span"] = span
+            template = _matched_route_template(app, scope)
+            if template is not None:
+                span.set_attribute("manyak.route_template", template)
 
         app.add_middleware(_RequestParentMiddleware)
         FastAPIInstrumentor.instrument_app(
