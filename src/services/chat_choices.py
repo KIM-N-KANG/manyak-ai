@@ -152,6 +152,7 @@ def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
             f"- {n}" for n in req.occurred_main_event_names
         )
         or "(없음)",
+        "{{protagonist_name}}": ss.protagonist_name,
     }
     text = _USER_TEMPLATE
     for k, v in repl.items():

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from src.api.v1 import chat as chat_module
 from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
 from src.schemas.response_meta import StoryResponseMeta
+from src.services import chat_choices as choices_service
 from src.services.chat_choices import ChoicesResult
 
 
@@ -35,6 +36,32 @@ def _payload() -> dict:
         "summary": "",
         "ai_output": "*레이가 천천히 고개를 든다* 부탁이 있소.",
     }
+
+
+@pytest.mark.parametrize("name", ["민우", ""])
+async def test_choices_api_passes_name_and_description_to_prompt(client, monkeypatch, name) -> None:
+    captured = []
+
+    async def fake_call(system, user):
+        captured.append(user)
+        return ["맞선다", "피한다", "살핀다"], "test", 1, 1
+
+    monkeypatch.setattr(choices_service, "_call", fake_call)
+    payload = _payload()
+    if name:
+        payload["story_settings"]["protagonist_name"] = name
+    payload["story_settings"]["user_role_setting"] = "신중한 성격의 사립 탐정."
+
+    response = await client.post("/api/v1/chat/choices", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["choices"] == ["맞선다", "피한다", "살핀다"]
+    assert len(captured) == 1
+    profile = captured[0].split("# 주인공\n", 1)[1].split("# 전개 규칙", 1)[0]
+    assert f"주인공 이름: {name}\n" in profile
+    assert "신중한 성격의 사립 탐정." in profile
+    assert "카이" not in profile
+    assert "{{protagonist_name}}" not in captured[0]
 
 
 @pytest.fixture
