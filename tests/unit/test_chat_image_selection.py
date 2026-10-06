@@ -100,10 +100,11 @@ async def test_selects_original_mapping_and_sends_recent_two_turns(images, insta
     question = payload["questions"]["1"]
     assert question["type"] == "choice"
     assert question["criteria"] == {
-        str(index): f"인물: {image.name}, 이미지 이름: {image.image_name}"
+        str(index): image.image_name
         for index, image in enumerate(images, start=1)
     }
-    assert question["instructions"]
+    assert '선택 대상 인물: "세린"' in question["instructions"]
+    assert "{{character_name}}" not in question["instructions"]
     assert "## [INSTRUCTIONS]" not in question["instructions"]
     assert "cdn.example" not in requests[0].content.decode()
     assert [item.model_dump() for item in history] == original_history
@@ -212,6 +213,44 @@ async def test_multiple_speakers_share_one_call_and_exclude_silent_character(ima
     assert len(questions) == 2
     assert all("세린" in value for value in questions["1"]["criteria"].values())
     assert all("민수" in value for value in questions["2"]["criteria"].values())
+
+
+async def test_five_speakers_get_matching_instructions_and_full_candidate_lists(install_http) -> None:
+    names = ["서연", "민수", "지우", "하린", "도윤"]
+    counts = [20, 40, 3, 2, 4]
+    groups = [
+        [CharacterImageMapping(
+            name=name, image_name=f"편의점에서_짜증_{index}",
+            image_url=f"https://cdn.example/{number}/{index}.webp",
+        ) for index in range(count)]
+        for number, (name, count) in enumerate(zip(names, counts))
+    ]
+    data = response()
+    data["answers"] = {
+        str(number): {
+            "type": "choice", "choice": str(count), "confidence": 1.0,
+            "probabilities": {str(index): float(index == count) for index in range(1, count + 1)},
+        }
+        for number, count in enumerate(counts, start=1)
+    }
+    requests = install_http(lambda request: httpx.Response(200, json=data))
+    result = await select_images(
+        character_images=[image for group in reversed(groups) for image in group],
+        history=[], user_input="안녕",
+        ai_output="\n".join(f"{name}: 반가워" for name in names),
+    )
+    assert result.images == [group[-1] for group in groups]
+    assert len(requests) == 1
+    questions = json.loads(requests[0].content)["questions"]
+    assert len(questions) == 5
+    for number, (name, group) in enumerate(zip(names, groups), start=1):
+        question = questions[str(number)]
+        assert f'선택 대상 인물: "{name}"' in question["instructions"]
+        assert "{{character_name}}" not in question["instructions"]
+        assert all(other not in question["instructions"] for other in names if other != name)
+        assert question["criteria"] == {
+            str(index): image.image_name for index, image in enumerate(group, start=1)
+        }
 
 
 async def test_no_speaker_skips_api(images, install_http):

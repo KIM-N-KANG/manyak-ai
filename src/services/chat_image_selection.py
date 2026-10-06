@@ -1,6 +1,7 @@
 """제작자가 등록한 이미지 이름 중 대사 친 인물마다 대화 상황에 맞는 한 장을 선택한다(KNK-1505)."""
 
 import asyncio
+import json
 import logging
 import math
 from dataclasses import dataclass, field
@@ -95,9 +96,8 @@ async def select_images(
         by_id = {str(i): image for i, image in enumerate(images, start=1)}
         by_question[question_id] = by_id
         questions[question_id] = ChoiceQuestion(
-            instructions=_INSTRUCTIONS,
-            criteria={key: f"인물: {image.name}, 이미지 이름: {image.image_name}"
-                      for key, image in by_id.items()},
+            instructions=_INSTRUCTIONS.replace("{{character_name}}", json.dumps(name, ensure_ascii=False)),
+            criteria={key: image.image_name for key, image in by_id.items()},
         )
     if not questions:
         return ImageSelectionResult(images=list(selected.values()))
