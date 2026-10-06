@@ -24,6 +24,7 @@ from openai import (
     RateLimitError,
 )
 
+from src.core.tracing import start_span
 from src.services.llm.base import (
     PROVIDER_DEEPSEEK,
     PROVIDER_OPENAI,
@@ -309,31 +310,34 @@ def _translate(exc: OpenAIError, resolved: ResolvedModel) -> LlmError:
 
 async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
     """단발 호출. 재호출·시간 예산은 호출부가 관장하고 여기서는 한 번만 부른다."""
-    kwargs = _build_kwargs(req, resolved)
-    client = _client(resolved.provider)
-    if req.max_retries is not None:
-        client = client.with_options(max_retries=req.max_retries)
-    create = client.chat.completions.create
-    if not req.automatic_observation:
-        # 인스턴스·전역 패치를 바꾸지 않고 이 호출만 자동 계측을 건너뛴다.
-        # unwrap은 OpenAI의 인자 검사 래퍼까지 풀어 bound method가 함수가 될 수 있다.
-        bound_to = getattr(create, "__self__", None)
-        create = inspect.unwrap(create)
-        if bound_to is not None and inspect.isfunction(create):
-            create = create.__get__(bound_to, type(bound_to))
-    try:
-        response = await create(**kwargs)
-    except OpenAIError as exc:
-        raise _translate(exc, resolved) from exc
-    return LlmResult(
-        text=_text_of(response),
-        # 응답이 돌려준 실제 모델명. 비어 오면 요청에 쓴 이름으로 채운다 — 빈 값을 올리면
-        # 응답 meta 조립에서 터진다.
-        model=getattr(response, "model", None) or req.model,
-        provider=resolved.provider,
-        usage=_usage_of(response, resolved),
-        finish_reason=_finish_reason_of(response),
-    )
+    with start_span(
+        "llm.complete", {"provider": resolved.provider, "model": resolved.model, "operation": "complete"},
+    ):
+        kwargs = _build_kwargs(req, resolved)
+        client = _client(resolved.provider)
+        if req.max_retries is not None:
+            client = client.with_options(max_retries=req.max_retries)
+        create = client.chat.completions.create
+        if not req.automatic_observation:
+            # 인스턴스·전역 패치를 바꾸지 않고 이 호출만 자동 계측을 건너뛴다.
+            # unwrap은 OpenAI의 인자 검사 래퍼까지 풀어 bound method가 함수가 될 수 있다.
+            bound_to = getattr(create, "__self__", None)
+            create = inspect.unwrap(create)
+            if bound_to is not None and inspect.isfunction(create):
+                create = create.__get__(bound_to, type(bound_to))
+        try:
+            response = await create(**kwargs)
+        except OpenAIError as exc:
+            raise _translate(exc, resolved) from exc
+        return LlmResult(
+            text=_text_of(response),
+            # 응답이 돌려준 실제 모델명. 비어 오면 요청에 쓴 이름으로 채운다 — 빈 값을 올리면
+            # 응답 meta 조립에서 터진다.
+            model=getattr(response, "model", None) or req.model,
+            provider=resolved.provider,
+            usage=_usage_of(response, resolved),
+            finish_reason=_finish_reason_of(response),
+        )
 
 
 async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[StreamEvent]:
@@ -342,72 +346,75 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
     사용자 연결 취소(`CancelledError`)는 여기서 잡지 않는다 — BaseException이라 `except
     OpenAIError`에 걸리지 않고, 취소는 오류가 아니라 그냥 스트림이 끊기는 것이다.
     """
-    kwargs = _build_kwargs(req, resolved)
-    kwargs["stream"] = True
-    kwargs["stream_options"] = {"include_usage": True}  # 마지막 청크에 usage 동봉(토큰 로깅)
-    client = _client(resolved.provider)
-    if req.max_retries is not None:
-        client = client.with_options(max_retries=req.max_retries)
+    with start_span(
+        "llm.stream", {"provider": resolved.provider, "model": resolved.model, "operation": "stream"},
+    ):
+        kwargs = _build_kwargs(req, resolved)
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}  # 마지막 청크에 usage 동봉(토큰 로깅)
+        client = _client(resolved.provider)
+        if req.max_retries is not None:
+            client = client.with_options(max_retries=req.max_retries)
 
-    try:
-        chunks = await client.chat.completions.create(**kwargs)
-    except OpenAIError as exc:
-        raise _translate(exc, resolved) from exc
-
-    model = req.model
-    usage = TokenUsage()
-    finish_reason: str | None = None
-    try:
-        async for chunk in chunks:
-            # 모델·usage는 choices가 빈 청크(특히 usage 전용 마지막 청크)에도 오므로
-            # choices 가드보다 먼저 수집한다.
-            model = getattr(chunk, "model", None) or model
-            if getattr(chunk, "usage", None) is not None:
-                usage = _usage_of(chunk, resolved)
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            # 글자인지 확인하고 쓴다 — `_text_of`와 같은 규칙이다. 글자가 아닌 값(공급자에
-            # 따라 조각을 블록 목록으로 주기도 한다)을 그대로 흘리면 사용자 화면에 그 표기가
-            # 뜨거나, 이어 붙이는 쪽에서 터진다. 이상한 값은 조용히 버린다.
-            reason = getattr(choices[0], "finish_reason", None)
-            if isinstance(reason, str) and reason:
-                finish_reason = reason
-            delta = getattr(getattr(choices[0], "delta", None), "content", None)
-            if isinstance(delta, str) and delta:
-                yield TextDelta(delta)
-    except OpenAIError as exc:
-        # 일부를 이미 흘려보낸 뒤여도 중립 예외로 바꿔 던진다 — 호출부가 SSE error 이벤트로 옮긴다.
-        raise _translate(exc, resolved) from exc
-    except httpx.TimeoutException as exc:
-        # 스트림이 열린 뒤의 읽기 타임아웃. SDK는 요청 단계의 타임아웃만 APITimeoutError로 접고
-        # 반복 중의 것은 그대로 올려보낸다 — 아래 분기에 맡기면 같은 시간 초과가 발생 시점에 따라
-        # provider_timeout / provider_unavailable로 갈린다.
-        raise LlmTimeout(
-            f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
-        ) from exc
-    except (httpx.HTTPError, json.JSONDecodeError) as exc:
-        # SDK 밖으로 새는 **전송·파싱 오류만** 접는다. 스트림 반복은 SDK가 try/finally로만 감싸
-        # (except 없음) 연결 끊김(httpx)·SSE 줄의 깨진 JSON이 번역 없이 통과한다 — 그대로 두면
-        # 채팅은 error 이벤트도 못 내고 끊기고, 선택지·판정은 실패를 흡수하지 못해 500이 된다.
-        #
-        # 모든 예외를 잡지 않는 이유: 우리 코드의 결함(오타·형 실수)까지 여기서 접으면 그것이
-        # "공급자 장애"로 기록돼 원인 추적이 헛돈다(STYLEGUIDE §4).
-        # BaseException도 잡지 않는다: 취소(CancelledError)·조기 종료(GeneratorExit)는 오류가 아니다.
-        raise LlmUnavailable(
-            f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
-        ) from exc
-    finally:
-        # 스트림을 명시적으로 닫아 커넥션을 바로 반납한다. SDK도 자체 finally에서 닫지만 그것은
-        # 내부 제너레이터가 정리될 때(GC 시점) 실행돼, 사용자가 채팅 도중 창을 닫으면 반납이
-        # 늦어진다 — 흔한 경로라 여기서 결정적으로 닫는다.
         try:
-            await chunks.close()
-        except Exception:  # 정리 실패가 원래 오류·취소를 덮으면 안 된다 — 삼키되 로그로 남긴다.
-            logger.warning("스트림 정리에 실패했다 — 원래 결과를 그대로 둔다", exc_info=True)
-    yield StreamCompleted(
-        model=model,
-        provider=resolved.provider,
-        usage=usage,
-        finish_reason=finish_reason,
-    )
+            chunks = await client.chat.completions.create(**kwargs)
+        except OpenAIError as exc:
+            raise _translate(exc, resolved) from exc
+
+        model = req.model
+        usage = TokenUsage()
+        finish_reason: str | None = None
+        try:
+            async for chunk in chunks:
+                # 모델·usage는 choices가 빈 청크(특히 usage 전용 마지막 청크)에도 오므로
+                # choices 가드보다 먼저 수집한다.
+                model = getattr(chunk, "model", None) or model
+                if getattr(chunk, "usage", None) is not None:
+                    usage = _usage_of(chunk, resolved)
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                # 글자인지 확인하고 쓴다 — `_text_of`와 같은 규칙이다. 글자가 아닌 값(공급자에
+                # 따라 조각을 블록 목록으로 주기도 한다)을 그대로 흘리면 사용자 화면에 그 표기가
+                # 뜨거나, 이어 붙이는 쪽에서 터진다. 이상한 값은 조용히 버린다.
+                reason = getattr(choices[0], "finish_reason", None)
+                if isinstance(reason, str) and reason:
+                    finish_reason = reason
+                delta = getattr(getattr(choices[0], "delta", None), "content", None)
+                if isinstance(delta, str) and delta:
+                    yield TextDelta(delta)
+        except OpenAIError as exc:
+            # 일부를 이미 흘려보낸 뒤여도 중립 예외로 바꿔 던진다 — 호출부가 SSE error 이벤트로 옮긴다.
+            raise _translate(exc, resolved) from exc
+        except httpx.TimeoutException as exc:
+            # 스트림이 열린 뒤의 읽기 타임아웃. SDK는 요청 단계의 타임아웃만 APITimeoutError로 접고
+            # 반복 중의 것은 그대로 올려보낸다 — 아래 분기에 맡기면 같은 시간 초과가 발생 시점에 따라
+            # provider_timeout / provider_unavailable로 갈린다.
+            raise LlmTimeout(
+                f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
+            ) from exc
+        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            # SDK 밖으로 새는 **전송·파싱 오류만** 접는다. 스트림 반복은 SDK가 try/finally로만 감싸
+            # (except 없음) 연결 끊김(httpx)·SSE 줄의 깨진 JSON이 번역 없이 통과한다 — 그대로 두면
+            # 채팅은 error 이벤트도 못 내고 끊기고, 선택지·판정은 실패를 흡수하지 못해 500이 된다.
+            #
+            # 모든 예외를 잡지 않는 이유: 우리 코드의 결함(오타·형 실수)까지 여기서 접으면 그것이
+            # "공급자 장애"로 기록돼 원인 추적이 헛돈다(STYLEGUIDE §4).
+            # BaseException도 잡지 않는다: 취소(CancelledError)·조기 종료(GeneratorExit)는 오류가 아니다.
+            raise LlmUnavailable(
+                f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
+            ) from exc
+        finally:
+            # 스트림을 명시적으로 닫아 커넥션을 바로 반납한다. SDK도 자체 finally에서 닫지만 그것은
+            # 내부 제너레이터가 정리될 때(GC 시점) 실행돼, 사용자가 채팅 도중 창을 닫으면 반납이
+            # 늦어진다 — 흔한 경로라 여기서 결정적으로 닫는다.
+            try:
+                await chunks.close()
+            except Exception:  # 정리 실패가 원래 오류·취소를 덮으면 안 된다 — 삼키되 로그로 남긴다.
+                logger.warning("스트림 정리에 실패했다 — 원래 결과를 그대로 둔다", exc_info=True)
+        yield StreamCompleted(
+            model=model,
+            provider=resolved.provider,
+            usage=usage,
+            finish_reason=finish_reason,
+        )

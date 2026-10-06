@@ -21,6 +21,7 @@ import httpx
 from google import genai
 from google.genai import errors, types
 
+from src.core.tracing import start_span
 from src.core.langfuse import observe_generation
 from src.services.llm.base import (
     STRUCTURED_OUTPUT_JSON_OBJECT,
@@ -303,79 +304,85 @@ def _translate(exc: Exception, resolved: ResolvedModel) -> LlmError:
 
 async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
     """단발 호출."""
-    client = _client(resolved.provider)
-    config = _build_config(req, resolved)
-    contents = _build_contents(req)
-    # 관측 블록 안에서 나가는 예외(공급자 실패)는 관측에 ERROR로 남고 그대로 전파된다.
-    with observe_generation(
-        _OBSERVATION_NAME,
-        model=resolved.model,
-        model_parameters=_model_parameters(req, resolved),
-        input_data=req.messages,
-    ) as generation:
-        try:
-            response = await client.aio.models.generate_content(
-                model=resolved.model,
-                contents=contents,
-                config=config,
-            )
-        except errors.APIError as exc:
-            raise _translate(exc, resolved) from exc
-        except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
-            raise _translate(exc, resolved) from exc
-        text = _text_of(response)
-        generation.finish(output=text, usage_details=_usage_details(response))
-    return LlmResult(
-        text=text,
-        model=getattr(response, "model_version", None) or req.model,
-        provider=resolved.provider,
-        usage=_usage_of(response),
-        finish_reason=_finish_reason_of(response),
-    )
+    with start_span(
+        "llm.complete", {"provider": resolved.provider, "model": resolved.model, "operation": "complete"},
+    ):
+        client = _client(resolved.provider)
+        config = _build_config(req, resolved)
+        contents = _build_contents(req)
+        # 관측 블록 안에서 나가는 예외(공급자 실패)는 관측에 ERROR로 남고 그대로 전파된다.
+        with observe_generation(
+            _OBSERVATION_NAME,
+            model=resolved.model,
+            model_parameters=_model_parameters(req, resolved),
+            input_data=req.messages,
+        ) as generation:
+            try:
+                response = await client.aio.models.generate_content(
+                    model=resolved.model,
+                    contents=contents,
+                    config=config,
+                )
+            except errors.APIError as exc:
+                raise _translate(exc, resolved) from exc
+            except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
+                raise _translate(exc, resolved) from exc
+            text = _text_of(response)
+            generation.finish(output=text, usage_details=_usage_details(response))
+        return LlmResult(
+            text=text,
+            model=getattr(response, "model_version", None) or req.model,
+            provider=resolved.provider,
+            usage=_usage_of(response),
+            finish_reason=_finish_reason_of(response),
+        )
 
 
 async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[StreamEvent]:
     """스트리밍 호출. 조각을 TextDelta로 흘리고 마지막에 StreamCompleted를 낸다."""
-    client = _client(resolved.provider)
-    config = _build_config(req, resolved)
-    contents = _build_contents(req)
-    model = req.model
-    usage = TokenUsage()
-    finish_reason: str | None = None
-    try:
-        async for chunk in await client.aio.models.generate_content_stream(
-            model=resolved.model,
-            contents=contents,
-            config=config,
-        ):
-            # usage 수집
-            chunk_usage = getattr(chunk, "usage_metadata", None)
-            if chunk_usage is not None:
-                usage = _usage_of(chunk)
-            # model version 수집
-            model_version = getattr(chunk, "model_version", None)
-            if model_version:
-                model = model_version
-            # finish_reason 수집
-            candidates = getattr(chunk, "candidates", None)
-            if candidates:
-                reason = getattr(candidates[0], "finish_reason", None)
-                if reason is not None:
-                    finish_reason = reason.name.lower() if hasattr(reason, "name") else str(reason)
-            # 텍스트 조각 흘리기
-            try:
-                text = chunk.text
-            except Exception:
-                text = None
-            if isinstance(text, str) and text:
-                yield TextDelta(text)
-    except errors.APIError as exc:
-        raise _translate(exc, resolved) from exc
-    except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
-        raise _translate(exc, resolved) from exc
-    yield StreamCompleted(
-        model=model,
-        provider=resolved.provider,
-        usage=usage,
-        finish_reason=finish_reason,
-    )
+    with start_span(
+        "llm.stream", {"provider": resolved.provider, "model": resolved.model, "operation": "stream"},
+    ):
+        client = _client(resolved.provider)
+        config = _build_config(req, resolved)
+        contents = _build_contents(req)
+        model = req.model
+        usage = TokenUsage()
+        finish_reason: str | None = None
+        try:
+            async for chunk in await client.aio.models.generate_content_stream(
+                model=resolved.model,
+                contents=contents,
+                config=config,
+            ):
+                # usage 수집
+                chunk_usage = getattr(chunk, "usage_metadata", None)
+                if chunk_usage is not None:
+                    usage = _usage_of(chunk)
+                # model version 수집
+                model_version = getattr(chunk, "model_version", None)
+                if model_version:
+                    model = model_version
+                # finish_reason 수집
+                candidates = getattr(chunk, "candidates", None)
+                if candidates:
+                    reason = getattr(candidates[0], "finish_reason", None)
+                    if reason is not None:
+                        finish_reason = reason.name.lower() if hasattr(reason, "name") else str(reason)
+                # 텍스트 조각 흘리기
+                try:
+                    text = chunk.text
+                except Exception:
+                    text = None
+                if isinstance(text, str) and text:
+                    yield TextDelta(text)
+        except errors.APIError as exc:
+            raise _translate(exc, resolved) from exc
+        except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
+            raise _translate(exc, resolved) from exc
+        yield StreamCompleted(
+            model=model,
+            provider=resolved.provider,
+            usage=usage,
+            finish_reason=finish_reason,
+        )
