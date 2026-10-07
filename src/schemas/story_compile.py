@@ -173,8 +173,9 @@ class StoriesOut(BaseModel):
 
 
 class StorySettingsOut(BaseModel):
-    """AI 프롬프트 재료(story_settings 테이블) — 통글 마크다운 4필드."""
+    """AI 프롬프트 재료 — 기본 주인공 이름과 통글 마크다운 4필드."""
 
+    protagonist_name: str
     world_setting: str
     character_setting: str
     user_role_setting: str

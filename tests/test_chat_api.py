@@ -183,6 +183,28 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     assert meta["promptVersions"]["JUDGEMENT"] >= 1
 
 
+async def test_chat_turn_passes_protagonist_name_to_body_prompt(client, monkeypatch) -> None:
+    captured = []
+
+    async def fake_stream(messages, *, character_images):
+        captured.extend(messages)
+        yield {"event": "completed", "ai_output": "장면", "model": "test", "provider": "test"}
+
+    monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
+    payload = _payload()
+    payload["story_settings"]["protagonist_name"] = "민우"
+    payload["story_settings"]["user_role_setting"] = "신중한 성격의 사립 탐정."
+
+    response = await client.post("/api/v1/chat/turns", json=payload)
+
+    assert response.status_code == 200
+    assert "event: completed" in response.text
+    user_layer = captured[0]["content"].split("# USER-PROMPT", 1)[1]
+    assert "주인공 이름: 민우" in user_layer
+    assert "신중한 성격의 사립 탐정." in user_layer
+    assert "카이" not in user_layer
+
+
 async def test_chat_turn_serializes_character_image_event(client, mock_events) -> None:
     mock_events(
         [

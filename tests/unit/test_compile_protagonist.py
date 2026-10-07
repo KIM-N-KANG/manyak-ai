@@ -1,7 +1,7 @@
 """주인공 이름·성별 덮어쓰기와 통글 성별 칸(KNK-838) 검증.
 
 계약(spec/5-ai-server-spec.md §5-3-3): 사용자가 입력한 주인공 이름은 LLM 출력에 맡기지 않고
-코드가 주인공 통글에 덮어써 담보한다(장르 덮어쓰기와 같은 원칙, adr/3-ai-server-adr.md D7). 성별은 인물
+코드가 별도 protagonist_name 필드에 담아 보존한다(장르 덮어쓰기와 같은 원칙, adr/3-ai-server-adr.md D7). 성별은 인물
 카드 `### 성별`, 주인공 통글 `## 성별` 명시 칸으로 나간다. 칸 값의 품질은 실측 몫이다.
 """
 
@@ -41,8 +41,48 @@ def test_gender_sections_rendered() -> None:
     res = spec_to_response(StorySpec(**_spec()), thumbnail_image=ThumbnailImageOut(error="generation_failed"))
     # 인물 카드: 이름 바로 아래 ### 성별. fixture 첫 카드는 레이(남성).
     assert "## 레이\n### 성별\n남성\n### 성격" in res.story_settings.character_setting
-    # 주인공 통글: 호칭 바로 아래 ## 성별.
+    # 주인공 통글은 이름 없이 성별부터 시작한다.
     assert "## 성별\n남성\n## 역할" in res.story_settings.user_role_setting
+
+
+def test_username_tokens_preserved_in_compile_response() -> None:
+    """컴파일 모델이 만든 토큰·조사를 렌더러가 치환하거나 없애지 않는다."""
+    data = _spec()
+    text = "{username}은(는) 문을 열었다."
+    ps = data["prompt_settings"]
+    ps["user_role_setting"]["name"] = "도준"
+    ps["user_role_setting"]["background"] = text
+    ps["world_setting"] = text
+    ps["rule_setting"] = text
+    ps["character_setting"][0]["attitude_to_user"] = text
+    ps["character_setting"][0]["description"] = text
+    data["start"]["prologue"] = text
+    data["start"]["start_situation"] = text
+    data["suggested_inputs"][0] = text
+    data["main_events"][0]["description"] = text
+    data["endings"][0]["achievement_condition"] = text
+    data["endings"][0]["epilogue"] = text
+
+    res = spec_to_response(
+        StorySpec(**data), thumbnail_image=ThumbnailImageOut(error="generation_failed")
+    )
+
+    assert res.story_settings.protagonist_name == "도준"
+    for field in (
+        res.story_settings.user_role_setting,
+        res.story_settings.world_setting,
+        res.story_settings.rule_setting,
+        res.story_settings.character_setting,
+        res.story_start_settings.prologue,
+        res.story_start_settings.start_situation,
+        res.story_suggested_inputs[0],
+        res.story_main_events[0].description,
+        res.story_endings[0].achievement_condition,
+        res.story_endings[0].epilogue,
+        res.character_introductions[0].description,
+    ):
+        assert text in field
+        assert "도준" not in field
 
 
 # ── 주인공 이름·성별 덮어쓰기 ───────────────────────────────────────────────
@@ -51,7 +91,9 @@ async def test_protagonist_input_overrides_llm_values(monkeypatch: pytest.Monkey
     _patch_llm(monkeypatch, _spec())
     res = await story_llm.compile_story(_request({"name": "카일라", "gender": "FEMALE"}))
     ur = res.story_settings.user_role_setting
-    assert "## 호칭\n카일라\n" in ur
+    assert res.story_settings.protagonist_name == "카일라"
+    assert "카일라" not in ur
+    assert "## 호칭" not in ur
     assert "## 성별\n여성\n" in ur
     assert "기사님" not in ur
 
@@ -61,7 +103,8 @@ async def test_protagonist_blank_keeps_llm_values(monkeypatch: pytest.MonkeyPatc
     _patch_llm(monkeypatch, _spec())
     res = await story_llm.compile_story(_request({"features": ["신중한"]}))
     ur = res.story_settings.user_role_setting
-    assert "## 호칭\n기사님\n" in ur
+    assert res.story_settings.protagonist_name == "기사님"
+    assert "기사님" not in ur
     assert "## 성별\n남성\n" in ur
 
 
@@ -75,7 +118,8 @@ async def test_gender_only_input_keeps_llm_name(monkeypatch: pytest.MonkeyPatch)
     _patch_llm(monkeypatch, _spec())
     res = await story_llm.compile_story(_request({"gender": "FEMALE"}))
     ur = res.story_settings.user_role_setting
-    assert "## 호칭\n기사님\n" in ur  # 이름은 LLM 값 그대로
+    assert res.story_settings.protagonist_name == "기사님"  # 이름은 LLM 값 그대로
+    assert "기사님" not in ur
     assert "## 성별\n여성\n" in ur  # 성별만 입력값으로 교체
 
 
@@ -83,7 +127,9 @@ async def test_name_only_input_keeps_llm_gender(monkeypatch: pytest.MonkeyPatch)
     _patch_llm(monkeypatch, _spec())
     res = await story_llm.compile_story(_request({"name": "카일라"}))
     ur = res.story_settings.user_role_setting
-    assert "## 호칭\n카일라\n" in ur
+    assert res.story_settings.protagonist_name == "카일라"
+    assert "카일라" not in ur
+    assert "## 호칭" not in ur
     assert "## 성별\n남성\n" in ur  # 성별은 LLM 값 그대로
 
 
@@ -109,7 +155,9 @@ async def test_input_reapplied_after_refill(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert calls == ["compile", "refill#1"]  # 재호출 1회로 회복
     ur = res.story_settings.user_role_setting
-    assert "## 호칭\n카일라\n" in ur
+    assert res.story_settings.protagonist_name == "카일라"
+    assert "카일라" not in ur
+    assert "## 호칭" not in ur
     assert "## 성별\n여성\n" in ur
     assert "기사님" not in ur  # 재호출이 데려온 LLM 값이 되살아나지 않는다
 
@@ -130,7 +178,8 @@ async def test_injection_fills_empty_llm_fields_without_refill(
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
     res = await story_llm.compile_story(_request({"name": "카일라", "gender": "FEMALE"}))
     assert calls == ["compile"]
-    assert "## 호칭\n카일라\n" in res.story_settings.user_role_setting
+    assert res.story_settings.protagonist_name == "카일라"
+    assert "카일라" not in res.story_settings.user_role_setting
 
 
 def test_inject_protagonist_survives_malformed_block() -> None:
@@ -150,3 +199,70 @@ def test_missing_gender_detected_as_refill_target() -> None:
     missing = story_llm._find_missing_keys(data)
     assert "prompt_settings.character_setting[0].gender" in missing
     assert "prompt_settings.user_role_setting.gender" in missing
+
+
+@pytest.mark.parametrize(('original', 'expected'), [
+    ('도준은 왔다.', '{username}은(는) 왔다.'),
+    ('도준는 왔다.', '{username}은(는) 왔다.'),
+    ('도준이, 도준가', '{username}이(가), {username}이(가)'),
+    ('도준을/도준를', '{username}을(를)/{username}을(를)'),
+    ('도준과 도준와', '{username}과(와) {username}과(와)'),
+    ('도준으로 도준로', '{username}으로(로) {username}으로(로)'),
+    ('도준아! 도준야!', '{username}아(야)! {username}아(야)!'),
+    ('도준이랑 도준랑', '{username}이랑(랑) {username}이랑(랑)'),
+    ('도준의 도준에게는 도준이라는', '{username}의 {username}에게는 {username}이라는'),
+    ('도준은(는) 왔다.', '{username}은(는) 왔다.'),
+    ('{username}은(는) 왔다.', '{username}은(는) 왔다.'),
+])
+def test_protagonist_name_and_common_particles(original: str, expected: str) -> None:
+    from src.services.story_compile_render import _tokenize_name
+
+    assert _tokenize_name(original, '도준') == expected
+
+
+def test_compile_replaces_literal_name_in_all_prose() -> None:
+    data = _spec()
+    original = '도준은 사건을 조사한다.'
+    expected = '{username}은(는) 사건을 조사한다.'
+    ps = data['prompt_settings']
+    ps['user_role_setting']['name'] = '도준'
+    ps['user_role_setting']['background'] = original
+    for key in ('world_setting', 'rule_setting', 'tone_setting'):
+        ps[key] = original
+    ps['plot_setting']['premise'] = original
+    ps['character_setting'][0]['attitude_to_user'] = original
+    ps['character_setting'][0]['description'] = original
+    for key in ('title', 'one_line_intro', 'description'):
+        data['meta'][key] = original
+    for key in ('name', 'prologue', 'start_situation'):
+        data['start'][key] = original
+    data['suggested_inputs'] = [original] * 3
+    for event in data['main_events']:
+        for key in ('name', 'description', 'key_sentence'):
+            event[key] = original
+    for ending in data['endings']:
+        for key in ('name', 'achievement_condition', 'epilogue'):
+            ending[key] = original
+    spec = StorySpec(**data)
+    before = spec.model_dump()
+    result = spec_to_response(spec, thumbnail_image=ThumbnailImageOut(error='generation_failed'))
+    assert result.story_settings.protagonist_name == '도준'
+    assert result.stories.one_line_intro == expected
+    assert spec.model_dump() == before  # 이미지 생성에도 쓰는 원본을 건드리지 않는다.
+    prose = result.model_dump(include={
+        'stories', 'story_settings', 'story_start_settings', 'story_suggested_inputs',
+        'story_main_events', 'story_endings', 'character_introductions',
+    })
+    del prose['story_settings']['protagonist_name']
+    assert '도준' not in json.dumps(prose, ensure_ascii=False)
+    assert result.story_settings.world_setting.count(expected) == 2
+    assert result.character_introductions[0].description == expected
+    assert result.character_appearances[0].name == ps['character_setting'][0]['name']
+    assert result.story_endings[0].min_turns == data['endings'][0]['min_turns']
+
+
+def test_name_is_literal_not_regex_and_empty_name_is_safe() -> None:
+    from src.services.story_compile_render import _tokenize_name
+
+    assert _tokenize_name('A.B는 A+B와 왔다.', 'A.B') == '{username}은(는) A+B와 왔다.'
+    assert _tokenize_name('이름 없음', '') == '이름 없음'

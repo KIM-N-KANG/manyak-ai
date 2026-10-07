@@ -1,6 +1,6 @@
 ---
-version: 3
-updated: 2026-07-08
+version: 4
+updated: 2026-10-06
 name: 다음 행동 선택지 생성
 note: >-
   6레이어 조립에 들어가지 않는 독립 프롬프트(STORYLINES/COMPILE 템플릿과 같은 위상).
@@ -62,6 +62,8 @@ note: >-
 {{character_setting}}
 
 # 주인공
+주인공 이름: {{protagonist_name}}
+
 {{user_role_setting}}
 
 # 전개 규칙

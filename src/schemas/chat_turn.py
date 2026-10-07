@@ -24,19 +24,21 @@ logger = logging.getLogger(__name__)
 
 
 class ChatStorySettings(BaseModel):
-    """프롬프트 슬롯 재료 — `story_settings` 통글 마크다운 4필드.
+    """프롬프트 슬롯 재료 — 이번 채팅의 주인공 이름과 통글 마크다운 4필드.
 
-    스토리 컴파일(A-1)의 산출물(`StorySettingsOut`)과 동일 구조다. 채팅 턴마다
-    백엔드가 DB에서 조회해 그대로 전달하며, AI는 보관하지 않고 매 턴 슬롯에 통째로
+    채팅 턴마다 백엔드가 선택한 주인공 이름·설정과 스토리 재료를 전달하며,
+    AI는 보관하지 않고 매 턴 슬롯에 통째로
     치환해 쓴다(완전 stateless). 슬롯 매핑은 명세 3.3:
     world_setting→{{world_setting}}, rule_setting→{{rule_setting}},
     character_setting→{{character_setting}}, user_role_setting→{{user_role_setting}}.
+    protagonist_name→{{protagonist_name}}. 본문 속 이름 토큰은 백엔드가 치환해 보낸다.
     """
 
     world_setting: str
     character_setting: str
     user_role_setting: str
     rule_setting: str
+    protagonist_name: str = ""
 
 
 class ChatStartSettings(BaseModel):

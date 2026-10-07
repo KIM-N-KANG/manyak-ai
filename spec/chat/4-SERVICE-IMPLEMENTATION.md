@@ -1,6 +1,6 @@
 ---
-version: 25
-updated: 2026-10-06
+version: 26
+updated: 2026-10-07
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -231,6 +231,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 > | (`story_start_settings`) | STORY | `{{start_setting}}` | **예외 소스 — `story_settings` 아님.** `name`+`prologue`+`start_situation`을 통글로 엮어(`# 시작 설정: {name}` + 프롤로그·시작 상황) 매 턴 고정 삽입한다. 같은 세계관이어도 이 출발점이 전개 방향을 정하므로 STORY 소속. 첫 턴 History 시드(3.4)와 병행하며, 시드가 윈도우 밖으로 밀려나도 이 슬롯이 출발 전제를 유지한다. |
 > | `rule_setting` | STORY | `{{rule_setting}}` | 전개 규칙 + 문체 톤 + 분량 배분을 한 통글로(`# 전개 규칙` / `# 문체 톤` / `# 분량 배분`). 작가가 쓴 스토리별 콘텐츠라 **CORE 아님**(CORE는 콘텐츠 비의존 고정, 2.5·3.2). 출력 형식의 고정 봉투만 CORE가 소유. |
 > | `character_setting` | CHARACTER | `{{character_setting}}` | 주변인물 카드를 한 통글로(`# 등장인물` + 인물 1명당 `## 블록`; 성별·성격·말투·동기·주인공을 대하는 태도, **최대 5명**). **주변인물만** — 텍스트에 주인공이 섞이면 컴파일 시 분리해 주인공 정보는 USER로 보낸다(2.1). 통글의 태도 서술은 **초기 고정값**이며 이후 변화는 MEMORY가 기록한다. |
+> | `protagonist_name` | USER | `{{protagonist_name}}` | 백엔드가 선택해 전달한 이번 채팅의 실제 주인공 이름. |
 > | `user_role_setting` | USER | `{{user_role_setting}}` | 주인공(1인칭 플레이어) 프로필 통글(`# 주인공` …). |
 >
 > **통글 슬롯 = 통째 삽입 (확정).** 매 턴 런타임 조립(B)은 각 통글 필드를 대응 슬롯에 **통째로 삽입**한다 — 하위 키 분해·재분석·LLM이 필요 없다. 컴파일(A-1)에서 세분 JSON의 필수 키를 검증한 뒤 `story_compile_render`가 이미 레이어별 통글로 조립해 두므로(세계관+전제+갈등→`world_setting`, 전개규칙+문체톤+분량배분→`rule_setting`, 인물 카드 반복→`character_setting`, 주인공→`user_role_setting`), 조립 시 슬롯 채움은 순수 치환이다. 이로써 "슬롯 치환 = LLM 없는 결정적 치환" 원칙이 **통글 단위**로 성립한다.
@@ -263,7 +264,10 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 #### USER-TEMPLATE.md (주인공, 1인칭)
 | 슬롯 | 채우는 방식 | 소스 |
 |---|---|---|
-| `{{user_role_setting}}` | 통글 삽입 | `user_role_setting` 통글(`# 주인공` + 호칭·성별·역할·배경·성격·입력 선호; 입력 선호는 비어 있을 수 있음) |
+| `{{protagonist_name}}` | 문자열 삽입 | `story_settings.protagonist_name` — 이번 채팅의 실제 주인공 이름 |
+| `{{user_role_setting}}` | 통글 삽입 | `story_settings.user_role_setting` — 이번 채팅의 주인공 설명 |
+
+`protagonist_name`은 문자열이며 생략 시 빈 문자열입니다. 백엔드가 기본 주인공 또는 페르소나의 이름·설명을 선택해 전달합니다. 본문 조립기는 이를 USER 레이어에 삽입하며 이름을 추출하거나 페르소나 여부를 판단하지 않습니다. `{username}` 치환은 백엔드가 끝낸 상태로 전달합니다.
 
 #### SAFETY / CORE
 - **슬롯 없음.** 콘텐츠 비의존 정적 템플릿이므로 채우지 않는다.
@@ -523,6 +527,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 > **선택지 흐름 (전용 엔드포인트 `POST /chat/choices`, KNK-625).** 백엔드가 completed 이후
 > (턴 저장 뒤) 턴 요청과 같은 재료 + 방금 본문(`ai_output`)으로 호출하는 **동기 REST**다.
+> 선택지 프롬프트의 주인공 영역에는 `story_settings.protagonist_name`과 `user_role_setting`을 함께 삽입한다. 이름은 문자열이며 생략 시 빈 문자열이다. 이름·설명은 백엔드가 선택한 값을 그대로 쓰고, 부족한 선택지를 보충하는 재호출에도 동일하게 전달한다.
 > AI 서버는 선택지 LLM 입력을 만들 때 History와 `ai_output` 복사본에서 저장 마커(와 뒤 줄바꿈)를 제거한다.
 > CHOICES 프롬프트로 별도 LLM 호출(비스트리밍 JSON) → 다음 행동 3개. 코드가 개수를 검증해
 > 보충(최대 2회)·패딩으로 항상 정확히 3개를 보장하고(2.5) 호출 실패도 흡수하므로 **유효한
