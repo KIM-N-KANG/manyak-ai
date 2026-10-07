@@ -204,6 +204,17 @@ def _insert_storage_markers(
     return _speaker_label_re(images).sub(replace, text), displayed
 
 
+def speaking_character_names(text: str, character_images: list[CharacterImageMapping]) -> list[str]:
+    """기존 라벨·별칭 규칙으로 대사 친 인물을 등장 순서대로 반환한다."""
+    images = _images_by_name(character_images)
+    if not images:
+        return []
+    return list(dict.fromkeys(
+        images[match.group(2)].name
+        for match in _speaker_label_re(images).finditer(_strip_speaker_bold(text))
+    ))
+
+
 def render_chat_images(
     text: str, character_images: list[CharacterImageMapping]
 ) -> tuple[list[dict], str, list[dict]]:
