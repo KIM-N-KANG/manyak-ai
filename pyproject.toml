@@ -1,6 +1,6 @@
 [project]
 name = "ai-service"
-version = "0.4.4"
+version = "0.4.5"
 requires-python = ">=3.11"
 dependencies = [
     # SDK 1.44.0의 semantic-conventions와 contrib 0.65b0을 함께 고정합니다.
