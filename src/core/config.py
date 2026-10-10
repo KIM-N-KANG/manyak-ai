@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
-    app_version: str = "0.4.4"
+    app_version: str = "0.4.5"
     debug: bool = False
 
     # KNK-1554: Langfuse와 분리된 인프라 추적. endpoint는 /v1/traces까지 포함합니다.
@@ -33,6 +34,10 @@ class Settings(BaseSettings):
     # 주소 기본값은 None — SDK 기본 주소를 쓴다는 뜻이다.
     gemini_api_key: str = ""
     gemini_api_url: str | None = None
+    # JEV 판정(KNK-1448). 키 부재는 서버 기동 대신 해당 호출에서 드러낸다.
+    typesafe_api_key: str = Field(default="", repr=False)
+    typesafe_api_url: str = "https://api.typesafe.ai"
+    jev_model: str = "jev-1.13.0"
     # 모델은 용도별 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
     # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
     story_compile_model: str = "gpt-5.6-terra"  # 스토리 컴파일 전용

@@ -95,6 +95,29 @@ async def test_first_call_gives_three(install_llm_sdk) -> None:
     assert res.input_tokens == 5 and res.output_tokens == 7
 
 
+async def test_refill_keeps_protagonist_name_and_description(monkeypatch) -> None:
+    req = _request()
+    req.story_settings.protagonist_name = "민우"
+    req.story_settings.user_role_setting = "신중한 성격의 사립 탐정."
+    captured = []
+
+    async def fake_call(system, user):
+        captured.append(user)
+        choices = ["맞선다", "피한다"] if len(captured) == 1 else ["살핀다"]
+        return choices, "test", 1, 1
+
+    monkeypatch.setattr(chat_choices, "_call", fake_call)
+    res = await generate_choices(req, "*문이 열렸다.*")
+
+    assert res.choices == ["맞선다", "피한다", "살핀다"]
+    assert res.retry_count == 1
+    assert len(captured) == 2
+    for user in captured:
+        assert "주인공 이름: 민우" in user
+        assert "신중한 성격의 사립 탐정." in user
+        assert "카이" not in user
+
+
 async def test_accumulates_across_refill(install_llm_sdk) -> None:
     # 2개 → (재호출) 1개 = 누적 3개. retry_count=1, 토큰 합산.
     state = _mock_calls(

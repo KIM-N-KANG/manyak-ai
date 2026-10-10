@@ -1,6 +1,6 @@
 ---
-version: 13
-updated: 2026-09-29
+version: 16
+updated: 2026-10-06
 ---
 
 # 스토리 컴파일 프롬프트 (희소 입력 → 스토리 명세 JSON)
@@ -21,6 +21,11 @@ updated: 2026-09-29
 - 입력이 0명이면 스토리라인에 맞춰 주변 인물 1~5명을 자유롭게 구성한다. 이때도 이야기의 인물·관계를 바탕으로 구체화하며 기존 인물을 무관한 새 인물로 교체하지 않는다.
 - 소개·세계관·시작 장면·주요 사건·엔딩은 같은 카드 인물로 구성한다. 대화·대면·갈등의 상대를 카드 밖에 따로 두지 않는다. 추가정보·로어북은 기존 인물과 사건을 구체화하는 재료이지 별도 인물을 추가하는 근거가 아니다.
 - 예: 입력이 '서린 + 이름 미정'이고 이야기의 두 주변 인물이 '서린 + 주인공의 아버지'이면, 두 번째 카드는 아버지다. 아버지의 이름·외형을 보충하되 부자 관계와 사건 속 역할을 유지한다. 새 동료 카드를 만들고 아버지를 본문에만 남기는 것은 잘못이다.
+
+### 주인공 이름 표기
+
+- 입력 주인공 이름이 있으면 글자 수와 관계없이 그대로 쓰고, 없으면 이야기에 맞는 두 글자 이상의 이름을 정한다. `prompt_settings.user_role_setting.name`과 생성하는 모든 글에서 같은 이름을 일관되게 사용한다.
+- `user_role_setting`의 이름 외 필드는 성별·역할·배경·성격·입력 선호만 설명한다.
 
 ### 역할 매핑 규칙
 
@@ -170,7 +175,7 @@ updated: 2026-09-29
     "tone_setting": "...",
     "length_ratio": "...",
     "character_setting": [
-      { "input_character_id": "input-1", "name": "...", "description": "무뚝뚝하지만 주인공의 조사를 돕는 사서.", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
+      { "input_character_id": "input-1", "name": "...", "description": "...", "gender": "...", "personality": "...", "tone": "...", "motivation": "...", "attitude_to_user": "...", "age": "...", "body": "...", "face": "...", "hair": "...", "outfit": "...", "visual_identity": "..." }
     ],
     "user_role_setting": { "name": "...", "gender": "...", "role": "...", "background": "...", "personality": "...", "preference": "" }
   },

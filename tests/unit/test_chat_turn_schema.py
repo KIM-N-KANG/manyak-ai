@@ -42,6 +42,22 @@ _MAIN_EVENT = {
 }
 
 
+def test_protagonist_name_is_preserved_in_story_settings() -> None:
+    payload = {
+        **_BASE_PAYLOAD,
+        "story_settings": {**_BASE_PAYLOAD["story_settings"], "protagonist_name": "민우"},
+    }
+    req = ChatTurnRequest.model_validate(payload)
+    assert req.story_settings.protagonist_name == "민우"
+    assert req.model_dump()["story_settings"]["protagonist_name"] == "민우"
+
+
+def test_omitted_protagonist_name_keeps_existing_request_valid() -> None:
+    req = ChatTurnRequest.model_validate(_BASE_PAYLOAD)
+    assert req.story_settings.protagonist_name == ""
+    assert req.story_settings.user_role_setting == _BASE_PAYLOAD["story_settings"]["user_role_setting"]
+
+
 _IMAGE_SLOT = {
     "key": "chat-images/test/turn-1.webp",
     "upload_url": "https://bucket.s3.amazonaws.com/chat-images/test/turn-1.webp?signature=a%2Fb&part=1",

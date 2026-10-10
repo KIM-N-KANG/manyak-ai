@@ -183,6 +183,28 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     assert meta["promptVersions"]["JUDGEMENT"] >= 1
 
 
+async def test_chat_turn_passes_protagonist_name_to_body_prompt(client, monkeypatch) -> None:
+    captured = []
+
+    async def fake_stream(messages, *, character_images):
+        captured.extend(messages)
+        yield {"event": "completed", "ai_output": "장면", "model": "test", "provider": "test"}
+
+    monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
+    payload = _payload()
+    payload["story_settings"]["protagonist_name"] = "민우"
+    payload["story_settings"]["user_role_setting"] = "신중한 성격의 사립 탐정."
+
+    response = await client.post("/api/v1/chat/turns", json=payload)
+
+    assert response.status_code == 200
+    assert "event: completed" in response.text
+    user_layer = captured[0]["content"].split("# USER-PROMPT", 1)[1]
+    assert "주인공 이름: 민우" in user_layer
+    assert "신중한 성격의 사립 탐정." in user_layer
+    assert "카이" not in user_layer
+
+
 async def test_chat_turn_serializes_character_image_event(client, mock_events) -> None:
     mock_events(
         [
@@ -1105,3 +1127,34 @@ async def test_child_image_from_body_sdk_through_edit_http_to_sse(
         assert len(edits) == (0 if outcome == "download_failed" else 2)  # SDK 자동 재시도 없음
         assert validated_outcomes == ([] if outcome == "download_failed" else [outcome, outcome])
         assert len(streams) == 2 and all(stream.closed for stream in streams)
+
+
+async def test_off_selects_both_speakers_and_stores_same_images(client, mock_events, monkeypatch):
+    from unittest.mock import AsyncMock
+    from src.services import chat_selected_images
+    from src.services.chat_image_selection import ImageSelectionResult
+    from src.schemas.chat_turn import CharacterImageMapping
+
+    selected = [CharacterImageMapping(name=name, image_name=f"{name}_웃음", image_url=f"https://cdn.example/{name}_웃음")
+                for name in ("세린", "민수")]
+    select = AsyncMock(return_value=ImageSelectionResult(images=selected))
+    monkeypatch.setattr(chat_selected_images, "select_images", select)
+    monkeypatch.setattr(chat_selected_images, "_TEXT_CHUNK_INTERVAL_SECONDS", 0)
+    text = "세린: 반가워.\n민수: 나도."
+    mock_events([{"event": "token", "text": text},
+                 {"event": "completed", "ai_output": text, "model": "deepseek-flash", "provider": "deepseek"}])
+    payload = _payload() | {"image_slots": [], "character_images": [
+        image.model_dump() for image in selected
+    ]}
+    response = await client.post("/api/v1/chat/turns", json=payload)
+    assert response.status_code == 200
+    select.assert_awaited_once()
+    frames = [frame.splitlines() for frame in response.text.strip().split("\n\n")]
+    events = [(lines[0][7:], json.loads(lines[1][6:])) for lines in frames]
+    images = [data for event, data in events if event == "character_image"]
+    assert [data["name"] for data in images] == ["세린", "민수"]
+    assert all(len(data["text"]) <= 5 for event, data in events if event == "token")
+    assert "".join(data["text"] for event, data in events if event == "token") == text
+    completed = _data_of(response.text, "completed")
+    assert completed["characterImages"] == images
+    assert all(f"[[{image.image_url}]]" in completed["aiOutput"] for image in selected)

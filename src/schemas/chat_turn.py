@@ -24,19 +24,21 @@ logger = logging.getLogger(__name__)
 
 
 class ChatStorySettings(BaseModel):
-    """프롬프트 슬롯 재료 — `story_settings` 통글 마크다운 4필드.
+    """프롬프트 슬롯 재료 — 이번 채팅의 주인공 이름과 통글 마크다운 4필드.
 
-    스토리 컴파일(A-1)의 산출물(`StorySettingsOut`)과 동일 구조다. 채팅 턴마다
-    백엔드가 DB에서 조회해 그대로 전달하며, AI는 보관하지 않고 매 턴 슬롯에 통째로
+    채팅 턴마다 백엔드가 선택한 주인공 이름·설정과 스토리 재료를 전달하며,
+    AI는 보관하지 않고 매 턴 슬롯에 통째로
     치환해 쓴다(완전 stateless). 슬롯 매핑은 명세 3.3:
     world_setting→{{world_setting}}, rule_setting→{{rule_setting}},
     character_setting→{{character_setting}}, user_role_setting→{{user_role_setting}}.
+    protagonist_name→{{protagonist_name}}. 본문 속 이름 토큰은 백엔드가 치환해 보낸다.
     """
 
     world_setting: str
     character_setting: str
     user_role_setting: str
     rule_setting: str
+    protagonist_name: str = ""
 
 
 class ChatStartSettings(BaseModel):
@@ -121,8 +123,9 @@ class CharacterImageMapping(BaseModel):
     """백엔드가 매 턴 전달하는 인물 이름·이미지 이름·저장 이미지 URL의 매핑.
 
     name은 출력의 `인물명:` 라벨과 글자 그대로 대조하는 키라 반드시 인물 이름이다.
-    image_name은 이미지 한 장을 구분하는 이름(예: `세린_기본`, KNK-1026)이며 지금은
-    고르는 데 쓰지 않고 받은 값을 그대로 돌려준다. 백엔드가 아직 보내지 않으면(칸 없음·빈
+    image_name은 이미지 한 장을 구분하는 이름(예: `세린_기본`, KNK-1026)이며
+    실시간 생성 OFF에서는 Jev 선택의 후보 설명으로 사용한다. 응답에는 받은 값을 그대로
+    돌려준다. 백엔드가 아직 보내지 않으면(칸 없음·빈
     문자열·null 모두) 빈 문자열로 정리해 내보낸다 — 없는 값을 인물 이름으로 채워 있는 척하지
     않는다. null을 받는 이유는 백엔드가 컬럼을 새로 만들 때 기존 스토리 행이 null로 실려 와
     턴 전체가 422로 튕기는 것을 막기 위해서다.
