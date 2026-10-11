@@ -252,7 +252,7 @@ async def test_judgement_call_contract(install_llm_sdk) -> None:
     install_llm_sdk(_create)
     await generate_judgement(_request(main_events=_EVENTS, endings=_ENDINGS), "*장면*")
 
-    assert captured["model"] == chat_judgement.settings.chat_model
+    assert captured["model"] == chat_judgement.settings.effective_chat_judgement_model
     assert [m["role"] for m in captured["messages"]] == ["system", "user"]
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["max_tokens"] == chat_judgement._MAX_TOKENS
@@ -551,3 +551,38 @@ async def test_skipping_judgement_keeps_the_target_the_request_carried(install_l
     assert res.target_main_event.progress_turns == 4, "판정이 없었으니 카운터는 동결한다"
     # 이번 턴에 무슨 일이 있었는지는 판정만 알 수 있다 — 안 돌렸으니 지어내지 않는다.
     assert (res.occurred_main_event_name, res.ending_name) == (None, None)
+
+
+# ── 판정 모델 분리 (KNK-1620) ─────────────────────────────────────────────────
+async def test_judgement_uses_its_own_model_when_set(
+    monkeypatch, other_provider_model, install_llm_sdk
+) -> None:
+    """CHAT_JUDGEMENT_MODEL을 채우면 판정은 본문 모델이 아니라 그 모델로 부른다."""
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"target_main_event": null}', usage=_Usage(1, 1))
+
+    model = other_provider_model()
+    monkeypatch.setattr(chat_judgement.settings, "chat_judgement_model", model)
+    install_llm_sdk(_create)
+    await generate_judgement(_request(main_events=_EVENTS, endings=_ENDINGS), "*장면*")
+
+    assert captured["model"] == model
+    assert captured["model"] != chat_judgement.settings.chat_model
+
+
+async def test_judgement_follows_chat_model_when_unset(monkeypatch, install_llm_sdk) -> None:
+    """CHAT_JUDGEMENT_MODEL이 비어 있으면 지금처럼 본문 모델(CHAT_MODEL)로 판정한다."""
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return _Resp('{"target_main_event": null}', usage=_Usage(1, 1))
+
+    monkeypatch.setattr(chat_judgement.settings, "chat_judgement_model", "")
+    install_llm_sdk(_create)
+    await generate_judgement(_request(main_events=_EVENTS, endings=_ENDINGS), "*장면*")
+
+    assert captured["model"] == chat_judgement.settings.chat_model

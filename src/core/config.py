@@ -42,10 +42,20 @@ class Settings(BaseSettings):
     # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
     story_compile_model: str = "gpt-5.6-terra"  # 스토리 컴파일 전용
     storylines_model: str = "deepseek-flash"  # 스토리라인 생성 전용(fast, KNK-215)
-    chat_model: str = "deepseek-flash"  # 채팅 본문·판정 공용(fast, KNK-215)
+    chat_model: str = "deepseek-flash"  # 채팅 본문 전용, 판정 모델이 비면 판정도 맡음(fast, KNK-215)
+    # 판정은 본문과 따로 고를 수 있다(KNK-1620). 본문 모델을 바꿔 비교할 때 판정까지 딸려가지
+    # 않게 하려는 것이다. 선택지와 달리 기본값을 박지 않고 비워 두면 CHAT_MODEL을 따른다 —
+    # 운영 CHAT_MODEL은 배포 설정으로 바뀔 수 있어, 기본값을 따로 두면 판정만 몰래 옛 모델로
+    # 돌아갈 수 있기 때문이다. 실제로 쓸 값은 `effective_chat_judgement_model`로 읽는다.
+    chat_judgement_model: str = ""
     # 선택지는 본문과 따로 고른다(KNK-1416). 본문 모델을 바꿔도 별도 API인 선택지가 딸려가지
     # 않게 하려는 것이다. 운영 env가 없으면 이 기본값이 쓰이므로 분리 전 운영과 같은 모델로 둔다.
     chat_choice_model: str = "deepseek-flash"  # 선택지 전용
+    @property
+    def effective_chat_judgement_model(self) -> str:
+        """판정 호출에 쓸 모델. CHAT_JUDGEMENT_MODEL이 비면 CHAT_MODEL을 따른다(KNK-1620)."""
+        return self.chat_judgement_model.strip() or self.chat_model
+
     # provider는 더 이상 설정값이 아니다(KNK-674). 위 모델 이름들을 등록부가 해석해
     # 호출별로 정한다(`llm.provider_of`) — 스토리와 채팅을 서로 다른 회사로 돌릴 수 있어야
     # 하는데, 전역값 하나로는 둘 중 하나가 반드시 거짓이 되기 때문이다.

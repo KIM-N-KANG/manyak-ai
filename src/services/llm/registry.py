@@ -406,8 +406,12 @@ _REGISTRY: dict[str, ResolvedModel] = {
 # **선택지도 같은 공급자를 막는다**(KNK-1416). 선택지는 지시문 배치 문제는 없지만, 이 회사는
 # JSON 강제에 스키마 전체를 요구하는데 통로에 그 칸이 없어 어댑터가 인자를 빼고 보낸다
 # (`anthropic_sdk`). 형식 준수가 프롬프트에만 기대게 되므로 별도 검토 전에는 열지 않는다.
+#
+# **판정도 같은 이유로 막는다**(KNK-1620). 판정도 JSON 강제로 부르는데, JSON이 깨지면 판정이
+# 비어 그 턴의 사건 진행이 기록되지 않는다.
 BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
     "CHAT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
+    "CHAT_JUDGEMENT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
     "CHAT_CHOICE_MODEL": frozenset({PROVIDER_ANTHROPIC}),
     "MODERATION_MODEL": frozenset({PROVIDER_DEEPSEEK, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
     "MODERATION_FALLBACK_MODEL": frozenset({PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
@@ -498,6 +502,8 @@ def selected_models() -> tuple[tuple[str, str], ...]:
         ("STORYLINES_MODEL", settings.storylines_model),
         ("STORY_COMPILE_MODEL", settings.story_compile_model),
         ("CHAT_MODEL", settings.chat_model),
+        # 비어 있으면 CHAT_MODEL과 같은 값이 들어온다 — 실제로 판정에 쓸 모델을 검사한다.
+        ("CHAT_JUDGEMENT_MODEL", settings.effective_chat_judgement_model),
         ("CHAT_CHOICE_MODEL", settings.chat_choice_model),
         ("MODERATION_MODEL", settings.moderation_model),
         ("MODERATION_FALLBACK_MODEL", settings.moderation_fallback_model),

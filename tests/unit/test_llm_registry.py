@@ -529,6 +529,7 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
         ("STORYLINES_MODEL", "deepseek-flash"),
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
         ("CHAT_MODEL", "deepseek-flash"),
+        ("CHAT_JUDGEMENT_MODEL", "deepseek-flash"),
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
         ("MODERATION_MODEL", "gpt-6-luna"),
         ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
@@ -540,13 +541,15 @@ def test_chat_model_change_leaves_choice_model(monkeypatch) -> None:
     """CHAT_MODEL만 바꾸면 선택지는 기본 모델에 남는다(KNK-1416).
 
     분리 전에는 선택지도 CHAT_MODEL을 같이 써서, 본문 모델을 바꾸면 별도 API인 선택지까지
-    딸려갔다. 운영에 새 env가 없어도 이 성질이 지켜져야 한다. 판정은 본문과 같은 모델이다.
+    딸려갔다. 운영에 새 env가 없어도 이 성질이 지켜져야 한다. 판정은 CHAT_JUDGEMENT_MODEL이
+    비어 있으면 본문과 같은 모델이다(KNK-1620).
     """
     monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
 
     selected = dict(registry.selected_models())
 
     assert selected["CHAT_MODEL"] == "gpt-6-luna"
+    assert selected["CHAT_JUDGEMENT_MODEL"] == "gpt-6-luna"
     assert selected["CHAT_CHOICE_MODEL"] == "deepseek-flash"
     llm.validate_startup()  # 예외 없이 통과
 
@@ -563,6 +566,31 @@ def test_choice_slot_blocks_anthropic(monkeypatch) -> None:
         registry.validate_selected_models()
 
     assert "CHAT_CHOICE_MODEL" in str(exc_info.value)
+
+
+def test_judgement_model_can_differ_from_chat_model(monkeypatch) -> None:
+    """CHAT_JUDGEMENT_MODEL을 채우면 판정만 그 모델로 바뀌고 기동 검사를 통과한다(KNK-1620)."""
+    monkeypatch.setattr(registry, "settings", _settings(chat_judgement_model="gpt-6-luna"))
+
+    selected = dict(registry.selected_models())
+
+    assert selected["CHAT_MODEL"] == "deepseek-flash"
+    assert selected["CHAT_JUDGEMENT_MODEL"] == "gpt-6-luna"
+    llm.validate_startup()  # 예외 없이 통과
+
+
+def test_judgement_slot_blocks_anthropic(monkeypatch) -> None:
+    """판정 자리에 Anthropic 모델을 고르면 기동에서 막고 어느 env인지 알린다(KNK-1620)."""
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(anthropic_api_key="ant-key", chat_judgement_model="claude-sonnet-5"),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        registry.validate_selected_models()
+
+    assert "CHAT_JUDGEMENT_MODEL" in str(exc_info.value)
 
 
 def test_validate_passes_with_default_models(monkeypatch) -> None:

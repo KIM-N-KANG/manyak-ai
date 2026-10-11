@@ -185,8 +185,8 @@ async def _event_stream(
                         meta = ChatResponseMeta(
                             model=ev.get("model") or settings.chat_model,
                             prompt_versions={**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
-                            # 본문 호출이 실제로 나간 공급자(KNK-674). 판정도 같은 CHAT_MODEL이라
-                            # 값이 같다 — 두 값이 갈릴 수 있게 되면 그때 meta 계약부터 정한다.
+                            # 본문 호출이 실제로 나간 공급자(KNK-674). 판정은 CHAT_JUDGEMENT_MODEL로
+                            # 다른 모델일 수 있지만(KNK-1620), meta의 model·provider는 본문 기준이다.
                             #
                             # 키가 빠졌을 때만 되짚어 채운다. 여기서 KeyError가 나면 이미 200으로
                             # 열린 SSE라 상태를 못 바꾸고, error 이벤트도 completed도 없이 끊긴다 —
