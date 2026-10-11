@@ -22,7 +22,7 @@ from src.schemas.chat_turn import (
 from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.prompt_meta import read_version
 
-_CHAT_DIR = Path(__file__).parent.parent.parent / "prompt" / "chat"
+_LAYER_DIR = Path(__file__).parent.parent.parent / "prompt" / "chat" / "layer"
 _LAYER_NAMES = ("SAFETY", "CORE", "STORY", "CHARACTER", "USER", "MEMORY")
 
 
@@ -43,7 +43,7 @@ def _phi_core(body: str) -> str:
 
 
 def _layer_path(name: str) -> Path:
-    return _CHAT_DIR / f"{name}-TEMPLATE.md"
+    return _LAYER_DIR / f"{name}-TEMPLATE.md"
 
 
 def _load_layer(name: str) -> str:
