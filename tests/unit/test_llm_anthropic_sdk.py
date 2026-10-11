@@ -1654,3 +1654,176 @@ async def test_blank_key_is_a_config_error(monkeypatch, _isolated_client_cache, 
         anthropic_sdk._client(PROVIDER_ANTHROPIC)
 
     assert "ANTHROPIC_API_KEY" in str(exc_info.value)
+
+
+# ── Langfuse 직접 기록 (KNK-1627, ADR A13 ④) ─────────────────────────────────
+# 이 공급자는 자동 계측이 없어 어댑터가 손으로 기록한다. 바깥 자동 계측을 뺀 이유가 "사용자가 도중에
+# 끊으면 기록이 닫히지 않는다"였으므로, 정상·오류·취소 세 갈래가 각각 정확히 한 번 닫히는지 본다.
+class _RecordingStreamGeneration:
+    def __init__(self, started: dict) -> None:
+        self.started = started
+        self.ends: list[tuple[str, dict]] = []
+
+    def finish(self, **fields) -> None:
+        self.ends.append(("finish", fields))
+
+    def fail(self, exc, **fields) -> None:
+        self.ends.append(("fail", {"exc": exc, **fields}))
+
+    def cancel(self, **fields) -> None:
+        self.ends.append(("cancel", fields))
+
+
+def _record_stream_generation(monkeypatch) -> list[_RecordingStreamGeneration]:
+    made: list[_RecordingStreamGeneration] = []
+
+    def _start(name, **kwargs):
+        generation = _RecordingStreamGeneration({"name": name, **kwargs})
+        made.append(generation)
+        return generation
+
+    monkeypatch.setattr(anthropic_sdk, "start_stream_generation", _start)
+    return made
+
+
+_EXPECTED_USAGE_DETAILS = {
+    # 입력은 캐시를 뺀 일반 조각만 — 합계(170)를 넣으면 캐시 조각이 일반 단가로 한 번 더 계산된다.
+    "input": 100,
+    "cache_creation_input_tokens": 30,
+    "cache_read_input_tokens": 40,
+    "output": 20,
+}
+
+
+async def test_stream_records_one_finished_generation(monkeypatch) -> None:
+    """정상 종료면 관측을 한 번 열고, 출력 전체와 조각별 토큰을 싣고 한 번 닫는다."""
+    made = _record_stream_generation(monkeypatch)
+    events_in = [_start_event(), _text_event("안"), _text_event("녕"), _stop_event()]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert len(made) == 1
+    assert made[0].started["name"] == "Anthropic-generation"
+    assert made[0].started["model"] == "anthropic-test-model"
+    assert made[0].started["input_data"] == _req().messages
+    assert made[0].ends == [
+        ("finish", {"output": "안녕", "usage_details": _EXPECTED_USAGE_DETAILS})
+    ]
+
+
+async def test_stream_records_cancel_when_user_leaves(monkeypatch) -> None:
+    """사용자가 답변 도중 끊으면(제너레이터 닫힘) 오류가 아니라 취소로 닫고, 그때까지의 글을 싣는다.
+
+    바깥 자동 계측은 바로 이 경로에서 기록을 닫지 않아 그 턴이 기록에서 빠졌다(ADR A13).
+    """
+    made = _record_stream_generation(monkeypatch)
+    events_in = [_start_event(), _text_event("안"), _text_event("녕"), _stop_event()]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    gen = anthropic_sdk.stream(_req(), _THINKING)
+    assert await gen.__anext__() == TextDelta("안")
+    await gen.aclose()
+
+    assert [kind for kind, _ in made[0].ends] == ["cancel"]
+    assert made[0].ends[0][1]["output"] == "안"
+    # 시작 신호에서 받은 입력 토큰은 남긴다 — 끊긴 턴도 입력 비용은 나갔다.
+    # 출력은 비운다 — 시작 신호의 임시값(1)을 실으면 쓴 분량이 1토큰으로 기록된다.
+    assert made[0].ends[0][1]["usage_details"] == {
+        "input": 100,
+        "cache_creation_input_tokens": 30,
+        "cache_read_input_tokens": 40,
+    }
+
+
+async def test_stream_records_cancel_on_task_cancellation(monkeypatch) -> None:
+    """작업 취소(CancelledError)도 오류가 아니라 취소로 닫고, 예외는 그대로 올린다."""
+    made = _record_stream_generation(monkeypatch)
+    _install(
+        monkeypatch,
+        _FakeMessages(result=_stream_of([_text_event("가")], error=asyncio.CancelledError())),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [kind for kind, _ in made[0].ends] == ["cancel"]
+
+
+async def test_stream_records_failure_midway(monkeypatch) -> None:
+    """도중에 공급자 오류가 나면 실패로 한 번 닫고, 호출부에는 중립 예외가 그대로 간다."""
+    made = _record_stream_generation(monkeypatch)
+    _install(
+        monkeypatch,
+        _FakeMessages(result=_stream_of([_text_event("가")], error=_anthropic_error("rate"))),
+    )
+
+    with pytest.raises(LlmRateLimited):
+        _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [kind for kind, _ in made[0].ends] == ["fail"]
+    assert isinstance(made[0].ends[0][1]["exc"], LlmRateLimited)
+
+
+async def test_stream_records_failure_at_request(monkeypatch) -> None:
+    """스트림을 열기도 전에 실패해도 관측은 열렸다가 실패로 닫힌다 — 실패 호출도 기록에 남는다."""
+    made = _record_stream_generation(monkeypatch)
+    _install(monkeypatch, _FakeMessages(error=_anthropic_error("timeout")))
+
+    with pytest.raises(LlmTimeout):
+        _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [kind for kind, _ in made[0].ends] == ["fail"]
+
+
+async def test_stream_records_failure_when_truncated(monkeypatch) -> None:
+    """종료 신호 없이 끊긴 응답은 잘린 답이라 실패로 닫는다(완성된 답으로 기록하지 않는다)."""
+    made = _record_stream_generation(monkeypatch)
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_start_event(), _text_event("가")])))
+
+    with pytest.raises(LlmUnavailable):
+        _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [kind for kind, _ in made[0].ends] == ["fail"]
+
+
+async def test_complete_records_generation(monkeypatch) -> None:
+    """단발 호출은 observe_generation 블록으로 남기고, 출력과 조각별 토큰을 싣는다."""
+    from contextlib import contextmanager
+
+    captured: dict = {}
+
+    class _Handle:
+        def finish(self, **fields) -> None:
+            captured["finish"] = fields
+
+    @contextmanager
+    def _observe(name, **kwargs):
+        captured["start"] = {"name": name, **kwargs}
+        yield _Handle()
+
+    monkeypatch.setattr(anthropic_sdk, "observe_generation", _observe)
+    _install(monkeypatch, _FakeMessages(result=_response()))
+
+    await anthropic_sdk.complete(_req(), _THINKING)
+
+    assert captured["start"]["name"] == "Anthropic-generation"
+    assert captured["start"]["model_parameters"]["max_tokens"] == 16
+    assert captured["finish"] == {"output": "본문", "usage_details": _EXPECTED_USAGE_DETAILS}
+
+
+def test_unfinished_usage_keeps_output_after_final_signal() -> None:
+    """마무리 신호를 받은 뒤 끝났으면 출력 값이 실제 값이라 그대로 싣는다."""
+    parts = {
+        "input_tokens": 1, "cache_creation_input_tokens": None,
+        "cache_read_input_tokens": None, "output_tokens": 9,
+    }
+    assert anthropic_sdk._unfinished_usage_details(parts, True) == {"input": 1, "output": 9}
+    assert anthropic_sdk._unfinished_usage_details(parts, False) == {"input": 1}
+
+
+def test_usage_details_skip_missing_parts() -> None:
+    """없는 칸은 싣지 않고, 전부 없으면 None이다(0으로 채우면 0원 기록이 된다)."""
+    empty = dict.fromkeys(anthropic_sdk._USAGE_FIELDS, None)
+    assert anthropic_sdk._usage_details(empty) is None
+    assert anthropic_sdk._usage_details(empty | {"output_tokens": 5}) == {"output": 5}
