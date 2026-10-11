@@ -59,6 +59,8 @@ def _settings(**overrides: str) -> Settings:
     values: dict[str, str] = {
         "deepseek_api_key": "deepseek-test-key",
         "openai_api_key": "openai-test-key",
+        # 채팅 본문 금지가 이 값에 달려 있어 실행 환경의 CHAT_PROMPT와 무관하게 고정한다(KNK-1624).
+        "chat_prompt": "layer",
     } | overrides
     return Settings(_env_file=None, **values)
 

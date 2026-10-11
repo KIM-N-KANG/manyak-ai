@@ -1379,7 +1379,14 @@ def test_the_streaming_slot_is_known_only_to_the_registry() -> None:
 
 # ── 채팅 자리에 이 공급자를 못 꽂게 한다 (KNK-675) ──────────────────────────
 def _blocked_settings(**overrides) -> Settings:
-    values = {"_env_file": None, "deepseek_api_key": "k", "anthropic_api_key": "ant"}
+    # chat_prompt를 명시한다 — 금지 여부가 이 값에 달려 있어, 실행 환경의 CHAT_PROMPT를 따라가면
+    # 같은 테스트가 환경마다 다르게 끝난다(KNK-1624).
+    values = {
+        "_env_file": None,
+        "deepseek_api_key": "k",
+        "anthropic_api_key": "ant",
+        "chat_prompt": "layer",
+    }
     return Settings(**(values | overrides))
 
 
@@ -1427,6 +1434,76 @@ def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:
     )
 
     llm.validate_startup()  # 예외가 나면 실패다
+
+
+# ── general 프롬프트면 채팅 본문에 이 공급자를 열어 준다 (KNK-1624) ──────────
+def test_startup_allows_this_provider_in_the_chat_slot_with_general_prompt(monkeypatch) -> None:
+    """general은 지시문을 맨 앞 하나에만 둬 버려지는 지시가 없으므로 채팅 본문에 쓸 수 있다.
+
+    판정은 여전히 이 공급자를 못 쓰므로 다른 모델을 따로 정해 둔다.
+    """
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _blocked_settings(
+            chat_prompt="general",
+            chat_model="anthropic-test-model",
+            chat_judgement_model="deepseek-flash",
+        ),
+    )
+
+    llm.validate_startup()  # 예외가 나면 실패다
+
+
+def test_general_prompt_does_not_open_the_choice_slot(monkeypatch) -> None:
+    """general이 여는 것은 채팅 본문뿐이다. 선택지는 JSON 강제 문제로 계속 막는다."""
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _blocked_settings(chat_prompt="general", chat_choice_model="anthropic-test-model"),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+
+    assert "CHAT_CHOICE_MODEL" in str(exc_info.value)
+
+
+def test_inherited_judgement_model_explains_what_to_set(monkeypatch) -> None:
+    """판정 모델을 비운 채 본문만 이 공급자로 바꾸면, 물려받은 판정 자리에서 막고 고칠 곳을 알린다.
+
+    설정하지도 않은 CHAT_JUDGEMENT_MODEL이 오류에 나오므로, 왜 그런지까지 말해야 배포가 실패한
+    상황에서 바로 고칠 수 있다.
+    """
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _blocked_settings(chat_prompt="general", chat_model="anthropic-test-model"),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+
+    message = str(exc_info.value)
+    assert "CHAT_JUDGEMENT_MODEL" in message
+    assert "판정 모델을 따로 지정하세요" in message
+
+
+def test_explicit_judgement_model_gets_no_inherit_hint(monkeypatch) -> None:
+    """판정 모델을 직접 이 공급자로 정했으면 '물려받았다'는 안내를 붙이지 않는다."""
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setattr(
+        registry, "settings", _blocked_settings(chat_judgement_model="anthropic-test-model")
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+
+    assert "CHAT_JUDGEMENT_MODEL" in str(exc_info.value)
+    assert "따랐습니다" not in str(exc_info.value)
 
 
 def test_blocked_slot_is_reported_before_a_missing_key(monkeypatch) -> None:

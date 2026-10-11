@@ -399,9 +399,10 @@ _REGISTRY: dict[str, ResolvedModel] = {
 # 뒤에야 알게 된다. 직전까지는 "이 어댑터는 스트리밍을 못 한다"는 이유로 아래 검사에 걸렸지만,
 # 조각 흘리기를 구현하면서(KNK-696) 그 그물이 사라졌다.
 #
-# 이 제약은 배치 문제를 푼 뒤에 풀린다. 대화 목록 안에 지시문 줄을 넣는 방법이 따로 있어
-# (모델별 제약 있음 — `_split_system` 주석) 버리지 않을 길이 있고, 그 검토와 안전 실측이
-# 채팅을 이 공급자로 여는 티켓의 몫이다. 그때 여기 한 줄을 지운다.
+# **general 프롬프트면 풀린다**(KNK-1624). general은 지시문을 맨 앞 하나에만 두고 대화 뒤에
+# 붙이지 않아(`chat_assembler._assemble_general`) 버려지는 지시문이 없다. 그래서 금지는
+# `CHAT_PROMPT=layer`일 때만 건다(`blocked_providers`). layer는 지금도 뒤의 둘이 버려지므로
+# 그대로 막는다.
 #
 # **선택지도 같은 공급자를 막는다**(KNK-1416). 선택지는 지시문 배치 문제는 없지만, 이 회사는
 # JSON 강제에 스키마 전체를 요구하는데 통로에 그 칸이 없어 어댑터가 인자를 빼고 보낸다
@@ -425,6 +426,18 @@ BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
 # 맞춰 아래층을 깎으면 모델·공급자를 바꿀 때마다 그 층을 다시 고쳐야 한다(KNK-667 원칙).
 # 등록부는 이미 env(=용도)와 모델을 잇는 자리라(`selected_models`) 여기가 제자리다.
 STREAMING_ENVS = frozenset({"CHAT_MODEL"})
+
+
+def blocked_providers(env_name: str) -> frozenset[str]:
+    """이 자리(env)에 지금 설정으로 쓸 수 없는 공급자.
+
+    채팅 본문의 Anthropic 금지는 지시문이 대화 뒤에 붙는 layer 프롬프트 때문이라, general이면
+    뺀다(위 `BLOCKED_PROVIDERS` 주석). 나머지 자리는 표 그대로다.
+    """
+    blocked = BLOCKED_PROVIDERS.get(env_name, frozenset())
+    if env_name == "CHAT_MODEL" and settings.chat_prompt == "general":
+        return blocked - {PROVIDER_ANTHROPIC}
+    return blocked
 
 
 @dataclass(frozen=True)
@@ -535,10 +548,18 @@ def validate_selected_models() -> None:
             raise LlmConfigError(f"{env_name}: {exc}") from exc
         if (env_name == "JEV_MODEL") != (resolved.adapter == ADAPTER_TYPESAFE_API):
             raise LlmConfigError(f"{env_name}: 텍스트 생성 모델과 판정 전용 모델은 서로 바꿀 수 없습니다.")
-        if resolved.provider in BLOCKED_PROVIDERS.get(env_name, frozenset()):
+        if resolved.provider in blocked_providers(env_name):
+            # 판정 모델을 비워 두면 본문 모델을 물려받는다. 그때는 설정하지도 않은 값이 문제로
+            # 보이므로, 무엇을 고치면 되는지 함께 알린다(KNK-1624).
+            inherited = (
+                " CHAT_JUDGEMENT_MODEL이 비어 있어 CHAT_MODEL 값을 따랐습니다 — "
+                "판정 모델을 따로 지정하세요."
+                if env_name == "CHAT_JUDGEMENT_MODEL" and not settings.chat_judgement_model.strip()
+                else ""
+            )
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데, 이 자리는 그 "
-                f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석)."
+                f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석).{inherited}"
             )
         if env_name in {"MODERATION_MODEL", "MODERATION_FALLBACK_MODEL"}:
             mode = STRUCTURED_OUTPUT_JSON_SCHEMA if env_name == "MODERATION_MODEL" else STRUCTURED_OUTPUT_JSON_OBJECT

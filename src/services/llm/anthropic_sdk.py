@@ -472,16 +472,13 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
 
     다만 "없어도 된다"는 뜻은 아니다. **max_tokens는 이 회사 요청의 필수 항목이라, 빠진 채로
     나가면 거부당한다(400).** 이 SDK가 스트리밍 오버로드에서도 필수로 선언하는 것과 같은
-    이유다(0.120.0 서명 확인). 채팅은 이 값을 아예 싣지 않으므로
-    (`chat_llm.stream_chat_turn`), 채팅을 이 공급자로 돌리면 **턴마다 400이다** — 추정이 아니라
-    계약이다. 게다가 이 회사의 최신 모델은 추론이 기본으로 켜져 있고 이 한도가 추론과 본문을
-    합쳐서 자르므로, 값을 넣을 때도 지금 다른 경로의 값을 그대로 가져다 쓰면 본문이 잘린다.
+    이유다(0.120.0 서명 확인). 채팅은 이 값을 싣는다(`chat_llm._MAX_TOKENS`, KNK-1624). 이 회사의
+    최신 모델은 추론을 켜면 이 한도가 추론과 본문을 합쳐서 자르므로, 그 값을 넉넉하게 잡았다.
 
     그래도 여기서 막지 않는 이유는, 막으면 LlmConfigError가 되어 채팅이 잡는 예외 계열을
     벗어나 SSE 오류 이벤트도 없이 끊기기 때문이다. 공급자가 400을 주면 LlmBadRequest로 접혀
-    오류 이벤트가 정상으로 나간다. 지금은 등록부가 이 조합을 기동에서 막으므로
-    (`registry.BLOCKED_PROVIDERS`) 닿을 길이 없다 — 채팅을 여는 티켓이 max_tokens를 싣는 것이
-    그 티켓의 필수 작업이다(system 배치 문제와 함께).
+    오류 이벤트가 정상으로 나간다. 채팅은 general 프롬프트일 때만 이 공급자로 올 수 있다
+    (`registry.blocked_providers`).
 
     사용자 연결 취소(`CancelledError`)는 여기서 잡지 않는다 — BaseException이라 아래
     except들에 걸리지 않고, 취소는 오류가 아니라 그냥 스트림이 끊기는 것이다.
