@@ -191,6 +191,8 @@ async def test_chat_turn_passes_protagonist_name_to_body_prompt(client, monkeypa
         yield {"event": "completed", "ai_output": "장면", "model": "test", "provider": "test"}
 
     monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
+    # layer의 USER 레이어를 검사하므로 로컬 .env의 CHAT_PROMPT와 무관하게 layer로 고정한다.
+    monkeypatch.setattr(chat_module.settings, "chat_prompt", "layer")
     payload = _payload()
     payload["story_settings"]["protagonist_name"] = "민우"
     payload["story_settings"]["user_role_setting"] = "신중한 성격의 사립 탐정."

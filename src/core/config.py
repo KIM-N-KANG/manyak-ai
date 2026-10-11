@@ -1,5 +1,10 @@
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 채팅 본문 프롬프트 종류(KNK-1622). layer는 6레이어 조립, general은 파일 하나 조립이다.
+ChatPrompt = Literal["layer", "general"]
 
 
 class Settings(BaseSettings):
@@ -48,6 +53,9 @@ class Settings(BaseSettings):
     # 운영 CHAT_MODEL은 배포 설정으로 바뀔 수 있어, 기본값을 따로 두면 판정만 몰래 옛 모델로
     # 돌아갈 수 있기 때문이다. 실제로 쓸 값은 `effective_chat_judgement_model`로 읽는다.
     chat_judgement_model: str = ""
+    # 채팅 본문 프롬프트를 고른다(KNK-1622). 기본 layer라 env가 없으면 운영 동작은 그대로다.
+    # 다른 값이면 Settings 생성에서 검증 오류가 나 서버가 뜨지 않는다.
+    chat_prompt: ChatPrompt = "layer"
     # 선택지는 본문과 따로 고른다(KNK-1416). 본문 모델을 바꿔도 별도 API인 선택지가 딸려가지
     # 않게 하려는 것이다. 운영 env가 없으면 이 기본값이 쓰이므로 분리 전 운영과 같은 모델로 둔다.
     chat_choice_model: str = "deepseek-flash"  # 선택지 전용

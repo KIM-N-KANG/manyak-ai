@@ -1,7 +1,13 @@
-"""채팅 6레이어 프롬프트 조립 (시점 B, 매 턴, 완전 stateless).
+"""채팅 본문 프롬프트 조립 (시점 B, 매 턴, 완전 stateless).
 
-`ChatTurnRequest`를 받아 정적 레이어 슬롯을 결정적 치환하고, 명세 4.1 배치
-([시스템 앞] → [History] → [Depth] → [PHI])로 LLM 호출용 messages 배열을 만든다.
+`ChatTurnRequest`를 받아 LLM 호출용 messages 배열을 만든다. 본문 프롬프트는 두 종류다
+(KNK-1622, 설정 `CHAT_PROMPT`).
+
+- layer(기본): 6레이어 슬롯을 결정적 치환하고, 명세 4.1 배치
+  ([시스템 앞] → [History] → [Depth] → [PHI])로 조립한다.
+- general: 파일 하나(`prompt/chat/general/CHAT-TEMPLATE.md`)를 `## [SYSTEM]`/`## [USER]`로
+  나눠 [SYSTEM] → [History] → [USER] 순으로 조립한다. 지시문이 맨 앞 하나뿐이다.
+
 AI는 상태를 보관하지 않으며(순수 함수), 모든 재료는 매 턴 request로 받는다.
 
 LLM 호출(`stream=True`)·SSE 엔드포인트는 별도(KNK-144)다. 이 모듈은 조립까지만 한다.
@@ -11,6 +17,7 @@ LLM 호출(`stream=True`)·SSE 엔드포인트는 별도(KNK-144)다. 이 모듈
 import re
 from pathlib import Path
 
+from src.core.config import ChatPrompt, settings
 from src.schemas.chat_turn import (
     ChatHistoryItem,
     ChatStartSettings,
@@ -23,6 +30,7 @@ from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.prompt_meta import read_version
 
 _LAYER_DIR = Path(__file__).parent.parent.parent / "prompt" / "chat" / "layer"
+_GENERAL_PATH = Path(__file__).parent.parent.parent / "prompt" / "chat" / "general" / "CHAT-TEMPLATE.md"
 _LAYER_NAMES = ("SAFETY", "CORE", "STORY", "CHARACTER", "USER", "MEMORY")
 
 
@@ -56,6 +64,9 @@ _LAYERS = {n: _load_layer(n) for n in _LAYER_NAMES}
 
 # 레이어 버전은 frontmatter가 SSOT다(KNK-228). 로깅용으로 레이어별 버전을 노출한다(KNK-243).
 LAYER_VERSIONS = {n: read_version(_layer_path(n)) for n in _LAYER_NAMES}
+
+# general 프롬프트 버전도 frontmatter가 SSOT다. 기록 키를 고르는 일은 KNK-1623 몫이다.
+GENERAL_VERSION = read_version(_GENERAL_PATH)
 
 # [시스템 앞] 배치 순서(명세 4.1) — MEMORY는 Depth 전담이라 제외.
 _SYSTEM_FRONT = ("SAFETY", "CORE", "STORY", "CHARACTER", "USER")
@@ -99,6 +110,22 @@ def _format_endings(endings: list[EndingCandidate]) -> str:
         f"- 이름: {e.name} / 달성 조건: {e.achievement_condition} / 에필로그 가이드: {e.epilogue}"
         for e in endings
     ) or "(없음)"
+
+
+# `_slot_map`이 채우는 자리표시자. general 템플릿 검사(`_check_general_slots`)가 쓰며,
+# 둘이 어긋나지 않는지는 테스트가 확인한다.
+_SLOT_KEYS = (
+    "{{장르}}",
+    "{{world_setting}}",
+    "{{start_setting}}",
+    "{{rule_setting}}",
+    "{{character_setting}}",
+    "{{user_role_setting}}",
+    "{{main_events}}",
+    "{{target_main_event}}",
+    "{{endings}}",
+    "{{protagonist_name}}",
+)
 
 
 def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
@@ -161,14 +188,77 @@ def _phi_block() -> str:
     return "\n\n".join(f"# {n}\n{_phi_core(_LAYERS[n])}" for n in _PHI_ORDER)
 
 
-def assemble(req: ChatTurnRequest) -> list[dict]:
-    """시점 B: ChatTurnRequest를 6레이어 프롬프트 messages로 조립한다(완전 stateless).
+# ── general 프롬프트 (KNK-1622) ─────────────────────────────────────────────
+_PLACEHOLDER_RE = re.compile(r"\{\{[^{}]+\}\}")
+# general에서만 쓰는 슬롯. layer는 summary를 MEMORY로, user_input을 별도 user 턴으로 넣지만
+# general은 둘 다 [USER] 블록 안에 둔다.
+_GENERAL_ONLY_SLOTS = ("{{summary}}", "{{user_input}}")
 
-    배치(명세 4.1): [시스템 앞] → [History] → user_input → [Depth: 현재 상태] → [PHI].
+
+def _split_general(path: Path) -> tuple[str, str]:
+    """general 템플릿을 `## [SYSTEM]`/`## [USER]` 두 블록으로 나눈다. 마커가 없으면 기동 실패."""
+    try:
+        body = _body_only(path.read_text(encoding="utf-8-sig"))
+        _, after_system = body.split("## [SYSTEM]", 1)
+        system_raw, user_raw = after_system.split("## [USER]", 1)
+    except (FileNotFoundError, ValueError) as e:
+        raise RuntimeError(f"general 프롬프트 로드/파싱 실패: {path.name}: {e}") from e
+    return system_raw.strip(), user_raw.strip()
+
+
+def _check_general_slots(system: str, user: str) -> None:
+    """템플릿의 자리표시자가 모두 채울 수 있는 슬롯인지, 입력 슬롯이 [USER]에 있는지 확인한다.
+
+    모르는 자리표시자는 치환되지 않고 `{{...}}` 그대로 모델에 가고, `{{user_input}}`이
+    [USER]에 없으면 사용자 입력이 통째로 빠진다. 둘 다 오류 없이 응답 품질만 무너지므로
+    모듈 로드 시점(서버 기동)에 막는다.
+    """
+    known = set(_SLOT_KEYS) | set(_GENERAL_ONLY_SLOTS)
+    unknown = set(_PLACEHOLDER_RE.findall(system + user)) - known
+    if unknown:
+        raise RuntimeError(f"general 프롬프트에 채울 수 없는 자리표시자: {sorted(unknown)}")
+    if "{{user_input}}" not in user:
+        raise RuntimeError("general 프롬프트 [USER]에 {{user_input}}이 없습니다.")
+
+
+def _render_once(body: str, repl: dict[str, str]) -> str:
+    """자리표시자를 한 번에 훑어 치환한다(`prompt._render`와 같은 이유).
+
+    순차 .replace()는 앞서 넣은 값(사용자 입력·설정 본문)을 다음 치환이 다시 검사해,
+    값 안에 `{{summary}}` 같은 글자가 있으면 엉뚱한 내용으로 바뀐다. 한 번에 훑으면
+    넣은 값은 다시 검사하지 않는다.
+    """
+    return _PLACEHOLDER_RE.sub(lambda m: repl.get(m.group(0), m.group(0)), body)
+
+
+def _assemble_general(req: ChatTurnRequest) -> list[dict]:
+    """general: [SYSTEM] → [History] → [USER](현재 상태·목표 사건·이번 입력).
+
+    매 턴 바뀌는 값은 모두 마지막 user 메시지에 있어, 앞부분(지시문+스토리 설정)은 같은
+    채팅 안에서 대부분의 턴 동안 그대로다 — 공급자의 프롬프트 캐시가 앞부분을 재사용할 수 있다.
+    예외는 엔딩 후보(`{{endings}}`)다. 백엔드가 최소 턴을 채운 후보만 보내고 도달 뒤엔 비워
+    보내므로, 그 턴에는 앞부분이 바뀌어 캐시가 새로 만들어진다.
+    """
+    repl = _slot_map(req) | {"{{summary}}": req.summary, "{{user_input}}": req.user_input}
+    messages: list[dict] = [{"role": "system", "content": _render_once(_GENERAL_SYSTEM, repl)}]
+    messages.extend(_history_messages(req.history))
+    messages.append({"role": "user", "content": _render_once(_GENERAL_USER, repl)})
+    return messages
+
+
+def assemble(req: ChatTurnRequest, prompt: ChatPrompt | None = None) -> list[dict]:
+    """시점 B: ChatTurnRequest를 본문 프롬프트 messages로 조립한다(완전 stateless).
+
+    `prompt`를 주지 않으면 설정 `CHAT_PROMPT`를 따른다. 인자는 평가 도구처럼 한 프로세스에서
+    두 프롬프트를 번갈아 조립해야 하는 쪽을 위한 것이다.
+
+    layer 배치(명세 4.1): [시스템 앞] → [History] → user_input → [Depth: 현재 상태] → [PHI].
     user_input은 history(과거 대화)와 별도로 전달되므로 마지막 user 턴으로 붙인다.
     Depth·PHI는 끝 근처에 system 역할로 둔다 — system vs user 역할 분기는 Phase 5에서
     검증 후 확정한다(명세 4.3; Anthropic 어댑터 시 Depth를 user 역할로 분기).
     """
+    if (prompt or settings.chat_prompt) == "general":
+        return _assemble_general(req)
     repl = _slot_map(req)
     messages: list[dict] = [{"role": "system", "content": _system_front(repl)}]
     messages.extend(_history_messages(req.history))
@@ -176,3 +266,9 @@ def assemble(req: ChatTurnRequest) -> list[dict]:
     messages.append({"role": "system", "content": _depth_block(req.summary)})
     messages.append({"role": "system", "content": _phi_block()})
     return messages
+
+
+
+# general 템플릿은 정적이라 모듈 로드 시 1회만 읽고 검사한다(layer 캐시와 같은 이유).
+_GENERAL_SYSTEM, _GENERAL_USER = _split_general(_GENERAL_PATH)
+_check_general_slots(_GENERAL_SYSTEM, _GENERAL_USER)

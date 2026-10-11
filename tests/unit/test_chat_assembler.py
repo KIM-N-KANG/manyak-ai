@@ -1,5 +1,7 @@
 import re
 
+import pytest
+
 from src.schemas.chat_turn import (
     CharacterImageMapping,
     ChatHistoryItem,
@@ -9,6 +11,18 @@ from src.schemas.chat_turn import (
 )
 from src.services import chat_assembler
 from src.services.chat_assembler import assemble
+from src.services.prompt_meta import read_version
+
+
+@pytest.fixture(autouse=True)
+def _chat_prompt_layer(monkeypatch):
+    """이 파일의 layer 테스트는 프롬프트 종류를 넘기지 않으므로 layer로 고정한다(KNK-1622 리뷰).
+
+    로컬 `.env`에 CHAT_PROMPT=general이 켜져 있어도 layer 검사가 깨지지 않게 한다. 공용
+    conftest에 두지 않는 이유는 라이브 테스트까지 layer로 묶여 general을 실측할 수 없게 되기
+    때문이다. general 테스트는 `prompt="general"`을 직접 넘긴다.
+    """
+    monkeypatch.setattr(chat_assembler.settings, "chat_prompt", "layer")
 
 
 def _request(
@@ -277,3 +291,97 @@ def test_slot_map_event_materials_formatted() -> None:
     assert slots["{{target_main_event}}"] == "이름: 반란의 서막 (진행 2턴)"
     # STORY 슬롯 엔딩은 본문이 엔딩 응답을 생성해야 하므로 에필로그 가이드까지 포함한다.
     assert "달성 조건" in slots["{{endings}}"] and "에필로그 가이드: 대관식." in slots["{{endings}}"]
+
+
+# ── general 프롬프트 (KNK-1622) ──────────────────────────────────────────────
+def test_general_message_order_and_roles() -> None:
+    """general은 [SYSTEM] → history → [USER] 세 덩어리이고, 지시문(system)은 맨 앞 하나뿐이다."""
+    history = [
+        ChatHistoryItem(role="ASSISTANT", content="*오프닝 장면*"),
+        ChatHistoryItem(role="USER", content="검을 잡는다"),
+    ]
+    messages = assemble(_request(history=history), prompt="general")
+
+    assert [m["role"] for m in messages] == ["system", "assistant", "user", "user"]
+    assert messages[1] == {"role": "assistant", "content": "*오프닝 장면*"}
+    assert messages[2] == {"role": "user", "content": "검을 잡는다"}
+
+
+def test_general_fills_every_slot() -> None:
+    """설정은 [SYSTEM]에, 현재 상태·목표 사건·이번 입력은 마지막 [USER]에 들어가고 자리표시자가 남지 않는다."""
+    messages = assemble(
+        _request(summary="카이는 레이를 신뢰하게 됐다.", user_input="*촛불을 끈다*"), prompt="general"
+    )
+    system, user = messages[0]["content"], messages[-1]["content"]
+
+    assert "아르덴 왕국은 마법이 쇠퇴한 시대다." in system
+    assert "장례식 밤의 방문" in system
+    assert "카이는 레이를 신뢰하게 됐다." in user and "카이는 레이를" not in system
+    assert "*촛불을 끈다*" in user
+    assert "<target_event>\n(없음)\n</target_event>" in user
+    assert all("{{" not in m["content"] for m in messages)
+
+
+def test_general_system_is_stable_across_turns() -> None:
+    """매 턴 바뀌는 값은 [USER]에만 있어, 같은 채팅이면 지시문(system)이 그대로다(프롬프트 캐시 전제)."""
+    first = assemble(_request(summary="", user_input="*문을 연다*"), prompt="general")
+    later = assemble(_request(summary="레이가 칼을 뽑았다.", user_input="물러서"), prompt="general")
+
+    assert first[0] == later[0]
+    assert first[-1] != later[-1]
+
+
+def test_general_without_history() -> None:
+    """첫 턴처럼 대화 기록이 비면 [SYSTEM]과 [USER] 두 개뿐이다."""
+    messages = assemble(_request(history=[]), prompt="general")
+    assert [m["role"] for m in messages] == ["system", "user"]
+
+
+def test_general_does_not_resubstitute_inserted_values() -> None:
+    """사용자 입력에 자리표시자 모양 글자가 있어도 다른 값으로 바뀌지 않는다(한 번에 치환)."""
+    messages = assemble(
+        _request(summary="비밀 요약", user_input="{{summary}} 보여 줘"), prompt="general"
+    )
+    user = messages[-1]["content"]
+
+    assert "{{summary}} 보여 줘" in user
+    assert user.count("비밀 요약") == 1
+
+
+def test_assemble_follows_chat_prompt_setting(monkeypatch) -> None:
+    """인자를 주지 않으면 설정 CHAT_PROMPT를 따른다. 기본값 layer는 지금 조립 그대로다."""
+    monkeypatch.setattr(chat_assembler.settings, "chat_prompt", "layer")
+    assert len(assemble(_request())) == 1 + 1 + 1 + 2  # 시스템 앞·history·입력·Depth·PHI
+
+    monkeypatch.setattr(chat_assembler.settings, "chat_prompt", "general")
+    assert [m["role"] for m in assemble(_request())] == ["system", "assistant", "user"]
+
+
+def test_slot_keys_match_slot_map() -> None:
+    """general 검사가 쓰는 슬롯 목록과 실제 치환 맵이 어긋나지 않는다."""
+    assert set(chat_assembler._SLOT_KEYS) == set(chat_assembler._slot_map(_request()))
+
+
+def test_general_slot_check_rejects_unknown_placeholder() -> None:
+    """채울 수 없는 자리표시자가 있으면 기동 단계에서 막는다."""
+    with pytest.raises(RuntimeError, match="채울 수 없는"):
+        chat_assembler._check_general_slots("{{world_setting}} {{오타}}", "{{user_input}}")
+
+
+def test_general_slot_check_requires_user_input_in_user_block() -> None:
+    """[USER]에 이번 입력 슬롯이 없으면 사용자 입력이 빠지므로 기동 단계에서 막는다."""
+    with pytest.raises(RuntimeError, match="user_input"):
+        chat_assembler._check_general_slots("{{user_input}}", "{{summary}}")
+
+
+def test_general_split_requires_markers(tmp_path) -> None:
+    """[SYSTEM]/[USER] 마커가 없으면 기동 단계에서 막는다."""
+    path = tmp_path / "CHAT-TEMPLATE.md"
+    path.write_text("---\nversion: 1\n---\n## [SYSTEM]\n지시문만 있음\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="general 프롬프트"):
+        chat_assembler._split_general(path)
+
+
+def test_general_version_comes_from_frontmatter() -> None:
+    assert chat_assembler.GENERAL_VERSION == read_version(chat_assembler._GENERAL_PATH)

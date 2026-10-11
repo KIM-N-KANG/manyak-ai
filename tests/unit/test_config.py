@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from src.core.config import Settings
 
@@ -50,6 +51,30 @@ def test_judgement_model_follows_chat_model_when_blank(monkeypatch, value: str) 
     s = Settings(_env_file=None)
 
     assert s.effective_chat_judgement_model == "chat-x"
+
+
+def test_chat_prompt_defaults_to_layer(monkeypatch) -> None:
+    """CHAT_PROMPT가 없으면 layer라 운영 동작이 그대로다(KNK-1622)."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.delenv("CHAT_PROMPT", raising=False)
+
+    assert Settings(_env_file=None).chat_prompt == "layer"
+
+
+def test_chat_prompt_reads_general(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_PROMPT", "general")
+
+    assert Settings(_env_file=None).chat_prompt == "general"
+
+
+def test_chat_prompt_rejects_unknown_value(monkeypatch) -> None:
+    """오타 같은 다른 값은 조용히 layer로 떨어지지 않고 기동에서 실패한다."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_PROMPT", "genral")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_model_defaults(monkeypatch) -> None:
