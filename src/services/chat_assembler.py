@@ -65,8 +65,26 @@ _LAYERS = {n: _load_layer(n) for n in _LAYER_NAMES}
 # 레이어 버전은 frontmatter가 SSOT다(KNK-228). 로깅용으로 레이어별 버전을 노출한다(KNK-243).
 LAYER_VERSIONS = {n: read_version(_layer_path(n)) for n in _LAYER_NAMES}
 
-# general 프롬프트 버전도 frontmatter가 SSOT다. 기록 키를 고르는 일은 KNK-1623 몫이다.
+# general 프롬프트 버전도 frontmatter가 SSOT다. 기록에는 `body_prompt_versions()`로 싣는다.
 GENERAL_VERSION = read_version(_GENERAL_PATH)
+
+
+def _selected_prompt(prompt: ChatPrompt | None) -> ChatPrompt:
+    """인자가 없으면 설정 CHAT_PROMPT를 따른다. 조립과 버전 기록이 같은 규칙을 쓰게 한 곳에 둔다."""
+    return prompt or settings.chat_prompt
+
+
+def body_prompt_versions(prompt: ChatPrompt | None = None) -> dict[str, int]:
+    """본문 호출에 실제로 쓴 프롬프트의 버전 맵(KNK-1623).
+
+    layer면 레이어별 버전을, general이면 `{"GENERAL": n}`을 돌려준다. 백엔드는 이 맵을 키 변환
+    없이 그대로 적재하므로(ai_call_logs.prompt_versions), 키만 보고 어느 프롬프트로 나온 응답인지
+    구분된다. 호출부가 고쳐 써도 원본이 바뀌지 않게 새 dict를 돌려준다.
+    """
+    if _selected_prompt(prompt) == "general":
+        return {"GENERAL": GENERAL_VERSION}
+    return dict(LAYER_VERSIONS)
+
 
 # [시스템 앞] 배치 순서(명세 4.1) — MEMORY는 Depth 전담이라 제외.
 _SYSTEM_FRONT = ("SAFETY", "CORE", "STORY", "CHARACTER", "USER")
@@ -257,7 +275,7 @@ def assemble(req: ChatTurnRequest, prompt: ChatPrompt | None = None) -> list[dic
     Depth·PHI는 끝 근처에 system 역할로 둔다 — system vs user 역할 분기는 Phase 5에서
     검증 후 확정한다(명세 4.3; Anthropic 어댑터 시 Depth를 user 역할로 분기).
     """
-    if (prompt or settings.chat_prompt) == "general":
+    if _selected_prompt(prompt) == "general":
         return _assemble_general(req)
     repl = _slot_map(req)
     messages: list[dict] = [{"role": "system", "content": _system_front(repl)}]

@@ -385,3 +385,26 @@ def test_general_split_requires_markers(tmp_path) -> None:
 
 def test_general_version_comes_from_frontmatter() -> None:
     assert chat_assembler.GENERAL_VERSION == read_version(chat_assembler._GENERAL_PATH)
+
+
+# ── 본문 프롬프트 버전 기록 (KNK-1623) ───────────────────────────────────────
+def test_body_prompt_versions_follow_selected_prompt() -> None:
+    """layer는 레이어별 버전, general은 GENERAL 버전 하나를 돌려준다."""
+    assert chat_assembler.body_prompt_versions("layer") == chat_assembler.LAYER_VERSIONS
+    assert chat_assembler.body_prompt_versions("general") == {
+        "GENERAL": chat_assembler.GENERAL_VERSION
+    }
+
+
+def test_body_prompt_versions_follows_setting(monkeypatch) -> None:
+    """인자가 없으면 조립과 같은 규칙으로 설정 CHAT_PROMPT를 따른다."""
+    monkeypatch.setattr(chat_assembler.settings, "chat_prompt", "general")
+    assert chat_assembler.body_prompt_versions() == {"GENERAL": chat_assembler.GENERAL_VERSION}
+
+
+def test_body_prompt_versions_returns_a_copy() -> None:
+    """돌려받은 맵을 고쳐도 모듈의 레이어 버전 원본은 바뀌지 않는다."""
+    versions = chat_assembler.body_prompt_versions("layer")
+    versions["JUDGEMENT"] = 99
+
+    assert "JUDGEMENT" not in chat_assembler.LAYER_VERSIONS

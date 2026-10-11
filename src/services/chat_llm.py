@@ -28,7 +28,7 @@ from src.schemas.chat_turn import (
     CharacterImageMapping,
 )
 from src.services import llm
-from src.services.chat_assembler import LAYER_VERSIONS
+from src.services.chat_assembler import body_prompt_versions
 from src.services.llm.base import LlmError, LlmRequest, TextDelta
 
 logger = logging.getLogger(__name__)
@@ -430,7 +430,7 @@ async def stream_chat_turn(
             feature=FEATURE_CHAT_RESPONSE,
             provider=provider,
             model=settings.chat_model,
-            prompt_versions=LAYER_VERSIONS,
+            prompt_versions=body_prompt_versions(),
             retry_count=0,  # 본문은 재호출 없음
             latency_ms=int((time.monotonic() - start) * 1000),
         )

@@ -49,7 +49,7 @@ from src.schemas.chat_turn import (
 )
 from src.schemas.response_meta import ChatResponseMeta, StoryResponseMeta
 from src.services import llm
-from src.services.chat_assembler import LAYER_VERSIONS, assemble
+from src.services.chat_assembler import assemble, body_prompt_versions
 from src.services.chat_llm import stream_chat_turn
 from src.services.chat_selected_images import stream_with_selected_images
 from src.services.chat_child_image import ChildImageObservation, stream_with_child_image
@@ -112,7 +112,10 @@ async def _event_stream(
     열린 뒤에 본 작업이 돌기 때문에, 핸들러가 반환하는 시점에는 아직 LLM 호출 전이다. 블록이
     스트림 전체를 감싸므로 본문·판정 두 호출이 한 트레이스에 묶인다.
     """
-    # 분석 차원 부착(KNK-640): 6레이어+판정 버전을 싣는다. 채팅 턴은 재호출이 없어 retry_count=0.
+    # 분석 차원 부착(KNK-640): 본문 프롬프트+판정 버전을 싣는다. 채팅 턴은 재호출이 없어 retry_count=0.
+    # 본문 버전은 이 턴에 실제로 조립할 프롬프트(layer/general) 기준이다(KNK-1623). 관측과
+    # completed meta가 같은 값을 쓰도록 한 번만 구한다.
+    prompt_versions = {**body_prompt_versions(), "JUDGEMENT": JUDGEMENT_VERSION}
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
     with observe_request(
         "채팅 턴",
@@ -120,7 +123,7 @@ async def _event_stream(
         input_data=req.model_dump(mode="json", exclude={"image_slots"}),
         metadata={
             **connection_metadata,
-            "prompt_versions": {**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
+            "prompt_versions": prompt_versions,
             "retry_count": 0,
         },
     ) as trace:
@@ -179,12 +182,12 @@ async def _event_stream(
                                 break
                             yield _sse(EVENT_PING, PingData().model_dump())
                         judgement = judging.result()
-                        # 메타 합산: 토큰은 본문+판정, prompt_versions는 6레이어+JUDGEMENT.
+                        # 메타 합산: 토큰은 본문+판정, prompt_versions는 본문 프롬프트+JUDGEMENT.
                         # retry_count는 0 고정 — 본문·판정은 재호출이 없고, 선택지 재호출 횟수는
                         # /chat/choices 응답 meta로 이동했다(NEXT_ACTIONS 버전 키도 함께 이동).
                         meta = ChatResponseMeta(
                             model=ev.get("model") or settings.chat_model,
-                            prompt_versions={**LAYER_VERSIONS, "JUDGEMENT": JUDGEMENT_VERSION},
+                            prompt_versions=prompt_versions,
                             # 본문 호출이 실제로 나간 공급자(KNK-674). 판정은 CHAT_JUDGEMENT_MODEL로
                             # 다른 모델일 수 있지만(KNK-1620), meta의 model·provider는 본문 기준이다.
                             #

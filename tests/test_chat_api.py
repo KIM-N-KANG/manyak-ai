@@ -18,6 +18,7 @@ from src.schemas.chat_turn import (
     PingData,
     TargetMainEventOut,
 )
+from src.services import chat_assembler
 from src.services import chat_judgement as chat_judgement_module
 from src.services.chat_judgement import JudgementResult
 from tests.conftest import FakeStream
@@ -56,6 +57,18 @@ async def test_non_chat_validation_keeps_default_error_format(client) -> None:
     response = await client.post("/api/v1/story/storylines", json={})
     assert response.status_code == 422
     assert response.json()["detail"][0]["input"] == {}
+
+
+@pytest.fixture(autouse=True)
+def _chat_prompt_layer(monkeypatch):
+    """이 파일의 검사는 layer 기준(레이어 키·USER 레이어)이라 layer로 고정한다(KNK-1622·1623).
+
+    로컬 `.env`에 CHAT_PROMPT=general이 켜져 있어도 깨지지 않게 한다. general 검사는 테스트
+    안에서 직접 바꾼다. 공용 conftest에 두지 않는 이유는 라이브 테스트까지 묶이기 때문이다.
+    """
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "chat_prompt", "layer")
 
 
 @pytest.fixture(autouse=True)
@@ -191,8 +204,6 @@ async def test_chat_turn_passes_protagonist_name_to_body_prompt(client, monkeypa
         yield {"event": "completed", "ai_output": "장면", "model": "test", "provider": "test"}
 
     monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
-    # layer의 USER 레이어를 검사하므로 로컬 .env의 CHAT_PROMPT와 무관하게 layer로 고정한다.
-    monkeypatch.setattr(chat_module.settings, "chat_prompt", "layer")
     payload = _payload()
     payload["story_settings"]["protagonist_name"] = "민우"
     payload["story_settings"]["user_role_setting"] = "신중한 성격의 사립 탐정."
@@ -394,7 +405,7 @@ async def test_chat_turn_trace_receives_connection_metadata(
         "is_regenerated": True,
         "user_source": "edited_choice",
         "prompt_versions": {
-            **chat_module.LAYER_VERSIONS,
+            **chat_assembler.LAYER_VERSIONS,
             "JUDGEMENT": chat_module.JUDGEMENT_VERSION,
         },
         "retry_count": 0,
@@ -1160,3 +1171,37 @@ async def test_off_selects_both_speakers_and_stores_same_images(client, mock_eve
     completed = _data_of(response.text, "completed")
     assert completed["characterImages"] == images
     assert all(f"[[{image.image_url}]]" in completed["aiOutput"] for image in selected)
+
+
+async def test_general_prompt_records_general_version(client, mock_events, monkeypatch) -> None:
+    """general로 조립한 턴은 레이어 키 대신 GENERAL 버전을 기록한다(KNK-1623).
+
+    레이어 키가 그대로 실리면 백엔드 기록만 보고는 어느 프롬프트로 나온 응답인지 구분할 수 없다.
+    """
+    from contextlib import contextmanager
+
+    from src.core.config import settings
+
+    captured: dict = {}
+
+    @contextmanager
+    def _fake_observe(name, **kwargs):
+        captured.update(kwargs)
+
+        class _Trace:
+            def set_metadata(self, **kw) -> None: ...
+
+        yield _Trace()
+
+    monkeypatch.setattr(settings, "chat_prompt", "general")
+    monkeypatch.setattr(chat_module, "observe_request", _fake_observe)
+    mock_events([{"event": "completed", "ai_output": "장면", "model": "m", "provider": "p"}])
+
+    resp = await client.post("/api/v1/chat/turns", json=_payload())
+
+    expected = {
+        "GENERAL": chat_assembler.GENERAL_VERSION,
+        "JUDGEMENT": chat_module.JUDGEMENT_VERSION,
+    }
+    assert _data_of(resp.text, "completed")["meta"]["promptVersions"] == expected
+    assert captured["metadata"]["prompt_versions"] == expected
