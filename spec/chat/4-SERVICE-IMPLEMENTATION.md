@@ -108,7 +108,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 - **어댑터**는 SDK 계열 단위다. 지금은 `openai_sdk.py` 하나이고 DeepSeek·GPT가 이걸 공유한다(OpenAI 호환 API). 등록부의 *뜻*을 그 SDK의 *문법*으로 옮기고, 회사별 예외를 공급자 중립 예외로 접는다.
 - 모델·`base_url`·키는 `config.py`에서 읽고, 등록부가 호출 시점에 조회한다.
 - **과잉 추상화 금지**는 유지한다: 공급자마다 클래스를 만들지 않는다. messages 구조가 다른 provider(Anthropic)가 실제 필요해질 때 어댑터를 하나 더 추가한다(KNK-675).
-- 이 구조라서 **모델을 바꿀 때 호출부를 고치지 않는다** — 환경변수의 모델 이름만 바꾼다. 다만 채팅 본문 × Anthropic은 예외다(system 배치 문제 — 7절).
+- 이 구조라서 **모델을 바꿀 때 호출부를 고치지 않는다** — 환경변수의 모델 이름만 바꾼다. 다만 채팅 본문 × Anthropic은 layer 프롬프트에서만 막힌다(system 배치 문제, 7절). general 프롬프트는 지시문이 맨 앞 하나뿐이라 허용한다(4.4).
 
 ### 2.4 세션 상태 저장소 — 두지 않는다 (완전 stateless)
 
@@ -482,6 +482,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 
 ### 4.2 한 턴의 처리 흐름
 백엔드가 매 턴 모든 재료를 보내므로, AI는 받은 것으로 조립·호출만 한다 — **상태 조회·갱신·보관이 없다.**
+아래 2~5번의 치환·조립은 layer 프롬프트 기준이다. general 프롬프트의 조립은 4.4를 본다. 나머지 단계는 두 방식이 같다.
 ```text
 1. 백엔드 request 도착: 통글 4필드 + 장르 + 시작 설정 + 최근 10턴 History(오프닝 시드 포함)
    + 사용자 입력 + 메모리 요약(summary) + 이미지 보유 인물 매핑(character_images). session_id 없음.
@@ -495,7 +496,8 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
 5. 조립기: 시스템(앞) + History + 사용자 입력(마지막 user 턴) + Depth(현재 상태) + PHI 구성
 6. 본문 호출: ChatProvider.complete(messages, stream=True) → 본문 스트림(상황 묘사 + 주변 인물 또는 단역·배경 인물 대사 최소 한 줄, 선택지 없음, 2.5). 본문은 `*지문*`과 `인물명: 대사`로만 구성되며, LLM은 이미지 관련 태그를 쓰지 않는다.
 7. 본문 완료 후 판정 호출(재료가 있을 때만): 저장 마커를 제거한 본문 복사본을
-   JUDGEMENT 프롬프트로 호출 → 판정 메타 3필드.
+   JUDGEMENT 프롬프트로 호출 → 판정 메타 3필드. 판정 모델은 `CHAT_JUDGEMENT_MODEL`이고,
+   비어 있으면 `CHAT_MODEL`을 따른다(KNK-1620).
    재료 없으면 스킵, 실패하면 null 흡수(턴을 깨지 않음, 2.8 ④⑤).
    선택지는 이 흐름에서 만들지 않는다 — 전용 엔드포인트로 분리(KNK-625, 아래 선택지 흐름)
 8. SSE로 백엔드에 흘려보낸다 — AI 서버가 스트림을 줄 단위로 살펴 줄 머리의 `인물명:` 라벨을 찾는다(KNK-1002).
@@ -520,7 +522,7 @@ STORY/CHARACTER/USER를 채울 때 **두 방식을 결합**한다.
    이벤트와 마커는 같은 라벨 감지·중복 방지 규칙을 적용하며, 마커와 같은
    순서로 `characterImages[]`(`{name, imageName, imageUrl}`, 이벤트와 같은 모양)를 인물별 한 항목씩 구성하고, completed에 {본문, 인물 이미지 목록, choices 빈 배열(하위호환),
    판정 메타(targetMainEvent·occurredMainEventName·endingName, 재료 없으면 null), meta}를 전달
-   (meta = 모델·프롬프트 버전(6레이어+JUDGEMENT)·토큰 수(본문+판정 합산)·retry_count 0 고정).
+   (meta = 본문 모델·프롬프트 버전(고른 본문 프롬프트 기준으로 layer면 6레이어, general이면 `GENERAL` 하나, 여기에 JUDGEMENT, KNK-1623)·토큰 수(본문+판정 합산)·retry_count 0 고정).
    completed가 선택지를 기다리지 않으므로 본문 확정이 밀리지 않는다.
    AI는 보관하지 않는다 — History 저장·summary 갱신·판정 상태 저장은 백엔드 몫(2.8 ⑤)
 ```
@@ -741,6 +743,65 @@ Docker 테스트에서 다음 범위를 확인했다.
 ### 4.3 명세 재검증 메모
 [2-LAYER-PLACEMENT.md]는 "임의 깊이 삽입"을 전제하나, 실제 OpenAI 호환 API에서 **mid-array system 메시지의 동작**은 모델마다 다르다. 따라서 Depth 블록을 `system` 역할로 끝 근처에 둘지, `user` 역할 메타 메시지로 둘지는 **Phase 5에서 검증 후 확정**한다(7절).
 
+### 4.4 범용 본문 프롬프트 (general, KNK-1617)
+
+**무엇.** 본문 프롬프트를 레이어 6종 대신 파일 하나(`prompt/chat/general/CHAT-TEMPLATE.md`)로 쓰는 두 번째 방식이다.
+환경 변수 `CHAT_PROMPT`로 고른다. 값은 `layer`(기본)와 `general` 둘뿐이고, 다른 값이면 서버가 뜨지 않는다.
+판정(JUDGEMENT)·선택지(CHOICES) 프롬프트는 두 방식이 같다. [1-PROMPT-LAYER.md]·[2-LAYER-PLACEMENT.md]의
+레이어 정의와 배치 규칙은 general에 적용하지 않는다.
+
+**왜.** 모델과 추론 강도를 바꿔 가며 비교하려면 모든 모델에 같은 프롬프트를 보내야 한다. layer는 지시문을 대화 앞에 1개,
+뒤에 2개(Depth·PHI) 두는데, Anthropic은 요청 최상위의 지시문 칸이 하나뿐이라 뒤의 둘(그중 PHI가 안전 규칙)이 버려진다(7절).
+general은 지시문이 맨 앞 하나뿐이라 이 제약이 없다.
+
+**어떻게 조립하는가.**
+- 파일은 `## [SYSTEM]`과 `## [USER]` 두 블록으로 나뉜다. messages는 `[SYSTEM 블록(system)] → [History] → [USER 블록(마지막 user)]` 순서다.
+- [SYSTEM]에는 규칙과 스토리 설정이, [USER]에는 현재 상태(`{{summary}}`)·목표 사건·이번 턴 입력(`{{user_input}}`)이 들어간다.
+  layer처럼 사용자 입력을 따로 user 턴으로 붙이지 않고 [USER] 블록 안에 넣는다.
+- 슬롯은 layer와 같은 10개(`{{장르}}`·통글 4필드·`{{start_setting}}`·사건·엔딩 3종·`{{protagonist_name}}`)에
+  general 전용 `{{summary}}`·`{{user_input}}`를 더한 12개다. 치환은 자리표시자를 한 번에 훑어서 한다.
+  순서대로 바꾸면 앞서 넣은 사용자 입력이나 설정 본문 안의 `{{…}}` 글자가 다음 치환에서 다시 바뀌기 때문이다.
+- 템플릿은 서버 기동 때 한 번 읽고 검사한다. 블록 표시가 없거나, 채울 수 없는 자리표시자가 있거나, [USER]에
+  `{{user_input}}`이 없으면 서버가 뜨지 않는다. 셋 다 오류 없이 응답 품질만 무너져 늦게 드러나기 때문이다.
+
+**왜 매 턴 바뀌는 값을 마지막 user 메시지에 모았는가.** 앞부분(지시문과 스토리 설정)이 같은 채팅 안에서 대부분의 턴 동안
+그대로라 공급자의 프롬프트 캐시가 앞부분을 다시 쓸 수 있다. 예외는 엔딩 후보(`{{endings}}`)다. 백엔드가 최소 턴을 채운
+후보만 보내고 엔딩 도달 뒤엔 비워 보내므로, 그 턴에는 앞부분이 바뀌어 캐시가 새로 만들어진다.
+
+**버전 기록(KNK-1623).** completed meta와 Langfuse 관측의 프롬프트 버전은 고른 본문 프롬프트 기준이다.
+general이면 `{"GENERAL": n, "JUDGEMENT": m}`이고 `n`은 템플릿 frontmatter의 `version`이다. 백엔드는 이 맵을 그대로 저장하므로
+백엔드 변경은 없다.
+
+**Anthropic 허용 조건(KNK-1624).**
+- `CHAT_PROMPT=general`일 때만 `CHAT_MODEL`에 Anthropic 모델을 쓸 수 있다. layer면 지금처럼 기동에서 막는다.
+- 판정(`CHAT_JUDGEMENT_MODEL`)과 선택지(`CHAT_CHOICE_MODEL`) 자리는 general이어도 계속 막는다. 이 공급자는 JSON 강제에
+  스키마 전체를 요구하는데 통로에 그것을 담을 칸이 없어, 형식 준수가 프롬프트에만 기대게 되기 때문이다.
+  판정 모델이 비어 본문 모델을 물려받았다가 막히면, 기동 오류에 판정 모델을 따로 지정하라는 안내를 붙인다.
+- 본문 호출은 출력 상한 `max_tokens` 16,384를 공급자 구분 없이 싣는다. Anthropic 요청의 필수 항목이라 빠지면 턴마다 400이 난다.
+
+**Anthropic 호출 기록(KNK-1627).** Anthropic 어댑터가 Langfuse에 generation을 직접 기록한다. 바깥 자동 계측은
+사용자가 답변 도중 끊으면 기록이 닫히지 않아 그 턴이 빠지므로 쓰지 않는다.
+- 단발 호출은 기존 관측 데코레이터로 감싼다. 스트림은 호출 전에 기록을 열고, 성공·오류·취소 어느 쪽으로 끝나도 한 번 닫는다.
+  오류는 ERROR 단계와 예외 타입 이름만, 취소는 WARNING 단계와 `cancelled`를 남긴다. 받은 본문은 출력으로 싣는다.
+- 토큰은 `input`(캐시를 뺀 일반 입력)·`cache_creation_input_tokens`·`cache_read_input_tokens`·`output` 네 칸으로 나눠 싣는다.
+  Langfuse의 해당 모델 단가 키와 같은 이름이라 비용이 칸별로 계산된다. 응답이 마무리 신호 없이 끝나면 `output`은 비운다.
+  시작 신호에 실려 오는 임시 출력값이 실제 값처럼 남지 않게 하기 위해서다.
+- 기록 실패는 경고 로그만 남기고 채팅 결과에 영향을 주지 않는다.
+
+**남은 제약과 미검증.**
+- 실측 미실시: Claude가 general의 안전 규칙을 지키는지(이 제약을 푸는 조건), AI 오프닝으로 시작하는 대화를 받는지,
+  DeepSeek가 출력 상한 16,384를 받는지.
+- 사용자 입력에 닫는 태그(예: `</user_input>`)를 넣어 지시문을 끼우는 시도는 막지 않는다. general을 운영에 켜기 전 다시 검토한다.
+- 판정 모델이 본문 모델과 달라도 meta의 모델 이름은 본문 기준이고 토큰은 합산된다. 판정을 AI 서버 밖으로 옮길 때 함께 정리한다.
+- 기동 검사는 설정(`CHAT_PROMPT`·`CHAT_MODEL`)만 본다. 평가 도구가 한 프로세스에서 `assemble(prompt="layer")`를
+  Claude로 부르는 경우는 그 도구가 직접 막아야 한다.
+
+**검증.** Docker 테스트에서 `tests/unit/test_chat_assembler.py`(general 조립 순서·슬롯·한 번 치환·기동 검사),
+`tests/test_chat_api.py`(general 버전 기록), `tests/unit/test_config.py`(`CHAT_PROMPT`·판정 모델 설정),
+`tests/unit/test_llm_registry.py`(판정 모델 분리·판정 자리 차단), `tests/unit/test_llm_anthropic_sdk.py`(Anthropic 허용·선택지 자리 차단·
+물려받기 안내·기록 열고 닫기·토큰 칸), `tests/unit/test_langfuse.py`(기록 핸들)를 확인했다.
+layer 테스트는 모듈 단위로 `layer`를 고정해 두 설정 모두에서 통과한다.
+
 ---
 
 ## 5. MEMORY의 3분리 — 가장 흔한 혼동 지점
@@ -789,7 +850,7 @@ Docker 테스트에서 다음 범위를 확인했다.
 |---|---|---|---|
 | **ChatProvider** | LLM 호출 단일 통로 | 공통 통로 `src/services/llm` — 본문은 `stream()`, 선택지·판정은 `complete()`(JSON). 등록부가 공급자·어댑터를 정한다(2.3) | Anthropic 어댑터(KNK-675) |
 | **PromptCompiler** | 시점 A-1: 희소 입력 → 스토리 명세 JSON | 하이브리드(LLM+치환) | — |
-| **PromptAssembler** | 시점 B: 매 턴 슬롯 치환 + 6레이어 조립 | 받은 재료 → 슬롯 치환 → 시스템+History+Depth(받은 summary)+PHI | — |
+| **PromptAssembler** | 시점 B: 매 턴 슬롯 치환 + 본문 프롬프트 조립 | layer: 받은 재료 → 슬롯 치환 → 시스템+History+Depth(받은 summary)+PHI. general: 시스템+History+마지막 user 블록(4.4) | — |
 | **Choices 생성기** | 전용 엔드포인트(`/chat/choices`)의 선택지 생성 + 정확히 3개 보장(KNK-625) | `CHOICES-TEMPLATE.md` 렌더 → ChatProvider(JSON) 호출 → 코드 검증·보충(최대 2회)·기본값 패딩 | — |
 | **판정기(Judgement)** | 사건·엔딩 진행 사후 판정(재료 있을 때만) | `JUDGEMENT-TEMPLATE.md` 렌더 → ChatProvider(JSON) 호출 → 코드 보정(목록 밖·이미 완결 무효화)·실패 시 null 흡수 (2.8) | — |
 
@@ -846,3 +907,4 @@ Docker 테스트에서 다음 범위를 확인했다.
 - 메모리 요약 생성은 백엔드 주도의 별개 기능(Phase 4)이며, AI는 받은 summary를 참조만 함이 명시됨 (4.2, 5절)
 - History·summary 영속은 백엔드 DB가 소유하고, AI는 완전 stateless라 둘 다 매 턴 request로 받음이 명시됨 (5절)
 - 작가 오프닝 장면(`prologue`·`start_situation`)을 백엔드가 첫 화면 표시 + 첫 턴 History 시드로 전달해 첫 턴 연속성이 보장됨 (1절, 3.4, 4.2)
+- 본문 프롬프트를 `CHAT_PROMPT`로 layer와 general 중에서 고르고, general의 조립·기동 검사·버전 기록·Anthropic 허용 조건·미검증 항목이 명시됨 (4.4)
