@@ -44,46 +44,58 @@ _FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
 
 # ── 프롬프트 조립 테스트 ──────────────────────────────────────────────────────
 
-def test_build_image_prompt_fills_character_block() -> None:
-    """외형 필드가 <character> 블록에 올바르게 들어간다."""
-    prompt = build_image_prompt(_char(), _GENRE)
+def test_build_image_prompt_fills_character_lines() -> None:
+    """외형 필드가 자연어 본문의 인물 설정 줄에 올바르게 들어간다(KNK-1484: XML 태그 없음)."""
+    prompt = build_image_prompt(_char(), _GENRE, "ANIME")
     assert prompt is not None
-    assert "<genre>다크 판타지</genre>" in prompt
-    assert "<gender>남성</gender>" in prompt
-    assert "<age>20대 후반</age>" in prompt
-    assert "<body>건장한</body>" in prompt
-    assert "<face>각진 턱선, 굳은 표정</face>" in prompt
-    assert "<hair>짧은 단발</hair>" in prompt
-    assert "<outfit>은색 판금 흉갑</outfit>" in prompt
-    assert "<visual_identity>왼쪽 관자놀이의 칼자국</visual_identity>" in prompt
+    assert prompt.startswith("다크 판타지 장르 이야기에")
+    assert "- 성별: 남성" in prompt
+    assert "- 나이: 20대 후반" in prompt
+    assert "- 체형: 건장한" in prompt
+    assert "- 얼굴: 각진 턱선, 굳은 표정" in prompt
+    assert "- 머리카락: 짧은 단발" in prompt
+    assert "- 의상: 은색 판금 흉갑" in prompt
+    assert "- 시각적 특징: 왼쪽 관자놀이의 칼자국" in prompt
+    assert "<" not in prompt and "{{" not in prompt
 
 
 def test_build_image_prompt_multiple_genres() -> None:
     """장르가 여러 개면 쉼표로 합쳐진다."""
-    prompt = build_image_prompt(_char(), ["무협", "회귀"])
-    assert "<genre>무협, 회귀</genre>" in prompt
+    prompt = build_image_prompt(_char(), ["무협", "회귀"], "ANIME")
+    assert prompt.startswith("무협, 회귀 장르 이야기에")
 
 
 def test_build_image_prompt_returns_none_when_appearance_missing() -> None:
     """외형 필드가 비어 있으면 None을 반환한다."""
-    assert build_image_prompt(_char(face=""), _GENRE) is None
-    assert build_image_prompt(_char(age=""), _GENRE) is None
-    assert build_image_prompt(_char(visual_identity=""), _GENRE) is None
+    assert build_image_prompt(_char(face=""), _GENRE, "ANIME") is None
+    assert build_image_prompt(_char(age=""), _GENRE, "ANIME") is None
+    assert build_image_prompt(_char(visual_identity=""), _GENRE, "ANIME") is None
 
 
 def test_build_image_prompt_returns_none_when_appearance_is_whitespace() -> None:
     """외형 필드가 공백뿐이어도 None을 반환한다."""
-    assert build_image_prompt(_char(hair="   "), _GENRE) is None
+    assert build_image_prompt(_char(hair="   "), _GENRE, "ANIME") is None
 
 
-def test_build_image_prompt_has_fixed_blocks() -> None:
-    """고정 블록(task, composition 등)이 프롬프트에 포함된다."""
-    prompt = build_image_prompt(_char(), _GENRE)
-    assert "<task>" in prompt
-    assert "<composition>" in prompt
-    assert "<visual_style>" in prompt
-    assert "<quality_requirements>" in prompt
-    assert "<output>" in prompt
+def test_build_image_prompt_has_fixed_directions() -> None:
+    """화풍과 무관한 고정 지시(무표정·정면 응시·구도·배경·출력 제약)가 본문에 포함된다."""
+    prompt = build_image_prompt(_char(), _GENRE, "ANIME")
+    assert "무표정으로 카메라를 똑바로 바라본다" in prompt
+    assert "머리부터 허벅지 중간까지 화면에 담긴다" in prompt
+    assert "화면 아래 가장자리는 허벅지 중간 높이에 걸리고" in prompt
+    # 구도 목표는 첫 문장·구도 문단에 적는다(본문 중간 한 곳만이면 한 단계 좁게 잘림).
+    assert prompt.count("허벅지 중간까지") == 2
+    # 마지막 문장만 한 단계 넓게 적어 머리 위 여백을 확보한다(KNK-1524 실측).
+    assert "머리 위에 여백을 두고 머리끝부터 무릎까지 담은 인물" in prompt
+    assert "충분히 떨어뜨린다" not in prompt
+    assert "얼굴은 정면을 향하고 양쪽 눈이 같은 크기로" in prompt
+    # 구도를 상체로 당기던 단서는 빠져 있어야 한다(KNK-1524 실측: 무릎 위 지시가 허리 위로 나옴).
+    assert "초상" not in prompt
+    assert "얼굴은 화면 중앙" not in prompt
+    # 머리 위 여백 기준이 없으면 머리카락 윗부분이 잘린다(KNK-1524 실측).
+    assert "화면 높이의 10분의 1 정도 빈 여백이 보여, 머리 전체가 화면 안에 들어온다" in prompt
+    assert "배경:" in prompt
+    assert "워터마크" in prompt
 
 
 # ── 템플릿 로더 테스트 (KNK-1048: 경로 인자화) ───────────────────────────────
@@ -131,7 +143,7 @@ async def test_generate_all_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이"), _char(name="세린", gender="여성"), _char(name="칸")]
-    results = await generate_character_images(chars, _GENRE)
+    results = await generate_character_images(chars, _GENRE, "ANIME")
 
     assert len(results) == 3
     assert all(r.image is not None for r in results)
@@ -145,15 +157,15 @@ async def test_generate_partial_failure(monkeypatch: pytest.MonkeyPatch) -> None
 
     async def fake_generate(prompt: str, **_kwargs):
         # asyncio.gather 실행 순서에 의존하지 않도록 프롬프트 내용으로 실패를 결정한다.
-        # 세린만 gender="여성"이라 프롬프트에 <gender>여성</gender>이 들어간다.
-        if "<gender>여성</gender>" in prompt:
+        # 세린만 gender="여성"이라 프롬프트에 "성별: 여성" 줄이 들어간다.
+        if "성별: 여성" in prompt:
             raise ImageTimeout("시간 초과")
         return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이"), _char(name="세린", gender="여성"), _char(name="칸")]
-    results = await generate_character_images(chars, _GENRE)
+    results = await generate_character_images(chars, _GENRE, "ANIME")
 
     assert len(results) == 3
     successes = [r for r in results if r.image is not None]
@@ -173,7 +185,7 @@ async def test_generate_skips_missing_appearance(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이"), _char(name="세린", face="")]  # 세린은 외형 부족
-    results = await generate_character_images(chars, _GENRE)
+    results = await generate_character_images(chars, _GENRE, "ANIME")
 
     assert len(results) == 2
     assert results[0].image is not None  # 레이는 성공
@@ -208,7 +220,7 @@ async def test_generate_survives_malformed_provider_response(monkeypatch) -> Non
 
     async def fake_generate(**kwargs):
         # 세린만 gender="여성"이라 프롬프트로 구분한다(실행 순서 비의존).
-        return broken if "<gender>여성</gender>" in kwargs["prompt"] else good
+        return broken if "성별: 여성" in kwargs["prompt"] else good
 
     mock = AsyncMock()
     mock.images.generate = AsyncMock(side_effect=fake_generate)
@@ -216,7 +228,7 @@ async def test_generate_survives_malformed_provider_response(monkeypatch) -> Non
     monkeypatch.setattr(settings, "image_model", "gpt-image-2-2026-04-21")
 
     chars = [_char(name="레이"), _char(name="세린", gender="여성"), _char(name="칸")]
-    results = await generate_character_images(chars, _GENRE)
+    results = await generate_character_images(chars, _GENRE, "ANIME")
 
     assert [r.name for r in results] == ["레이", "세린", "칸"]
     assert results[0].image is not None
@@ -226,7 +238,7 @@ async def test_generate_survives_malformed_provider_response(monkeypatch) -> Non
 
 async def test_generate_empty_list() -> None:
     """빈 인물 목록은 빈 결과를 반환한다."""
-    results = await generate_character_images([], _GENRE)
+    results = await generate_character_images([], _GENRE, "ANIME")
     assert results == []
 
 
@@ -240,7 +252,7 @@ async def test_generate_all_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이"), _char(name="칸")]
-    results = await generate_character_images(chars, _GENRE)
+    results = await generate_character_images(chars, _GENRE, "ANIME")
 
     assert len(results) == 2
     assert all(r.image is None for r in results)
@@ -269,14 +281,14 @@ async def test_provider_failure_is_reported_to_sentry(monkeypatch: pytest.Monkey
     calls = _capture_recorder(monkeypatch)
 
     async def fake_generate(prompt: str, **_kwargs):
-        if "<gender>여성</gender>" in prompt:
+        if "성별: 여성" in prompt:
             raise ImageTimeout("시간 초과")
         return ImageResult(image_bytes=_FAKE_PNG, model="test", provider="openai")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이"), _char(name="세린", gender="여성")]
-    await generate_character_images(chars, _GENRE)
+    await generate_character_images(chars, _GENRE, "ANIME")
 
     assert len(calls) == 1  # 실패한 세린 1건만
     call = calls[0]
@@ -297,6 +309,6 @@ async def test_missing_appearance_is_not_reported_to_sentry(monkeypatch) -> None
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
-    await generate_character_images([_char(name="세린", face="")], _GENRE)
+    await generate_character_images([_char(name="세린", face="")], _GENRE, "ANIME")
 
     assert calls == []
