@@ -55,7 +55,7 @@ async def test_images_safe_returns_base64(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이"), _char(name="세린", gender="여성")]
-    result = await _generate_character_images_safe(chars, _GENRE)
+    result = await _generate_character_images_safe(chars, _GENRE, "ANIME")
 
     assert len(result) == 2
     assert result[0].name == "레이"  # 인물 이름은 그대로 — 백엔드가 인물과 연결하는 키
@@ -72,15 +72,15 @@ async def test_images_safe_partial_failure(monkeypatch: pytest.MonkeyPatch) -> N
 
     async def fake_generate(prompt, **_kwargs):
         # asyncio.gather 실행 순서에 의존하지 않도록 프롬프트 내용으로 실패를 결정한다.
-        # 세린만 gender="여성"이라 프롬프트에 <gender>여성</gender>이 들어간다.
-        if "<gender>여성</gender>" in prompt:
+        # 세린만 gender="여성"이라 프롬프트에 "성별: 여성" 줄이 들어간다.
+        if "성별: 여성" in prompt:
             raise ImageGenerationError("시간 초과")
         return ImageResult(image_bytes=_FAKE_WEBP, model="test", provider="openai")
 
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이"), _char(name="세린", gender="여성"), _char(name="칸")]
-    result = await _generate_character_images_safe(chars, _GENRE)
+    result = await _generate_character_images_safe(chars, _GENRE, "ANIME")
 
     assert len(result) == 3
     successes = [r for r in result if r.image_base64 is not None]
@@ -96,7 +96,7 @@ async def test_images_safe_total_failure_returns_empty(monkeypatch: pytest.Monke
     """generate_character_images가 예외를 던져도 빈 배열로 폴백한다."""
     import src.services.image.generate_characters as gen_mod
 
-    async def boom(characters, genre_tags):
+    async def boom(characters, genre_tags, art_style):
         raise RuntimeError("예상치 못한 오류")
 
     monkeypatch.setattr(
@@ -105,7 +105,7 @@ async def test_images_safe_total_failure_returns_empty(monkeypatch: pytest.Monke
     )
 
     chars = [_char(name="레이")]
-    result = await _generate_character_images_safe(chars, _GENRE)
+    result = await _generate_character_images_safe(chars, _GENRE, "ANIME")
     assert result == []
 
 
@@ -122,7 +122,7 @@ async def test_images_safe_total_failure_is_reported_to_sentry(monkeypatch) -> N
 
     monkeypatch.setattr(story_llm, "capture_ai_exception", _record)
 
-    async def boom(characters, genre_tags):
+    async def boom(characters, genre_tags, art_style):
         raise RuntimeError("예상치 못한 오류")
 
     monkeypatch.setattr(
@@ -130,7 +130,7 @@ async def test_images_safe_total_failure_is_reported_to_sentry(monkeypatch) -> N
         boom,
     )
 
-    await _generate_character_images_safe([_char(name="레이")], _GENRE)
+    await _generate_character_images_safe([_char(name="레이")], _GENRE, "ANIME")
 
     assert len(calls) == 1
     assert isinstance(calls[0]["exc"], RuntimeError)
@@ -149,7 +149,7 @@ async def test_images_safe_skips_missing_appearance(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이"), _char(name="세린", face="")]
-    result = await _generate_character_images_safe(chars, _GENRE)
+    result = await _generate_character_images_safe(chars, _GENRE, "ANIME")
 
     assert len(result) == 2
     assert result[0].image_base64 is not None
@@ -208,7 +208,7 @@ def test_character_image_out_requires_image_name() -> None:
 
 async def test_images_safe_empty_characters() -> None:
     """인물 0명이면 빈 배열을 반환한다."""
-    result = await _generate_character_images_safe([], _GENRE)
+    result = await _generate_character_images_safe([], _GENRE, "ANIME")
     assert result == []
 
 
@@ -223,7 +223,7 @@ async def test_images_safe_base64_error_returns_empty(monkeypatch: pytest.Monkey
     monkeypatch.setattr(gen_mod, "generate_image", fake_generate)
 
     chars = [_char(name="레이")]
-    result = await _generate_character_images_safe(chars, _GENRE)
+    result = await _generate_character_images_safe(chars, _GENRE, "ANIME")
     assert result == []
 
 

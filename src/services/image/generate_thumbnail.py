@@ -36,11 +36,12 @@ class ThumbnailImageResult:
 async def generate_thumbnail_image(
     characters: list[CharacterSetting],
     genre_tags: list[str],
+    art_style: str,
 ) -> ThumbnailImageResult:
     """표지 한 장을 생성한다. 인물 선정은 build_thumbnail_prompt가 한다(외형 완비 앞 1~2명,
     없으면 첫 인물). 인물 이미지의 세마포어 밖에서 돌므로 동시 공급자 호출은 최대 6이다.
     """
-    prompt = build_thumbnail_prompt(characters, genre_tags)
+    prompt = build_thumbnail_prompt(characters, genre_tags, art_style)
     start = time.monotonic()
     try:
         result = await generate_image(

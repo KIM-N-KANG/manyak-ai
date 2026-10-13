@@ -53,10 +53,10 @@ async def test_compile_endpoint_returns_nested_contract(
         return _spec_valid(), story_llm.LlmUsage("deepseek-test", 100, 200, provider="not-deepseek")
 
     # 이미지 생성은 가짜로 대체(KNK-940·KNK-1047). 컴파일 계약 테스트에서 실제 이미지 호출은 불필요.
-    async def fake_images(characters, genre_tags):
+    async def fake_images(characters, genre_tags, art_style):
         return []
 
-    async def fake_thumbnail(characters, genre_tags):
+    async def fake_thumbnail(characters, genre_tags, art_style):
         from src.schemas.story_compile import ThumbnailImageOut
         return ThumbnailImageOut(image_name="썸네일_기본", image_base64="UklGRg==")
 
