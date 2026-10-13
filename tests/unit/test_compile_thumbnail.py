@@ -60,7 +60,7 @@ async def test_generate_thumbnail_calls_image_with_portrait_size(monkeypatch) ->
 
     monkeypatch.setattr(thumb_mod, "generate_image", fake_generate)
 
-    result = await generate_thumbnail_image([_char()], _GENRE)
+    result = await generate_thumbnail_image([_char()], _GENRE, "ANIME")
 
     assert result.image is not None and result.error is None
     assert seen["size"] == THUMBNAIL_IMAGE_SIZE == "768x1024"
@@ -82,7 +82,7 @@ async def test_generate_thumbnail_reports_provider_failure_to_sentry(monkeypatch
     monkeypatch.setattr(thumb_mod, "capture_ai_exception", _record)
     monkeypatch.setattr(thumb_mod, "generate_image", fake_generate)
 
-    result = await generate_thumbnail_image([_char()], _GENRE)
+    result = await generate_thumbnail_image([_char()], _GENRE, "ANIME")
 
     assert result.image is None
     assert "시간 초과" in result.error
@@ -97,12 +97,12 @@ async def test_generate_thumbnail_reports_provider_failure_to_sentry(monkeypatch
 
 
 async def test_thumbnail_safe_returns_base64_on_success(monkeypatch) -> None:
-    async def fake_thumb(characters, genre_tags):
+    async def fake_thumb(characters, genre_tags, art_style):
         return ThumbnailImageResult(image=ImageResult(image_bytes=_FAKE_WEBP, model="t", provider="openai"))
 
     monkeypatch.setattr(thumb_mod, "generate_thumbnail_image", fake_thumb)
 
-    out = await _generate_thumbnail_image_safe([_char()], _GENRE)
+    out = await _generate_thumbnail_image_safe([_char()], _GENRE, "ANIME")
 
     assert isinstance(out, ThumbnailImageOut)
     assert out.image_name == "썸네일_기본"
@@ -128,7 +128,7 @@ async def test_thumbnail_safe_maps_failure_to_stable_code(monkeypatch, provider_
     monkeypatch.setattr(thumb_mod, "generate_image", fake_generate)
     monkeypatch.setattr(thumb_mod, "capture_ai_exception", lambda *a, **k: None)
 
-    out = await _generate_thumbnail_image_safe([_char()], _GENRE)
+    out = await _generate_thumbnail_image_safe([_char()], _GENRE, "ANIME")
 
     assert out.image_base64 is None
     assert out.error == code
@@ -143,13 +143,13 @@ async def test_thumbnail_safe_folds_unexpected_exception(monkeypatch) -> None:
     def _record(exc, **kwargs):
         calls.append({"exc": exc, **kwargs})
 
-    async def boom(characters, genre_tags):
+    async def boom(characters, genre_tags, art_style):
         raise RuntimeError("예상치 못한 오류")
 
     monkeypatch.setattr(story_llm, "capture_ai_exception", _record)
     monkeypatch.setattr(thumb_mod, "generate_thumbnail_image", boom)
 
-    out = await _generate_thumbnail_image_safe([_char()], _GENRE)
+    out = await _generate_thumbnail_image_safe([_char()], _GENRE, "ANIME")
 
     assert out.image_base64 is None
     assert out.error == "generation_failed"
@@ -264,7 +264,7 @@ async def test_compile_story_thumbnail_failure_keeps_200_and_character_images(mo
     async def fake_complete(system, user, **kwargs):
         return spec, story_llm.LlmUsage("test", 100, 200, provider="openai")
 
-    async def fake_images(characters, genre_tags):
+    async def fake_images(characters, genre_tags, art_style):
         from src.schemas.story_compile import CharacterImageOut
 
         return [CharacterImageOut(name="레이", image_name="레이_기본", image_base64="AAAA")]
@@ -292,10 +292,10 @@ async def test_compile_story_character_failure_keeps_thumbnail(monkeypatch) -> N
     async def fake_complete(system, user, **kwargs):
         return spec, story_llm.LlmUsage("test", 100, 200, provider="openai")
 
-    async def fake_images(characters, genre_tags):
+    async def fake_images(characters, genre_tags, art_style):
         return []
 
-    async def fake_thumb(characters, genre_tags):
+    async def fake_thumb(characters, genre_tags, art_style):
         return ThumbnailImageOut(image_name="썸네일_기본", image_base64="QkJCQg==")
 
     monkeypatch.setattr(story_llm, "_complete_json", fake_complete)
@@ -321,12 +321,12 @@ async def test_compile_story_runs_images_and_thumbnail_concurrently(monkeypatch)
     async def fake_complete(system, user, **kwargs):
         return spec, story_llm.LlmUsage("test", 100, 200, provider="openai")
 
-    async def fake_images(characters, genre_tags):
+    async def fake_images(characters, genre_tags, art_style):
         images_started.set()
         await thumbnail_started.wait()
         return []
 
-    async def fake_thumb(characters, genre_tags):
+    async def fake_thumb(characters, genre_tags, art_style):
         thumbnail_started.set()
         await images_started.wait()
         return ThumbnailImageOut(image_name="썸네일_기본", image_base64="QQ==")
