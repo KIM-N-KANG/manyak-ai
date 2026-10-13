@@ -8,16 +8,26 @@
 ## 다음 배포 때 볼 것
 
 - 흐름은 늘 같다: `dev → release/vX.Y.Z → main`(Merge Commit) → 자동 배포 → 태그 → 역류(Merge Commit) → 브랜치 삭제.
-- **운영 배포는 ECS 경로다(KNK-963, v0.2.6부터).** deploy 잡의 안정화 대기는 10분(60×10초)이라 **잡 실패 ≠ 배포 실패** — dev에서 태스크 시작 실패 반복으로 54분 뒤 완료된 전례(8/23)가 있다. 잡이 실패하면 롤백 전에 ECS 서비스 상태부터 확인한다. **EC2는 회수됐고 EC2 롤백 잡도 제거됐다(KNK-971, v0.3.0)** — `prod-health.sh`·`infra-check.sh`의 EC2·SSM 점검이 실패하니 ECS(태스크 imageDigest·HEALTHY)로 검증한다. 스크립트의 ECS 전환은 후속 사안.
+- **운영 배포는 ECS 경로다(KNK-963, v0.2.6부터).** deploy 잡의 안정화 대기는 10분(60×10초)이라 **잡 실패 ≠ 배포 실패** — dev에서 태스크 시작 실패 반복으로 54분 뒤 완료된 전례(8/23)가 있다. 잡이 실패하면 롤백 전에 ECS 서비스 상태부터 확인한다. **AI는 전용 서비스 `manyak-prod-ai`에서 돈다**(v0.4.6에서 확인, v0.4.5까지의 `manyak-prod`가 아니다). **EC2는 회수됐고 EC2 롤백 잡도 제거됐다(KNK-971, v0.3.0)** — `prod-health.sh`·`infra-check.sh`의 EC2·SSM 점검이 실패하니 ECS(태스크 imageDigest·HEALTHY)로 검증한다. 스크립트의 ECS 전환은 후속 사안.
 - **Langfuse 활성화(KNK-654)는 릴리스가 아니다.** 코드는 이미 나가 있고 키만 없어 no-op이다. 순서:
   1. `manyak-terraform` apply — **EC2 교체**가 일어난다(다운타임 + 이미지 핀이 `:latest`로 리셋되는 것 주의).
   2. 백엔드 KNK-621 배포 — 커스텀 장르 400 차단. 안 하면 사용자 자유입력이 트레이스 태그로 유입된다.
   3. Secrets에 `AI_LANGFUSE_PUBLIC_KEY`·`AI_LANGFUSE_SECRET_KEY`·`AI_LANGFUSE_HOST` 추가 — **기존 8키를 전부 포함해 저장**한다(`put-secret-value`는 전체 덮어쓰기).
      - **HOST는 정확히 `https://jp.cloud.langfuse.com`이어야 한다.** 코드가 이 문자열과 일치할 때만 켠다(`src/core/langfuse.py`의 `_ALLOWED_HOST`, 후행 슬래시는 무시). ⚠️ `.env.example`의 기본값은 EU(`https://cloud.langfuse.com`)라 그대로 복사하면 **에러 로그만 남고 조용히 꺼진 채 기동**한다.
-  4. ECS(manyak-prod) 서비스 force-new-deployment로 AI만 재배포.
+  4. ECS `manyak-prod-ai` 서비스 force-new-deployment로 AI만 재배포.
   5. 기동 로그에서 `Langfuse 활성 — host=… env=prod` 확인 + server 컨테이너에 `AI_LANGFUSE_*`가 없는지 확인.
 
 ---
+
+## v0.4.6 — 2026-10-13 배포 완료
+
+- 범위: KNK-1484(컴파일 인물 이미지·표지 화풍 선택 `art_style`, #164), KNK-1634(버전 0.4.6, release 직접 커밋 `284baa3`).
+  - 외부 계약 변경 있음, 하위호환. 컴파일 요청에 `art_style`(10종+`NONE`, 미전달·null은 `ANIME`), 표지 실패 코드에 `skipped` 추가. 운영 백엔드(v0.7.3, KNK-1481)가 이미 보내고 있고 표지 `error`를 문자열로 받아 처리해 **AI 단독 배포·단독 롤백 가능**. 새 env 없음.
+- PR #165 → main `7f27c99`(Merge Commit). Deploy to ECS (prod) 성공(3분 51초). 태그 `v0.4.6` → `7f27c99`.
+- 운영 검증: ECS 서비스 `manyak-prod-ai` 배포 COMPLETED(태스크 정의 `manyak-prod-ai:3`), 태스크 2개·`ai` 컨테이너 HEALTHY, digest가 ECR `7f27c99`(=`latest`)와 일치(`sha256:14528c21…`). `prod-health.sh`는 EC2를 찾다 FAIL(판정에 쓰지 않음).
+- QA: `qa.sh` 종료코드 0. 도커 유닛·API 1535 passed·8 skipped, 라이브 통합 10 passed(125초). 라이브 이미지 테스트는 화풍 프롬프트를 거치지 않는다 — 화풍별 생성은 KNK-1524 실험 스크립트로 확인, 모에·순정·웹툰 표지는 실측 미실시.
+- 배포 전 리뷰에서 차단 결함 없음. 비차단: 기본 `ANIME`도 템플릿 개편으로 그림이 달라짐(구도 "머리끝~허벅지 중간, 무표정 정면") — 이 그림을 원본으로 쓰는 채팅 장면 이미지 품질은 따로 확인하지 않음.
+- 역반영 PR #166(Merge Commit, dev `8271579`).
 
 ## v0.4.5 — 2026-10-11 배포 완료
 

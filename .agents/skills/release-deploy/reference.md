@@ -14,6 +14,7 @@
 |---|---|
 | AWS 계정 / 리전 | 계정번호는 `../manyak-terraform`(비공개) 참조 — 이 문서에 적지 않는다 / `ap-northeast-2`(서울) |
 | EC2 (운영 서버) | 태그 `manyak-prod-app`, t3.small. **id는 적어두지 않는다** — user-data가 바뀌면 EC2가 통째로 교체된다(2026-07-11 실제 교체). 태그로 조회할 것 |
+| ECS (운영, 현재 경로) | 클러스터 `manyak-prod`. **AI는 전용 서비스 `manyak-prod-ai`**(컨테이너 `ai`, 이미지 `manyak-ai:latest`)로 돈다 — v0.4.5까지 AI가 돌던 서비스 `manyak-prod`와 다르다(2026-10-13 v0.4.6에서 확인). 검증은 이 서비스 태스크의 `ai` imageDigest를 ECR `<short-sha>` 태그와 맞춘다 |
 | ECR (이미지 창고) | `<계정>.dkr.ecr.ap-northeast-2.amazonaws.com/manyak-ai` |
 | SSM 문서 (배포 명령) | `manyak-prod-ai-deploy` (파라미터 `ImageUri`) |
 | Secrets Manager | `manyak/prod/app` — `DEEPSEEK_API_KEY` 포함 8키 |
