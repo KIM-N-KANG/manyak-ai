@@ -19,6 +19,7 @@ from src.services.prompt import (
     COMPILE_GEMINI_VERSION,
     build_compile_prompt,
     _COMPILE_GEMINI_SYSTEM,
+    _COMPILE_SYSTEM,
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -436,3 +437,10 @@ def test_appearance_fields_default_empty() -> None:
     for c in parsed.prompt_settings.character_setting:
         assert c.age == ""
         assert c.body == ""
+
+
+@pytest.mark.parametrize("system", [_COMPILE_SYSTEM, _COMPILE_GEMINI_SYSTEM])
+def test_compile_prompt_fixes_prologue_ending_to_da(system: str) -> None:
+    # 도입 나레이션이 '~습니다'로 나오던 버그(KNK-1635) — 두 컴파일 템플릿 모두 종결 규칙을 유지한다.
+    assert "`start.prologue`·`start.start_situation`의 서술 문장은 웹소설 지문처럼 '~다'로 끝낸다" in system
+    assert "'~습니다'·'~요'로 끝내지 않는다" in system
