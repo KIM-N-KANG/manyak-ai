@@ -19,6 +19,17 @@
 
 ---
 
+## v0.4.7 — 2026-10-14 배포 완료
+
+- 범위: KNK-1635(도입부 prologue·채팅 지문 '~습니다' 어체 수정, #168·#169), KNK-1638(버전 0.4.7, release 직접 커밋 `c283bf2`).
+  - 프롬프트 문구만 변경. 외부 계약·env 변경 없음 → **AI 단독 배포·단독 롤백 가능**. 기존 스토리의 저장된 prologue 원문은 그대로.
+  - #168은 OpenAI(기본 템플릿)로만 실측해 머지했는데, dev·운영 컴파일 모델은 `gemini-3.7-flash`(응답 `gemini-3.8-flash`)라 Gemini 템플릿 경로에서 재발했다 → #169. **프롬프트 실측 전에 대상 환경의 모델 env(ECS 태스크 정의·`/manyak/prod/ai/*`)부터 확인한다.**
+- PR #170 → main `2a2d967`(Merge Commit). Deploy to ECS (prod) 성공. 태그 `v0.4.7` → `2a2d967`.
+- 운영 검증: `manyak-prod-ai` 배포 COMPLETED(`manyak-prod-ai:3`), 태스크 2개·`ai` 컨테이너 HEALTHY, digest가 ECR `2a2d967`(=`latest`)와 일치(`sha256:ea7513da…`). `prod-health.sh`는 EC2를 찾다 FAIL(판정에 쓰지 않음).
+- QA: `qa.sh` 종료코드 0. 유닛 1538 passed·8 skipped, 라이브 통합 10 passed. 운영과 같은 모델 실측: Gemini 컴파일 v11 '~습니다' 3문장 재현 → v12 0문장, `gpt-6-luna` 채팅 지문 53/53 '~다'.
+- 배포 전 리뷰 차단 결함 없음. Codex PR 리뷰는 #168·#169 모두 사용량 한도로 미실시(로컬 검수로 대체).
+- 역반영 PR #171(Merge Commit, dev `1106302`).
+
 ## v0.4.6 — 2026-10-13 배포 완료
 
 - 범위: KNK-1484(컴파일 인물 이미지·표지 화풍 선택 `art_style`, #164), KNK-1634(버전 0.4.6, release 직접 커밋 `284baa3`).
