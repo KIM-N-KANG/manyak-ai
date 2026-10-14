@@ -19,6 +19,7 @@ from src.services.prompt import (
     COMPILE_GEMINI_VERSION,
     build_compile_prompt,
     _COMPILE_GEMINI_SYSTEM,
+    _COMPILE_SYSTEM,
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -436,3 +437,15 @@ def test_appearance_fields_default_empty() -> None:
     for c in parsed.prompt_settings.character_setting:
         assert c.age == ""
         assert c.body == ""
+
+
+def test_compile_prompt_fixes_prologue_ending_to_da() -> None:
+    # 도입 나레이션이 '~습니다'로 나오던 버그(KNK-1635) — 기본 컴파일 템플릿의 종결 규칙을 유지한다.
+    assert "`start.prologue`·`start.start_situation`의 서술 문장은 웹소설 지문처럼 '~다'로 끝낸다" in _COMPILE_SYSTEM
+    assert "'~습니다'·'~요'로 끝내지 않는다" in _COMPILE_SYSTEM
+
+
+def test_gemini_compile_prompt_fixes_prologue_ending_to_da() -> None:
+    # dev(Gemini)에서 PR #168 뒤에도 '~습니다'가 나와 규칙을 최상단 규칙으로 올림(KNK-1635)
+    assert "낭독·해설이 아니라 웹소설 본문이다. 서술 문장은 '~다'로 끝낸다" in _COMPILE_GEMINI_SYSTEM
+    assert "도입 나레이션" not in _COMPILE_GEMINI_SYSTEM
