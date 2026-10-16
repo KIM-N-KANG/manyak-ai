@@ -601,13 +601,39 @@ def test_usage_details_partial_fields() -> None:
     assert google_sdk._usage_details(response) == {"output_reasoning": 40, "total": 40}
 
 
-async def test_stream_does_not_open_observation(monkeypatch) -> None:
-    """스트리밍은 아직 관측하지 않는다(모듈 docstring 4). 현재 컨텍스트 관측을 yield 너머로
-    열어 두면 중도 이탈이 ERROR로 남고 부모가 틀어지므로, 스트림 전용 관측 없이 붙이지 않게 고정한다."""
-    rec = _mock_observation(monkeypatch)
+class _RecordingStreamGeneration:
+    def __init__(self, started: dict) -> None:
+        self.started = started
+        self.ends: list[tuple[str, dict]] = []
 
+    def finish(self, **fields) -> None:
+        self.ends.append(("finish", fields))
+
+    def fail(self, exc, **fields) -> None:
+        self.ends.append(("fail", {"exc": exc, **fields}))
+
+    def cancel(self, **fields) -> None:
+        self.ends.append(("cancel", fields))
+
+
+def _record_stream_generation(monkeypatch) -> list[_RecordingStreamGeneration]:
+    made: list[_RecordingStreamGeneration] = []
+
+    def _start(name, **kwargs):
+        generation = _RecordingStreamGeneration({"name": name, **kwargs})
+        made.append(generation)
+        return generation
+
+    monkeypatch.setattr(google_sdk, "start_stream_generation", _start)
+    return made
+
+
+def _install_stream(monkeypatch, chunks: list, error: BaseException | None = None) -> None:
     async def fake_stream(*a, **kw):
-        yield SimpleNamespace(text="조각", usage_metadata=None, model_version=None, candidates=[])
+        for c in chunks:
+            yield c
+        if error is not None:
+            raise error
 
     monkeypatch.setattr(
         google_sdk, "_client",
@@ -615,6 +641,67 @@ async def test_stream_does_not_open_observation(monkeypatch) -> None:
             generate_content_stream=AsyncMock(return_value=fake_stream()),
         ))),
     )
-    async for _ in google_sdk.stream(_req(), _RESOLVED):
-        pass
+
+
+_USAGE_CHUNK = SimpleNamespace(
+    text="녕",
+    usage_metadata=SimpleNamespace(
+        prompt_token_count=100, candidates_token_count=20,
+        thoughts_token_count=5, cached_content_token_count=40,
+    ),
+    model_version=None,
+    candidates=[SimpleNamespace(finish_reason=SimpleNamespace(name="STOP"))],
+)
+
+
+async def test_stream_records_one_finished_generation(monkeypatch) -> None:
+    """채팅 본문(스트림)도 Langfuse에 남긴다. 고치기 전에는 Gemini 채팅 턴이 기록에서 통째로 빠졌다.
+
+    현재 컨텍스트 관측(`observe_generation`)은 쓰지 않는다 — yield를 넘나들면 중도 이탈이 ERROR로
+    남고 부모가 틀어진다. 스트림 전용 관측을 한 번 열고 한 번 닫는다.
+    """
+    rec = _mock_observation(monkeypatch)
+    made = _record_stream_generation(monkeypatch)
+    first = SimpleNamespace(text="안", usage_metadata=None, model_version=None, candidates=[])
+    _install_stream(monkeypatch, [first, _USAGE_CHUNK])
+
+    _ = [ev async for ev in google_sdk.stream(_req(), _RESOLVED)]
+
     assert rec.started == {}
+    assert len(made) == 1
+    assert made[0].started["name"] == "Gemini-generation"
+    assert made[0].started["input_data"] == _req().messages
+    assert made[0].ends == [(
+        "finish",
+        {
+            "output": "안녕",
+            "usage_details": {
+                "input": 60, "input_cached_tokens": 40, "output": 20, "output_reasoning": 5, "total": 125,
+            },
+        },
+    )]
+
+
+async def test_stream_records_cancel_when_user_leaves(monkeypatch) -> None:
+    """사용자가 도중에 끊으면 오류가 아니라 취소로 닫고 그때까지의 글을 싣는다."""
+    made = _record_stream_generation(monkeypatch)
+    first = SimpleNamespace(text="안", usage_metadata=None, model_version=None, candidates=[])
+    _install_stream(monkeypatch, [first, _USAGE_CHUNK])
+
+    gen = google_sdk.stream(_req(), _RESOLVED)
+    assert await gen.__anext__() == TextDelta("안")
+    await gen.aclose()
+
+    assert made[0].ends == [("cancel", {"output": "안", "usage_details": None})]
+
+
+async def test_stream_records_failure_midway(monkeypatch) -> None:
+    """도중에 공급자 오류가 나면 실패로 한 번 닫고, 호출부에는 중립 예외가 간다."""
+    made = _record_stream_generation(monkeypatch)
+    first = SimpleNamespace(text="가", usage_metadata=None, model_version=None, candidates=[])
+    _install_stream(monkeypatch, [first], error=_api_error(429, "rate limited"))
+
+    with pytest.raises(LlmRateLimited):
+        _ = [ev async for ev in google_sdk.stream(_req(), _RESOLVED)]
+
+    assert [kind for kind, _ in made[0].ends] == ["fail"]
