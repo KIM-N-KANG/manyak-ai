@@ -85,8 +85,7 @@ class MainEvent(BaseModel):
 
     컴파일 산출물(`StoryMainEventOut`)·일반 제작 저작분과 동일 구조로 백엔드
     `story_main_events`에서 온다. key_sentence는 사용자 입력이 이 사건과 의미상
-    관련되는지 판단하는 기준 문장이며, 관련성 판정은 AI의 정성 판정이다(spec/5-ai-server-spec.md §5-3-4 ·
-    adr/3-ai-server-adr.md D11).
+    관련되는지 판단하는 기준 문장이다. 본문·선택지 프롬프트 재료로 쓴다.
     """
 
     name: str
@@ -94,22 +93,10 @@ class MainEvent(BaseModel):
     key_sentence: str
 
 
-class TargetMainEvent(BaseModel):
-    """목표 사건 상태 — 이 채팅이 현재 향해 진행 중인 주요 사건(채팅당 최대 1개).
-
-    본문 프롬프트 재료로만 쓴다. 판정 제거(KNK-1626) 뒤로 AI는 목표 상태를 돌려주지 않는다.
-    """
-
-    name: str
-    progress_turns: int = Field(ge=0)
-
-
 class EndingCandidate(BaseModel):
-    """도달 후보 엔딩 — 달성 조건(자연어) 정성 판정의 재료.
+    """도달 후보 엔딩 — 본문 프롬프트 재료.
 
-    min_turns가 없는 이유: 최소 턴 수는 결정적 판정이라 백엔드가 충족한 후보만
-    걸러 싣는다(D11 분담). 이미 도달한 채팅이면 endings 자체가 빈 배열로 와서
-    재판정이 차단된다(도달 인정은 채팅당 최초 1회 — spec/4-backend-server-spec.md §4-3-10).
+    min_turns가 없는 이유: 최소 턴 수는 백엔드가 확인해 충족한 후보만 걸러 싣는다.
     """
 
     name: str
@@ -198,12 +185,12 @@ class ChatTurnRequest(BaseModel):
     # 이라, 그전까지 백엔드는 빈 문자열을 보낸다.
     summary: str
     # ── 주요 사건·엔딩 진행 재료 (KNK-482, spec/5-ai-server-spec.md §5-3-4 · adr/3-ai-server-adr.md D11) ──────────────
-    # 넷 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
+    # 둘 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
     # 않으므로, 없으면 기존 요청과 동일하게 동작한다(하위호환 — 백엔드 전달은
     # spec/4-backend-server-spec.md §4-3-10). 재료가 실리면 본문 프롬프트에 들어간다.
+    # 목표 사건(`target_main_event`)·완결 사건(`occurred_main_event_names`)은 판정 제거(KNK-1626)로
+    # 뺐다. 백엔드가 계속 보내도 모르는 필드라 무시된다(pydantic 기본 extra="ignore").
     main_events: list[MainEvent] = Field(default_factory=list, max_length=10)
-    target_main_event: TargetMainEvent | None = None
-    occurred_main_event_names: list[str] = Field(default_factory=list)
     endings: list[EndingCandidate] = Field(default_factory=list)
     # 이미지가 저장된 주변 인물만 전달한다. 없으면 기존 채팅과 동일하게 동작한다.
     # 개수 상한을 두지 않는다 — 인물당 표정별 다중 이미지가 오면 5개를 넘고, 인물 수

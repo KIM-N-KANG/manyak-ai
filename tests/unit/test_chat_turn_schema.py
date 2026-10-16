@@ -107,8 +107,6 @@ def test_request_without_event_materials_passes_with_defaults() -> None:
     req = ChatTurnRequest.model_validate(_BASE_PAYLOAD)
     assert req.user_source is None
     assert req.main_events == []
-    assert req.target_main_event is None
-    assert req.occurred_main_event_names == []
     assert req.endings == []
     assert req.character_images == []
 
@@ -118,8 +116,6 @@ def test_request_with_event_materials_parses() -> None:
     payload = {
         **_BASE_PAYLOAD,
         "main_events": [_MAIN_EVENT],
-        "target_main_event": {"name": "반란의 서막", "progress_turns": 3},
-        "occurred_main_event_names": ["선왕의 죽음"],
         "endings": [
             {
                 "name": "왕좌를 되찾다",
@@ -130,9 +126,6 @@ def test_request_with_event_materials_parses() -> None:
     }
     req = ChatTurnRequest.model_validate(payload)
     assert req.main_events[0].key_sentence == _MAIN_EVENT["key_sentence"]
-    assert req.target_main_event is not None
-    assert req.target_main_event.progress_turns == 3
-    assert req.occurred_main_event_names == ["선왕의 죽음"]
     assert req.endings[0].name == "왕좌를 되찾다"
 
 
@@ -209,15 +202,6 @@ def test_request_omits_missing_user_source(user_source: str | None) -> None:
 
 
 # ── 형식 위반 거부 ──────────────────────────────────────────────────────────
-def test_negative_progress_turns_rejected() -> None:
-    payload = {
-        **_BASE_PAYLOAD,
-        "target_main_event": {"name": "반란의 서막", "progress_turns": -1},
-    }
-    with pytest.raises(ValidationError):
-        ChatTurnRequest.model_validate(payload)
-
-
 def test_main_events_over_ten_rejected() -> None:
     # 계약상 주요 사건은 스토리당 최대 10 — 백엔드 저작 상한과 동일(§5-3-4).
     payload = {**_BASE_PAYLOAD, "main_events": [_MAIN_EVENT] * 11}
@@ -253,15 +237,6 @@ def test_ending_candidate_has_no_min_turns_field() -> None:
     }
     req = ChatTurnRequest.model_validate(payload)
     assert "min_turns" not in type(req.endings[0]).model_fields
-
-
-# ── completed에 판정 메타가 없다 (KNK-1626) ─────────────────────────────────
-def test_completed_has_no_judgement_fields() -> None:
-    payload = CompletedData(ai_output="본문").model_dump(by_alias=True)
-    assert payload["aiOutput"] == "본문"
-    for key in ("targetMainEvent", "occurredMainEventName", "endingName"):
-        assert key not in payload
-    assert payload["characterImages"] == []
 
 
 def test_character_images_serialize_in_display_order_with_duplicates() -> None:

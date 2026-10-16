@@ -24,7 +24,6 @@ from src.schemas.chat_turn import (
     ChatTurnRequest,
     EndingCandidate,
     MainEvent,
-    TargetMainEvent,
 )
 from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.prompt_meta import read_version
@@ -113,16 +112,11 @@ def format_main_events(events: list[MainEvent]) -> str:
     ) or "(없음)"
 
 
-def format_target_main_event(target: TargetMainEvent | None) -> str:
-    """목표 사건 상태 → 슬롯 텍스트. 목표 없음도 명시 문구로 넣는다(빈 칸 금지)."""
-    return f"이름: {target.name} (진행 {target.progress_turns}턴)" if target else "(없음)"
-
-
 def _format_endings(endings: list[EndingCandidate]) -> str:
     """도달 후보 엔딩 → STORY 슬롯 텍스트.
 
     epilogue를 포함한다 — 본문 호출이 엔딩 응답 생성 여부를 스스로 판단하고 도달 시
-    에필로그 가이드를 반영해야 하기 때문(판정 재료와 달리 출력 가이드까지 필요).
+    에필로그 가이드를 반영해야 하기 때문.
     """
     return "\n".join(
         f"- 이름: {e.name} / 달성 조건: {e.achievement_condition} / 에필로그 가이드: {e.epilogue}"
@@ -140,7 +134,6 @@ _SLOT_KEYS = (
     "{{character_setting}}",
     "{{user_role_setting}}",
     "{{main_events}}",
-    "{{target_main_event}}",
     "{{endings}}",
     "{{protagonist_name}}",
 )
@@ -150,7 +143,7 @@ def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
     """ChatTurnRequest → 정적 레이어 슬롯 치환 맵(결정적, LLM 없음).
 
     장르는 `stories.genre`, start_setting은 `story_start_settings`에서 오는 예외 소스다
-    (나머지는 story_settings 통글 4필드, 명세 3.3). 사건·엔딩 슬롯 3종(KNK-485)은
+    (나머지는 story_settings 통글 4필드, 명세 3.3). 사건·엔딩 슬롯 2종(KNK-485)은
     재료가 비면 "(없음)" 문구로 치환된다. 요청의 `character_images`는 프롬프트에 넣지
     않는다 — 이미지는 AI 서버가 출력의 `인물명:` 줄을 찾아 붙이므로 LLM이 알 필요가 없다(KNK-1006).
     """
@@ -163,7 +156,6 @@ def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
         "{{character_setting}}": ss.character_setting,
         "{{user_role_setting}}": ss.user_role_setting,
         "{{main_events}}": format_main_events(req.main_events),
-        "{{target_main_event}}": format_target_main_event(req.target_main_event),
         "{{endings}}": _format_endings(req.endings),
         "{{protagonist_name}}": ss.protagonist_name,
     }
@@ -250,7 +242,7 @@ def _render_once(body: str, repl: dict[str, str]) -> str:
 
 
 def _assemble_general(req: ChatTurnRequest) -> list[dict]:
-    """general: [SYSTEM] → [History] → [USER](현재 상태·목표 사건·이번 입력).
+    """general: [SYSTEM] → [History] → [USER](현재 상태·이번 입력).
 
     매 턴 바뀌는 값은 모두 마지막 user 메시지에 있어, 앞부분(지시문+스토리 설정)은 같은
     채팅 안에서 대부분의 턴 동안 그대로다 — 공급자의 프롬프트 캐시가 앞부분을 재사용할 수 있다.
