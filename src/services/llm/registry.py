@@ -61,7 +61,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
             verified_on=date(2026, 9, 28),
         ),),
     ),
-    # 스토리라인·채팅 본문·판정·선택지(STORYLINES_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL)의
+    # 스토리라인·채팅 본문·선택지(STORYLINES_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL)의
     # 기본값. 비추론 호출 — 창작 태스크에서 추론 모드가
     # 출력 외국어 오염·평면화를 일으켜 비추론이 더 안정적이었다(KNK-208 벤치).
     #
@@ -769,14 +769,10 @@ _REGISTRY: dict[str, ResolvedModel] = {
 # **선택지도 같은 공급자를 막는다**(KNK-1416). 선택지는 지시문 배치 문제는 없지만, 이 회사는
 # JSON 강제에 스키마 전체를 요구하는데 통로에 그 칸이 없어 어댑터가 인자를 빼고 보낸다
 # (`anthropic_sdk`). 형식 준수가 프롬프트에만 기대게 되므로 별도 검토 전에는 열지 않는다.
-#
-# **판정도 같은 이유로 막는다**(KNK-1620). 판정도 JSON 강제로 부르는데, JSON이 깨지면 판정이
-# 비어 그 턴의 사건 진행이 기록되지 않는다.
 BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
     "CHAT_MODEL": frozenset(
         {PROVIDER_ANTHROPIC, PROVIDER_ALIBABA, PROVIDER_OPENROUTER, PROVIDER_ZAI, PROVIDER_MOONSHOT}
     ),
-    "CHAT_JUDGEMENT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
     "CHAT_CHOICE_MODEL": frozenset({PROVIDER_ANTHROPIC}),
     "MODERATION_MODEL": frozenset({PROVIDER_DEEPSEEK, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
     "MODERATION_FALLBACK_MODEL": frozenset({PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
@@ -921,8 +917,6 @@ def selected_models() -> tuple[tuple[str, str], ...]:
         ("STORYLINES_MODEL", settings.storylines_model),
         ("STORY_COMPILE_MODEL", settings.story_compile_model),
         ("CHAT_MODEL", settings.chat_model),
-        # 비어 있으면 CHAT_MODEL과 같은 값이 들어온다 — 실제로 판정에 쓸 모델을 검사한다.
-        ("CHAT_JUDGEMENT_MODEL", settings.effective_chat_judgement_model),
         ("CHAT_CHOICE_MODEL", settings.chat_choice_model),
         ("MODERATION_MODEL", settings.moderation_model),
         ("MODERATION_FALLBACK_MODEL", settings.moderation_fallback_model),
@@ -955,17 +949,9 @@ def validate_selected_models() -> None:
         if (env_name == "JEV_MODEL") != (resolved.adapter == ADAPTER_TYPESAFE_API):
             raise LlmConfigError(f"{env_name}: 텍스트 생성 모델과 판정 전용 모델은 서로 바꿀 수 없습니다.")
         if resolved.provider in blocked_providers(env_name) and not layer_chat_allows(env_name, resolved):
-            # 판정 모델을 비워 두면 본문 모델을 물려받는다. 그때는 설정하지도 않은 값이 문제로
-            # 보이므로, 무엇을 고치면 되는지 함께 알린다(KNK-1624).
-            inherited = (
-                " CHAT_JUDGEMENT_MODEL이 비어 있어 CHAT_MODEL 값을 따랐습니다 — "
-                "판정 모델을 따로 지정하세요."
-                if env_name == "CHAT_JUDGEMENT_MODEL" and not settings.chat_judgement_model.strip()
-                else ""
-            )
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데, 이 자리는 그 "
-                f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석).{inherited}"
+                f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석)."
             )
         effort = settings.chat_reasoning_effort.strip()
         if env_name == "CHAT_MODEL" and effort and effort not in resolved.supported_reasoning_efforts:

@@ -347,7 +347,7 @@ def _translate(exc: OpenAIError, resolved: ResolvedModel) -> LlmError:
     먼저 검사하면 모든 타임아웃이 unavailable로 분류돼 error_code와 사용자 문구까지 바뀐다.
 
     마지막은 catch-all이다 — 번역되지 않은 SDK 예외가 호출부까지 올라가면 실패를 흡수해야 하는
-    경로(선택지 폴백·판정 null)가 흡수에 실패해 턴이 500으로 깨진다. 인증·권한·404·422·5xx는
+    경로(선택지 폴백)가 흡수에 실패해 턴이 500으로 깨진다. 인증·권한·404·422·5xx는
     4xx 여부와 무관하게 여기로 묶인다(지금 `classify_error_code`의 분류를 그대로 보존).
     """
     context = {"provider": resolved.provider, "model": resolved.model}
@@ -455,7 +455,7 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
             # SDK 밖으로 새는 **전송·파싱 오류만** 접는다. 스트림 반복은 SDK가 try/finally로만 감싸
             # (except 없음) 연결 끊김(httpx)·SSE 줄의 깨진 JSON이 번역 없이 통과한다 — 그대로 두면
-            # 채팅은 error 이벤트도 못 내고 끊기고, 선택지·판정은 실패를 흡수하지 못해 500이 된다.
+            # 채팅은 error 이벤트도 못 내고 끊기고, 선택지는 실패를 흡수하지 못해 500이 된다.
             #
             # 모든 예외를 잡지 않는 이유: 우리 코드의 결함(오타·형 실수)까지 여기서 접으면 그것이
             # "공급자 장애"로 기록돼 원인 추적이 헛돈다(STYLEGUIDE §4).

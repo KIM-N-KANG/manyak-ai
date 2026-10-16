@@ -65,7 +65,7 @@ def validate_startup() -> None:
 
     등록·키 검사(등록부)에 더해, **담당 어댑터가 그 모델의 설정을 실제로 표현할 수 있는지**까지
     본다. 이걸 빼면 어댑터가 모르는 공급자 문법이 첫 사용자 요청에서야 LlmConfigError로 터지는데,
-    그 예외는 LlmError가 아니라서 실패를 흡수해야 하는 경로(선택지 폴백·판정 null)를 관통해
+    그 예외는 LlmError가 아니라서 실패를 흡수해야 하는 경로(선택지 폴백)를 관통해
     500이 된다.
 
     여기서 막으면 **배포가 실패하고 AI 서버가 내려간다**(배포는 기존 컨테이너를 교체한다 —
@@ -170,7 +170,7 @@ def request_body(req: LlmRequest) -> dict[str, object]:
 
 
 async def complete(req: LlmRequest) -> LlmResult:
-    """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·판정·검수)."""
+    """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·검수)."""
     adapter, resolved = _request_adapter(req)
     return await adapter.complete(req, resolved)
 

@@ -202,8 +202,7 @@ class ChatTurnRequest(BaseModel):
     # ── 주요 사건·엔딩 진행 재료 (KNK-482, spec/5-ai-server-spec.md §5-3-4 · adr/3-ai-server-adr.md D11) ──────────────
     # 넷 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
     # 않으므로, 없으면 기존 요청과 동일하게 동작한다(하위호환 — 백엔드 전달은
-    # spec/4-backend-server-spec.md §4-3-10). 재료가 실리면 프롬프트 판정 재료와 completed 판정 메타의
-    # 입력이 된다.
+    # spec/4-backend-server-spec.md §4-3-10). 재료가 실리면 본문 프롬프트에 들어간다.
     main_events: list[MainEvent] = Field(default_factory=list, max_length=10)
     target_main_event: TargetMainEvent | None = None
     occurred_main_event_names: list[str] = Field(default_factory=list)
@@ -244,10 +243,10 @@ EVENT_CHARACTER_IMAGE = "character_image"
 EVENT_COMPLETED = "completed"
 EVENT_ERROR = "error"
 
-# 본문이 끝난 뒤 판정을 기다리는 동안만 주기적으로 내보내는 신호다(KNK-750).
+# 이미지용으로 본문·이미지를 기다리는 동안 주기적으로 내보내는 신호다(KNK-750).
 #
 # 백엔드의 이벤트 간 상한(`RestChatTurnAiClient.timeout(60s)`)은 **프레임을 하나라도 받으면
-# 처음부터 다시 센다**. 판정 구간에 아무 프레임도 안 나가면 그 시계가 60초를 다 세고 정상
+# 처음부터 다시 센다**. 기다리는 구간에 아무 프레임도 안 나가면 그 시계가 60초를 다 세고 정상
 # 턴을 끊는다 — ping이 그 시계를 되돌린다.
 #
 # 백엔드는 이 이름을 모른다. 모르는 이벤트는 조용히 넘기므로(`when`에 else 가지가 없다)
@@ -288,10 +287,9 @@ class CharacterImageData(BaseModel):
 
 
 class TargetMainEventOut(BaseModel):
-    """completed 판정 메타 — 이번 턴 판정 후 목표 사건 상태.
+    """completed 판정 메타의 목표 사건 상태. 와이어는 camelCase.
 
-    백엔드가 저장했다가 다음 턴 요청(`target_main_event`)에 되돌려 싣는다(D11 —
-    상태 보관은 백엔드, 관측과 같은 '응답 계약의 일부' 방식). 와이어는 camelCase.
+    판정 제거(KNK-1626) 뒤로는 채워지지 않는다. 백엔드 계약을 바꾸지 않으려고 남겨 둔다.
     """
 
     name: str
@@ -299,7 +297,7 @@ class TargetMainEventOut(BaseModel):
 
 
 class CompletedData(BaseModel):
-    """event: completed — 한 턴 응답 완료(본문 + 판정 메타).
+    """event: completed — 한 턴 응답 완료.
 
     - aiOutput: 본문(상황 묘사 + 인물 대사)과 인물별 첫 대사 줄 위 별도 줄의 `[[URL]]` 저장 마커.
       백엔드가 chatId·turnId를 더해 마커 포함 원문을 DB(history)에 저장한다.
@@ -323,9 +321,8 @@ class CompletedData(BaseModel):
     # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
     meta: ChatResponseMeta | None = None
     # ── 주요 사건·엔딩 판정 메타 (KNK-483, §5-3-4·D11) ─────────────────────────
-    # 백엔드가 턴 저장 트랜잭션에서 채팅 상태로 반영한다(목표 갱신·사건 완결 기록·
-    # 엔딩 도달 해소). 재료가 없거나 판정이 실패하면 셋 다 null — 판정 실패가 턴을
-    # 깨지 않는다(선택지 폴백과 같은 원칙). 서버 DTO는 ignoreUnknown이라 선행 배포 안전.
+    # 판정 제거(KNK-1626) 뒤로 셋 다 항상 null이다. 백엔드 계약을 바꾸지 않으려고 필드는
+    # 남겨 둔다. 백엔드는 null을 받으면 목표를 해제하고 사건 완결·엔딩 도달을 기록하지 않는다.
     target_main_event: TargetMainEventOut | None = Field(
         default=None, serialization_alias="targetMainEvent"
     )
