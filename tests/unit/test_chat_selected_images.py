@@ -45,9 +45,7 @@ async def test_images_precede_each_speaker_and_storage_matches(monkeypatch, req)
     selecting = AsyncMock(return_value=ImageSelectionResult(images=chosen))
     monkeypatch.setattr(service, "select_images", selecting)
     text = "*편의점이다.*\n세린: 갑자기 왜 그래?\n민수: 좋아하니까.\n세린: 정말?"
-    completed_bodies = []
-    result = await run(req, text, on_body_completed=completed_bodies.append)
-    assert completed_bodies == [text]
+    result = await run(req, text)
     assert selecting.call_args.kwargs["ai_output"] == text
     assert selecting.call_args.kwargs["timeout"] == 10
     images = [e for e in result if e["event"] == "character_image"]

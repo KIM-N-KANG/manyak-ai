@@ -415,6 +415,6 @@ def test_body_prompt_versions_follows_setting(monkeypatch) -> None:
 def test_body_prompt_versions_returns_a_copy() -> None:
     """돌려받은 맵을 고쳐도 모듈의 레이어 버전 원본은 바뀌지 않는다."""
     versions = chat_assembler.body_prompt_versions("layer")
-    versions["JUDGEMENT"] = 99
+    versions["EXTRA"] = 99
 
-    assert "JUDGEMENT" not in chat_assembler.LAYER_VERSIONS
+    assert "EXTRA" not in chat_assembler.LAYER_VERSIONS
