@@ -90,7 +90,7 @@ def _gateway_offenders(module_file: Path, package: str) -> list[str]:
 def test_call_site_discovery_is_not_empty() -> None:
     """훑기가 0개를 집어오면 아래 검사가 전부 무의미하게 통과한다 — 그것부터 막는다."""
     names = {p.name for p in _CALL_SITE_FILES}
-    assert {"chat_llm.py", "chat_choices.py", "chat_judgement.py", "story_llm.py"} <= names
+    assert {"chat_llm.py", "chat_choices.py", "story_llm.py"} <= names
 
 
 @pytest.mark.parametrize("module_file", _CALL_SITE_FILES, ids=lambda p: p.stem)

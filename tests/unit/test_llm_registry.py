@@ -507,7 +507,7 @@ def test_open_models_allowed_for_layer_chat_body(monkeypatch, model: str) -> Non
     실측으로 확인해(2026-10-16) layer 채팅 본문에도 쓸 수 있다."""
     keys = {"OPENROUTER_API_KEY": "k", "ZAI_API_KEY": "k", "MOONSHOT_API_KEY": "k"}
     monkeypatch.setattr(
-        registry, "settings", _settings(chat_model=model, chat_judgement_model="deepseek-flash", **keys)
+        registry, "settings", _settings(chat_model=model, **keys)
     )
 
     registry.validate_selected_models()  # 예외 없이 통과
@@ -525,7 +525,7 @@ def test_layer_chat_still_blocks_unverified_model_of_open_provider(monkeypatch) 
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(chat_model="glm-unverified", chat_judgement_model="deepseek-flash", ZAI_API_KEY="k"),
+        _settings(chat_model="glm-unverified", ZAI_API_KEY="k"),
     )
 
     with pytest.raises(LlmConfigError) as exc_info:
@@ -542,7 +542,7 @@ def test_open_models_pass_startup_for_general_chat_body(monkeypatch, model: str)
         registry,
         "settings",
         _settings(
-            chat_prompt="general", chat_model=model, chat_judgement_model="deepseek-flash", **keys
+            chat_prompt="general", chat_model=model, **keys
         ),
     )
 
@@ -664,7 +664,6 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
         ("STORYLINES_MODEL", "deepseek-flash"),
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
         ("CHAT_MODEL", "deepseek-flash"),
-        ("CHAT_JUDGEMENT_MODEL", "deepseek-flash"),
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
         ("MODERATION_MODEL", "gpt-6-luna"),
         ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
@@ -676,15 +675,13 @@ def test_chat_model_change_leaves_choice_model(monkeypatch) -> None:
     """CHAT_MODEL만 바꾸면 선택지는 기본 모델에 남는다(KNK-1416).
 
     분리 전에는 선택지도 CHAT_MODEL을 같이 써서, 본문 모델을 바꾸면 별도 API인 선택지까지
-    딸려갔다. 운영에 새 env가 없어도 이 성질이 지켜져야 한다. 판정은 CHAT_JUDGEMENT_MODEL이
-    비어 있으면 본문과 같은 모델이다(KNK-1620).
+    딸려갔다. 운영에 새 env가 없어도 이 성질이 지켜져야 한다.
     """
     monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
 
     selected = dict(registry.selected_models())
 
     assert selected["CHAT_MODEL"] == "gpt-6-luna"
-    assert selected["CHAT_JUDGEMENT_MODEL"] == "gpt-6-luna"
     assert selected["CHAT_CHOICE_MODEL"] == "deepseek-flash"
     llm.validate_startup()  # 예외 없이 통과
 
@@ -703,29 +700,21 @@ def test_choice_slot_blocks_anthropic(monkeypatch) -> None:
     assert "CHAT_CHOICE_MODEL" in str(exc_info.value)
 
 
-def test_judgement_model_can_differ_from_chat_model(monkeypatch) -> None:
-    """CHAT_JUDGEMENT_MODEL을 채우면 판정만 그 모델로 바뀌고 기동 검사를 통과한다(KNK-1620)."""
-    monkeypatch.setattr(registry, "settings", _settings(chat_judgement_model="gpt-6-luna"))
+def test_startup_ignores_removed_judgement_model(monkeypatch) -> None:
+    """판정 제거(KNK-1626) 회귀: 판정 자리는 기동 검사에서 빠진다.
 
-    selected = dict(registry.selected_models())
-
-    assert selected["CHAT_MODEL"] == "deepseek-flash"
-    assert selected["CHAT_JUDGEMENT_MODEL"] == "gpt-6-luna"
-    llm.validate_startup()  # 예외 없이 통과
-
-
-def test_judgement_slot_blocks_anthropic(monkeypatch) -> None:
-    """판정 자리에 Anthropic 모델을 고르면 기동에서 막고 어느 env인지 알린다(KNK-1620)."""
+    전에는 판정 모델을 비우면 본문 모델을 물려받아, 본문을 Anthropic으로 두면 판정 자리 금지로
+    기동이 실패했다. 운영 env에 옛 CHAT_JUDGEMENT_MODEL이 남아 있어도 무시돼야 한다.
+    """
+    monkeypatch.setenv("CHAT_JUDGEMENT_MODEL", "claude-sonnet-5")
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(anthropic_api_key="ant-key", chat_judgement_model="claude-sonnet-5"),
+        _settings(chat_prompt="general", chat_model="claude-haiku-5-5", anthropic_api_key="ant-key"),
     )
 
-    with pytest.raises(LlmConfigError) as exc_info:
-        registry.validate_selected_models()
-
-    assert "CHAT_JUDGEMENT_MODEL" in str(exc_info.value)
+    assert "CHAT_JUDGEMENT_MODEL" not in dict(registry.selected_models())
+    llm.validate_startup()  # 예외 없이 통과
 
 
 def test_validate_passes_with_default_models(monkeypatch) -> None:
@@ -940,7 +929,6 @@ def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effo
         _settings(
             chat_prompt="general",
             chat_model=model,
-            chat_judgement_model="deepseek-flash",
             chat_reasoning_effort=effort,
             **keys,
         ),
@@ -964,7 +952,6 @@ def test_chat_reasoning_effort_accepted_at_startup(monkeypatch, model: str, effo
         _settings(
             chat_prompt="general",
             chat_model=model,
-            chat_judgement_model="deepseek-flash",
             chat_reasoning_effort=effort,
             **keys,
         ),

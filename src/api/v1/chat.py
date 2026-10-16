@@ -1,24 +1,22 @@
 """채팅 API (시점 B) — 턴 SSE 스트리밍 + 선택지 동기 엔드포인트.
 
 `POST /api/v1/chat/turns`: ChatTurnRequest를 받아 6레이어 프롬프트를 조립하고
-(`assemble`), 본문을 스트리밍 호출해(`stream_chat_turn`) 토큰을 흘린다. 본문 스트림이
-끝나면 사건·엔딩 판정을 호출한다. 자식 이미지 사용 시 이미지 생성도 동시에 시작한다.
-이미지·대사를 보낸 뒤 판정까지 끝나면 본문·판정 메타·합산 meta를 completed 이벤트로 발행한다. **completed가 선택지를
-기다리지 않는다** — 선택지는 전용 엔드포인트로 분리됐다(KNK-625, 지연 해소).
+(`assemble`), 본문을 스트리밍 호출해(`stream_chat_turn`) 토큰을 흘린다. 자식 이미지 사용 시
+본문이 끝나면 이미지 생성을 시작한다. 이미지·대사를 보낸 뒤 본문과 meta를 completed 이벤트로 발행한다.
+**completed가 선택지를 기다리지 않는다** — 선택지는 전용 엔드포인트로 분리됐다(KNK-625, 지연 해소).
 
 `POST /api/v1/chat/choices`: 분리된 선택지 생성(동기 REST). 백엔드가 completed 이후
 같은 재료 + 방금 본문(ai_output)으로 호출한다. 항상 200 + 정확히 3개(폴백 흡수).
 
-AI가 발행하는 SSE 이벤트는 token·character_image·completed·error·ping 5개다. ping은 판정이나
-자식 이미지용 본문·이미지를 기다리는 동안 나가는 신호로, 백엔드의 이벤트 간 상한 시계를 되돌린다(KNK-750 — `EVENT_PING` 주석).
+AI가 발행하는 SSE 이벤트는 token·character_image·completed·error·ping 5개다. ping은 이미지용
+본문·이미지를 기다리는 동안 나가는 신호로, 백엔드의 이벤트 간 상한 시계를 되돌린다(KNK-750 — `EVENT_PING` 주석).
 started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed의 ai_output·character_images·meta는
 와이어 계약 키(aiOutput·characterImages·camelCase)로 직렬화한다(by_alias=True). completed의 choices는 하위호환 빈 배열 고정 —
 백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3)이라 선행 배포에 안전하다.
-판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 재료 없는 요청에서
-null이고, 서버 DTO가 ignoreUnknown이라 역시 선행 배포에 안전하다.
+판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 판정 제거(KNK-1626)와 함께
+completed에서 뺐다. 백엔드는 없는 필드를 null로 읽어 동작이 같다.
 """
 
-import asyncio
 import json
 import time
 from collections.abc import AsyncGenerator
@@ -54,20 +52,14 @@ from src.services.chat_llm import stream_chat_turn
 from src.services.chat_selected_images import stream_with_selected_images
 from src.services.chat_child_image import ChildImageObservation, stream_with_child_image
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
-from src.services.chat_judgement import JUDGEMENT_VERSION, generate_judgement
 
 router = APIRouter()
-
-# 판정을 기다리는 동안 ping을 내보내는 간격(초). 백엔드의 이벤트 간 상한(60초)보다 확실히
-# 짧아야 시계가 다 차기 전에 되돌아간다. 환경변수로 빼지 않는다 — 바꿀 일이 거의 없는 값이고,
-# 늘리면 manyak-infra의 Compose 설정까지 함께 맞춰야 한다.
-_JUDGEMENT_PING_INTERVAL_SECONDS = 10.0
 
 # 백엔드가 SSE 연결 하나에 허용하는 전체 시간(초).
 #
 # **이건 백엔드가 정한 값이다**(manyak-server `ChatService.SSE_TIMEOUT_MILLIS = 120_000`).
-# 백엔드가 이 값을 바꾸면 여기도 같이 바꿔야 한다 — 어긋나면 판정에 실제보다 넉넉한 시간을
-# 줘서 턴이 죽는다. ping은 이벤트 간 상한만 되돌릴 뿐 이 시계는 못 멈춘다.
+# 백엔드가 이 값을 바꾸면 여기도 같이 바꿔야 한다 — 어긋나면 이미지 생성에 실제보다 넉넉한
+# 시간을 줘서 턴이 죽는다. ping은 이벤트 간 상한만 되돌릴 뿐 이 시계는 못 멈춘다.
 #
 # 백엔드는 우리에게 요청을 보내기 **전에** 이 시계를 켠다. 그래서 아래에서 재는 경과 시간은
 # 실제보다 조금 짧게 잡히는데, 그 차이도 완료 여유(_COMPLETED_MARGIN_SECONDS)가 함께 덮는다.
@@ -77,12 +69,9 @@ _TURN_BUDGET_SECONDS = 120.0
 #
 # 덮어야 하는 것이 셋이다. ①백엔드는 우리에게 요청을 보내기 **전에** 120초 시계를 켜므로
 # 아래 경과 시간은 실제보다 짧게 잡힌다. ②그 사이에 백엔드 워커 대기 줄(`ChatSseConfig` —
-# core 4 · queue 100)에서 몇 초 밀릴 수 있다. ③판정이 끝난 뒤 completed를 만들어 보내는
+# core 4 · queue 100)에서 몇 초 밀릴 수 있다. ③이미지가 끝난 뒤 글과 completed를 보내는
 # 시간도 필요하다. 셋 다 우리가 측정할 수 없어서, 정확히 맞히는 대신 **넉넉히 떼어 두고
-# 판정 쪽이 손해 보게** 한다. 판정을 조금 덜 주는 손해가 턴이 죽는 손해보다 훨씬 싸다.
-#
-# 여유를 크게 잡아도 평소에는 아무것도 안 바뀐다 — 본문이 45초 안에 끝나면 판정은 여전히
-# 상한 60초를 그대로 받는다(관측된 본문 최대 25.5초).
+# 이미지 쪽이 손해 보게** 한다. 이미지를 조금 덜 기다리는 손해가 턴이 죽는 손해보다 훨씬 싸다.
 #
 # 정석은 백엔드가 남은 시간을 요청에 실어 보내는 것이다. 그건 계약 변경이라 별도 사안이고,
 # 그 전까지 이 값은 **추정**이지 보장이 아니다.
@@ -94,28 +83,21 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _add_tokens(a: int | None, b: int | None) -> int | None:
-    """본문·판정 두 호출의 토큰을 합산한다. 둘 다 None이면 None, 아니면 누락을 0으로 본다."""
-    if a is None and b is None:
-        return None
-    return (a or 0) + (b or 0)
-
-
 async def _event_stream(
     req: ChatTurnRequest, connection_metadata: ConnectionMetadata
 ) -> AsyncGenerator[str, None]:
-    """본문 완성 후 판정과 선택적 이미지 생성을 병렬로 실행하고 SSE 프레임으로 낸다.
+    """본문과 선택적 이미지 생성을 실행하고 SSE 프레임으로 낸다.
 
-    본문 스트림이 error로 끝나면 그 error만 relay하고 판정 호출은 하지 않는다.
+    본문 스트림이 error로 끝나면 그 error만 relay한다.
 
     트레이스(KNK-624)는 핸들러가 아니라 **이 제너레이터 안에서** 연다 — SSE는 응답이 200으로
     열린 뒤에 본 작업이 돌기 때문에, 핸들러가 반환하는 시점에는 아직 LLM 호출 전이다. 블록이
-    스트림 전체를 감싸므로 본문·판정 두 호출이 한 트레이스에 묶인다.
+    스트림 전체를 감싸므로 본문·이미지 호출이 한 트레이스에 묶인다.
     """
-    # 분석 차원 부착(KNK-640): 본문 프롬프트+판정 버전을 싣는다. 채팅 턴은 재호출이 없어 retry_count=0.
+    # 분석 차원 부착(KNK-640): 본문 프롬프트 버전을 싣는다. 채팅 턴은 재호출이 없어 retry_count=0.
     # 본문 버전은 이 턴에 실제로 조립할 프롬프트(layer/general) 기준이다(KNK-1623). 관측과
     # completed meta가 같은 값을 쓰도록 한 번만 구한다.
-    prompt_versions = {**body_prompt_versions(), "JUDGEMENT": JUDGEMENT_VERSION}
+    prompt_versions = body_prompt_versions()
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
     with observe_request(
         "채팅 턴",
@@ -127,32 +109,20 @@ async def _event_stream(
             "retry_count": 0,
         },
     ) as trace:
-        # 이 턴에 쓴 시간을 잰다 — 판정에 얼마를 줄 수 있는지가 여기서 나온다(아래 참조).
+        # 이 턴에 쓴 시간을 잰다 — 이미지 생성에 얼마를 줄 수 있는지가 여기서 나온다(위 상수 참조).
         turn_started = time.monotonic()
         messages = assemble(req)
-        judging = None
         image_observation = ChildImageObservation() if req.image_slots else None
-
-        def start_judgement(ai_output: str) -> None:
-            nonlocal judging
-            remaining = _TURN_BUDGET_SECONDS - (time.monotonic() - turn_started) - _SAFETY_MARGIN_SECONDS
-            judging = asyncio.create_task(
-                generate_judgement(req, ai_output, budget_seconds=remaining)
-            )
 
         events = stream_chat_turn(messages, character_images=req.character_images)
         if req.image_slots:
             events = stream_with_child_image(
                 events, req,
                 deadline=turn_started + _TURN_BUDGET_SECONDS - _SAFETY_MARGIN_SECONDS,
-                on_body_completed=start_judgement,
                 observation=image_observation,
             )
         else:
-            events = stream_with_selected_images(
-                events, req,
-                on_body_completed=start_judgement,
-            )
+            events = stream_with_selected_images(events, req)
         try:
             async with aclosing(events):
                 async for ev in events:
@@ -169,27 +139,12 @@ async def _event_stream(
                     elif name == EVENT_PING:
                         yield _sse(name, PingData().model_dump())
                     elif name == EVENT_COMPLETED:
-                        ai_output = ev["ai_output"]
-                        # 이미지 사용 시 본문 완성 직후 이미 시작한 판정을 기다린다.
-                        # 기존 요청은 본문 스트리밍 완료 시점에 시작한다.
-                        if judging is None:
-                            start_judgement(ai_output)
-                        while True:
-                            done, _ = await asyncio.wait(
-                                {judging}, timeout=_JUDGEMENT_PING_INTERVAL_SECONDS
-                            )
-                            if done:
-                                break
-                            yield _sse(EVENT_PING, PingData().model_dump())
-                        judgement = judging.result()
-                        # 메타 합산: 토큰은 본문+판정, prompt_versions는 본문 프롬프트+JUDGEMENT.
-                        # retry_count는 0 고정 — 본문·판정은 재호출이 없고, 선택지 재호출 횟수는
+                        # retry_count는 0 고정 — 본문은 재호출이 없고, 선택지 재호출 횟수는
                         # /chat/choices 응답 meta로 이동했다(NEXT_ACTIONS 버전 키도 함께 이동).
                         meta = ChatResponseMeta(
                             model=ev.get("model") or settings.chat_model,
                             prompt_versions=prompt_versions,
-                            # 본문 호출이 실제로 나간 공급자(KNK-674). 판정은 CHAT_JUDGEMENT_MODEL로
-                            # 다른 모델일 수 있지만(KNK-1620), meta의 model·provider는 본문 기준이다.
+                            # 본문 호출이 실제로 나간 공급자(KNK-674).
                             #
                             # 키가 빠졌을 때만 되짚어 채운다. 여기서 KeyError가 나면 이미 200으로
                             # 열린 SSE라 상태를 못 바꾸고, error 이벤트도 completed도 없이 끊긴다 —
@@ -204,20 +159,17 @@ async def _event_stream(
                                 if "provider" in ev
                                 else llm.provider_of(settings.chat_model)
                             ),
-                            input_token_count=_add_tokens(ev.get("input_tokens"), judgement.input_tokens),
-                            output_token_count=_add_tokens(ev.get("output_tokens"), judgement.output_tokens),
+                            input_token_count=ev.get("input_tokens"),
+                            output_token_count=ev.get("output_tokens"),
                             retry_count=0,
                         )
                         payload = CompletedData(
-                            ai_output=ai_output,
+                            ai_output=ev["ai_output"],
                             # 하위호환 빈 배열 — 백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3).
                             # 프론트·백엔드 전환 완료 후 필드 제거를 검토한다.
                             choices=[],
                             character_images=ev.get("character_images", []),
                             meta=meta,
-                            target_main_event=judgement.target_main_event,
-                            occurred_main_event_name=judgement.occurred_main_event_name,
-                            ending_name=judgement.ending_name,
                         ).model_dump(by_alias=True)  # aiOutput·camelCase 메타로 직렬화
                         yield _sse(EVENT_COMPLETED, payload)
                     else:  # EVENT_ERROR
@@ -225,11 +177,6 @@ async def _event_stream(
         finally:
             if image_observation is not None:
                 trace.set_metadata(child_image=asdict(image_observation))
-            if judging is not None:
-                with CancelScope(shield=True):
-                    if not judging.done() and not judging.cancelling():
-                        judging.cancel()
-                    await asyncio.gather(judging, return_exceptions=True)
 
 
 class _ChatStreamingResponse(StreamingResponse):

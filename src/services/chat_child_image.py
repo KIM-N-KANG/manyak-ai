@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import dataclass
 from uuid import uuid4
@@ -137,7 +137,6 @@ async def _generate_before_deadline(
 
 async def stream_with_child_image(
     events: AsyncIterator[dict], req: ChatTurnRequest, *, deadline: float,
-    on_body_completed: Callable[[str], None] | None = None,
     observation: ChildImageObservation | None = None,
 ) -> AsyncIterator[dict]:
     """본문·이미지 결과를 확보한 뒤 지문 → 이미지 → 대사를 순차 스트리밍한다.
@@ -172,8 +171,6 @@ async def stream_with_child_image(
         return
 
     text = strip_character_image_syntax(completed["ai_output"])
-    if on_body_completed is not None:
-        on_body_completed(text)
     inputs = build_child_image_input(
         character_images=req.character_images, history=req.history,
         user_input=req.user_input, ai_output=text,

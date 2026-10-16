@@ -13,14 +13,10 @@ import pytest
 from src.api.v1 import chat as chat_module
 from src.schemas.chat_turn import (
     EVENT_CHARACTER_IMAGE,
-    EVENT_PING,
     ChatTurnRequest,
     PingData,
-    TargetMainEventOut,
 )
 from src.services import chat_assembler
-from src.services import chat_judgement as chat_judgement_module
-from src.services.chat_judgement import JudgementResult
 from tests.conftest import FakeStream
 
 
@@ -125,19 +121,6 @@ def mock_events(monkeypatch):
     return _set
 
 
-@pytest.fixture
-def mock_judgement(monkeypatch):
-    """판정 호출(generate_judgement)을 고정 결과로 바꾼다(판정 LLM 회피)."""
-
-    def _set(result: JudgementResult) -> None:
-        async def _fake(req, ai_output, budget_seconds=None):
-            return result
-
-        monkeypatch.setattr(chat_module, "generate_judgement", _fake)
-
-    return _set
-
-
 def _data_of(body: str, event: str) -> dict:
     """SSE 본문에서 특정 event의 data(JSON)를 파싱한다."""
     lines = body.splitlines()
@@ -179,7 +162,7 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     # 로깅 메타(KNK-243): chat은 camelCase 와이어
     meta = completed["meta"]
     assert meta["provider"] == "not-deepseek"  # 이벤트에 실린 값이 그대로 meta로
-    assert meta["retryCount"] == 0  # 본문·판정은 재호출 없음 — 0 고정
+    assert meta["retryCount"] == 0  # 본문은 재호출 없음 — 0 고정
     assert meta["promptVersions"]["SAFETY"] >= 1  # 6레이어 버전 객체
     assert "NEXT_ACTIONS" not in meta["promptVersions"]  # 선택지 버전 키는 /chat/choices로 이동
     assert meta["model"]  # 이벤트에 model 없으면 설정값으로 폴백
@@ -187,13 +170,6 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     assert meta["inputTokenCount"] is None
     assert meta["outputTokenCount"] is None
     assert "input_token_count" not in body  # snake_case 아님(chat은 camel)
-
-    # 판정 메타(재료 없는 현행 요청): generate_judgement가 스킵돼 3필드 null,
-    # JUDGEMENT 버전 키는 항상 실린다. (generate_judgement는 모킹하지 않아 실제 스킵 경로를 탄다.)
-    assert completed["targetMainEvent"] is None
-    assert completed["occurredMainEventName"] is None
-    assert completed["endingName"] is None
-    assert meta["promptVersions"]["JUDGEMENT"] >= 1
 
 
 async def test_chat_turn_passes_protagonist_name_to_body_prompt(client, monkeypatch) -> None:
@@ -298,27 +274,17 @@ async def test_chat_turn_sse_error(client, mock_events) -> None:
     assert _data_of(resp.text, "error") == {"code": "LLM_ERROR", "message": "실패"}
 
 
-async def test_chat_turn_completed_serializes_judgement_meta(
-    client, mock_events, mock_judgement
+async def test_chat_turn_sends_no_judgement_fields_even_with_materials(
+    client, mock_events
 ) -> None:
-    # 재료가 실린 턴: 판정 3필드가 completed까지 camelCase로 직렬화되고, meta.promptVersions에
-    # JUDGEMENT 키가 실리며, 판정 토큰이 합산되는지 엔드포인트 전체 흐름으로 확인한다(#3 리뷰 반영).
+    # 판정 제거(KNK-1626) 회귀: 사건·엔딩 재료와 옛 목표·완결 사건 필드가 실려도 200으로 받고, 판정 3필드가 없고,
+    # meta 토큰은 본문 호출 값만 싣는다(판정 토큰 합산 없음).
     mock_events([{"event": "completed", "ai_output": "장면", "model": "deepseek-flash",
-                  "provider": "deepseek"}])
-    mock_judgement(
-        JudgementResult(
-            target_main_event=TargetMainEventOut(name="반란의 증거", progress_turns=2),
-            occurred_main_event_name="선왕의 유언",
-            ending_name="왕좌를 되찾다",
-            input_tokens=15,
-            output_tokens=5,
-        )
-    )
+                  "provider": "deepseek", "input_tokens": 10, "output_tokens": 3}])
     payload = {
         **_payload(),
         "main_events": [
             {"name": "반란의 증거", "description": "밀서.", "key_sentence": "밀서를 손에 넣는다."},
-            {"name": "선왕의 유언", "description": "유언장.", "key_sentence": "유언장을 찾는다."},
         ],
         "target_main_event": {"name": "반란의 증거", "progress_turns": 1},
         "occurred_main_event_names": [],
@@ -329,20 +295,12 @@ async def test_chat_turn_completed_serializes_judgement_meta(
     resp = await client.post("/api/v1/chat/turns", json=payload)
 
     assert resp.status_code == 200
-    body = resp.text
-    completed = _data_of(body, "completed")
-
-    # 판정 3필드가 camelCase 와이어 키로 직렬화된다
-    assert completed["targetMainEvent"] == {"name": "반란의 증거", "progressTurns": 2}
-    assert completed["occurredMainEventName"] == "선왕의 유언"
-    assert completed["endingName"] == "왕좌를 되찾다"
-    assert "progress_turns" not in body  # snake_case 누출 없음
-
-    # meta.promptVersions에 JUDGEMENT 키가 실리고, 판정 토큰이 합산된다(본문 토큰 없음 → 15/5)
+    completed = _data_of(resp.text, "completed")
+    for key in ("targetMainEvent", "occurredMainEventName", "endingName"):
+        assert key not in completed
     meta = completed["meta"]
-    assert meta["promptVersions"]["JUDGEMENT"] >= 1
-    assert meta["inputTokenCount"] == 15
-    assert meta["outputTokenCount"] == 5
+    assert meta["inputTokenCount"] == 10
+    assert meta["outputTokenCount"] == 3
 
 
 async def test_chat_turn_trace_receives_connection_metadata(
@@ -404,10 +362,7 @@ async def test_chat_turn_trace_receives_connection_metadata(
         "turn_number": 7,
         "is_regenerated": True,
         "user_source": "edited_choice",
-        "prompt_versions": {
-            **chat_assembler.LAYER_VERSIONS,
-            "JUDGEMENT": chat_module.JUDGEMENT_VERSION,
-        },
+        "prompt_versions": chat_assembler.LAYER_VERSIONS,
         "retry_count": 0,
     }
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
@@ -552,264 +507,40 @@ async def test_chat_turn_does_not_paper_over_an_empty_provider(client, mock_even
     assert meta["provider"] == ""  # 그럴듯한 값으로 메꾸지 않는다
 
 
-# ── 판정 대기 중 ping (KNK-750 회귀) ─────────────────────────────────────────
-# 판정을 그냥 await하면 그 구간에 SSE 프레임이 하나도 안 나가고, 백엔드의 이벤트 간
-# 상한(60초)이 그 침묵을 세다가 정상 턴을 끊는다(KNK-748 — 3주간 3건). 기다리는 동안
-# ping이 실제로 흘러나오는지, completed보다 먼저 나오는지, data 줄을 갖췄는지 고정한다.
-# (data 줄이 없으면 백엔드 디코더가 항목으로 만들지 않아 시계가 안 돌아간다.)
-async def test_chat_turn_pings_while_judgement_is_slow(
-    client, mock_events, monkeypatch
-) -> None:
-    monkeypatch.setattr(chat_module, "_JUDGEMENT_PING_INTERVAL_SECONDS", 0.02)
-
-    async def _slow(req, ai_output, budget_seconds=None):
-        await asyncio.sleep(0.5)  # 간격의 25배 — 루프가 잠깐 밀려도 ping이 반드시 나간다
-        return JudgementResult(None, None, None, None, None)
-
-    monkeypatch.setattr(chat_module, "generate_judgement", _slow)
-    mock_events(
-        [
-            {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
-             "provider": "deepseek"},
-        ]
-    )
-
-    body = (await client.post("/api/v1/chat/turns", json=_payload())).text
-
-    assert body.count("event: ping") >= 1, f"판정 대기 중 ping이 안 나갔다:\n{body}"
-    assert body.index("event: ping") < body.index("event: completed"), body
-    lines = body.splitlines()
-    assert lines[lines.index("event: ping") + 1].startswith("data: "), (
-        "ping에 data 줄이 없으면 백엔드가 항목으로 만들지 않아 시계가 안 돌아간다"
-    )
-    # 신호를 끼워 넣어도 본문 확정은 그대로다.
-    assert _data_of(body, "completed")["aiOutput"] == "안녕"
-
-
-# 평소(판정이 1초 안팎)에는 프레임이 늘어나면 안 된다 — 백엔드·프론트가 받는 스트림 모양이
-# 바뀌지 않게 한다. 간격(10초)이 판정보다 훨씬 길어서 한 번도 안 나가는 것이 정상이다.
-async def test_chat_turn_does_not_ping_when_judgement_is_fast(
-    client, mock_events, mock_judgement
-) -> None:
-    mock_judgement(JudgementResult(None, None, None, None, None))
-    mock_events(
-        [
-            {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
-             "provider": "deepseek"},
-        ]
-    )
-
-    body = (await client.post("/api/v1/chat/turns", json=_payload())).text
-
-    assert "event: ping" not in body, f"판정이 즉시 끝났는데 ping이 나갔다:\n{body}"
-
-
-# 스트림이 도중에 닫히면(클라이언트 이탈) 판정 호출도 멈춰야 한다. 안 멈추면 아무도 받지
-# 않는 호출에 요금만 계속 나간다.
-#
-# 엔드포인트 대신 제너레이터를 직접 몰아서 닫는다 — 테스트용 ASGI 전송(httpx)은 소비를
-# 중간에 멈춰도 앱 쪽 끊김 경로를 타지 않아, 이 자리에서는 실서버(uvicorn)의 동작을
-# 재현하지 못한다. 확인 대상은 "닫히면 취소한다"는 우리 쪽 처리다.
-async def test_closing_the_stream_cancels_the_judgement_call(
-    mock_events, monkeypatch
-) -> None:
-    monkeypatch.setattr(chat_module, "_JUDGEMENT_PING_INTERVAL_SECONDS", 0.01)
-    state = {"cancelled": False}
-
-    async def _hangs(req, ai_output, budget_seconds=None):
-        try:
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            state["cancelled"] = True
-            raise
-        return JudgementResult(None, None, None, None, None)
-
-    monkeypatch.setattr(chat_module, "generate_judgement", _hangs)
-    mock_events(
-        [
-            {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
-             "provider": "deepseek"},
-        ]
-    )
-
-    stream = chat_module._event_stream(ChatTurnRequest(**_payload()), {})
-    async for frame in stream:
-        if f"event: {EVENT_PING}" in frame:
-            break  # 판정이 아직 도는 중이다
-    await stream.aclose()  # 클라이언트가 끊겼을 때 서버가 하는 일
-
-    for _ in range(50):  # 취소가 전파될 틈을 준다
-        if state["cancelled"]:
-            break
-        await asyncio.sleep(0.01)
-    assert state["cancelled"], "스트림이 닫혔는데 판정 호출이 계속 돌고 있다"
-
-
-# ── 판정 예산은 이 턴에 남은 시간이다 (KNK-750 회귀) ──────────────────────────
-# 본문이 오래 걸린 턴에 판정 60초를 통째로 주면 둘을 합쳐 백엔드의 전체 상한(120초)을 넘겨
-# 턴이 죽는다. ping이 되돌리는 것은 이벤트 간 상한뿐이라 이 시계는 못 멈춘다.
-#
-# **본문을 실제로 지연시킨다.** 지연이 없으면 구현에서 경과 시간 빼기를 통째로 지워도 답이
-# 같아 테스트가 통과한다 — 이름만 "남은 시간"이고 아무것도 검증하지 않는 테스트가 된다
-# (코덱스 적대적 리뷰, 2026-08-01).
-_BODY_DELAY_SECONDS = 0.3
-
-
-async def test_judgement_budget_subtracts_the_time_the_body_took(
+# ── 대기 중 ping (KNK-750 회귀) ─────────────────────────────────────────────
+# 본문·이미지를 기다리는 동안 SSE 프레임이 하나도 안 나가면 백엔드의 이벤트 간 상한(60초)이
+# 그 침묵을 세다가 정상 턴을 끊는다(KNK-748). ping이 completed보다 먼저 나오고, data 줄을
+# 갖추고, 스키마가 만든 페이로드인지 고정한다. (data 줄이 없으면 백엔드 디코더가 항목으로
+# 만들지 않아 시계가 안 돌아간다.)
+async def test_chat_turn_pings_while_waiting_for_the_body(
     client, monkeypatch
 ) -> None:
-    monkeypatch.setattr(chat_module, "_TURN_BUDGET_SECONDS", 5.0)
-    monkeypatch.setattr(chat_module, "_SAFETY_MARGIN_SECONDS", 1.0)
-    seen: dict = {}
+    from src.services import chat_child_image
+
+    monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.02)
 
     async def _slow_body(messages):
         yield {"event": "token", "text": "안녕"}
-        await asyncio.sleep(_BODY_DELAY_SECONDS)  # 본문이 이만큼 걸린 셈
+        await asyncio.sleep(0.5)  # 간격의 25배 — 루프가 잠깐 밀려도 ping이 반드시 나간다
         yield {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
                "provider": "deepseek"}
-
-    async def _capture(req, ai_output, budget_seconds=None):
-        seen["budget"] = budget_seconds
-        return JudgementResult(None, None, None, None, None)
 
     monkeypatch.setattr(
         chat_module,
         "stream_chat_turn",
         lambda messages, *, character_images: _slow_body(messages),
     )
-    monkeypatch.setattr(chat_module, "generate_judgement", _capture)
-
-    await client.post("/api/v1/chat/turns", json=_payload())
-
-    # 전체 5초 - 여유 1초 - 본문 0.3초 ≈ 3.7초.
-    # 위 상한(3.9)이 핵심이다 — 본문 시간을 안 빼면 4.0이 나와 여기서 걸린다.
-    assert 3.4 < seen["budget"] < 3.9, seen["budget"]
-
-
-# ── 실제 상수로 도는 예산 (KNK-750) ──────────────────────────────────────────
-# 위 테스트는 상수를 작은 값으로 덮어쓰고 계산식만 본다. 실제 값(전체 120초·여유 15초)에서
-# 무슨 일이 벌어지는지는 여기서 고정한다. 여유를 크게 잡았을 때 평소 턴이 손해를 보면 안 된다.
-async def test_real_constants_still_give_a_fast_turn_the_full_cap(
-    client, mock_events, monkeypatch
-) -> None:
-    seen: dict = {}
-
-    async def _capture(req, ai_output, budget_seconds=None):
-        seen["budget"] = budget_seconds
-        return JudgementResult(None, None, None, None, None)
-
-    monkeypatch.setattr(chat_module, "generate_judgement", _capture)
-    mock_events(
-        [
-            {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
-             "provider": "deepseek"},
-        ]
-    )
-
-    await client.post("/api/v1/chat/turns", json=_payload())
-
-    # 120 - 15 - (거의 0) ≈ 105초. 판정 쪽 상한 60초에서 잘리므로 평소 턴은 손해가 없다.
-    assert seen["budget"] > chat_judgement_module._TIMEOUT_SECONDS, (
-        f"여유를 키운 탓에 평소 턴의 판정 시간이 줄었다 — {seen['budget']}"
-    )
-
-
-# 여유가 남은 시간을 다 먹으면 판정을 아예 부르지 않는다(음수 예산이 그대로 넘어가지 않는다).
-# 이 분기는 판정 쪽 유닛에도 있지만, 엔드포인트가 실제로 그 값을 만들어 넘기는지는 여기서만 본다.
-async def test_no_budget_left_still_completes_the_turn(
-    client, mock_events, monkeypatch
-) -> None:
-    monkeypatch.setattr(chat_module, "_TURN_BUDGET_SECONDS", 10.0)
-    monkeypatch.setattr(chat_module, "_SAFETY_MARGIN_SECONDS", 15.0)  # 여유가 전체보다 크다
-    seen: dict = {}
-
-    async def _capture(req, ai_output, budget_seconds=None):
-        seen["budget"] = budget_seconds
-        return JudgementResult(None, None, None, None, None)
-
-    monkeypatch.setattr(chat_module, "generate_judgement", _capture)
-    mock_events(
-        [
-            {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
-             "provider": "deepseek"},
-        ]
-    )
 
     body = (await client.post("/api/v1/chat/turns", json=_payload())).text
 
-    assert seen["budget"] < 0, f"남은 시간이 음수여야 하는 상황이다 — {seen['budget']}"
-    # 예산이 없어도 본문은 정상으로 확정돼야 한다(판정만 비고 턴은 산다).
-    assert _data_of(body, "completed")["aiOutput"] == "안녕"
-
-
-# 예산이 없어 판정을 건너뛴 턴의 completed가 **진행 중이던 목표를 그대로 싣는지** 와이어에서
-# 확인한다. 여기서는 판정을 모킹하지 않는다 — 실제 generate_judgement를 태워야 직렬화 키
-# (targetMainEvent.progressTurns)까지 계약대로 나가는지 볼 수 있다. 예산이 0 이하면 LLM은
-# 부르지 않으므로 이 테스트도 과금되지 않는다.
-async def test_skipped_judgement_sends_the_target_back_on_the_wire(
-    client, mock_events, monkeypatch
-) -> None:
-    monkeypatch.setattr(chat_module, "_TURN_BUDGET_SECONDS", 10.0)
-    monkeypatch.setattr(chat_module, "_SAFETY_MARGIN_SECONDS", 15.0)  # 여유가 전체보다 크다
-    mock_events(
-        [
-            {"event": "token", "text": "안녕"},
-            {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
-             "provider": "deepseek"},
-        ]
+    assert body.count("event: ping") >= 1, f"대기 중 ping이 안 나갔다:\n{body}"
+    assert body.index("event: ping") < body.index("event: completed"), body
+    lines = body.splitlines()
+    assert lines[lines.index("event: ping") + 1].startswith("data: "), (
+        "ping에 data 줄이 없으면 백엔드가 항목으로 만들지 않아 시계가 안 돌아간다"
     )
-    payload = _payload() | {
-        "main_events": [
-            {
-                "name": "선왕의 유언",
-                "description": "숨겨진 유언장이 드러난다.",
-                "key_sentence": "유언장의 행방을 쫓는다.",
-            }
-        ],
-        "target_main_event": {"name": "선왕의 유언", "progress_turns": 4},
-    }
-
-    body = (await client.post("/api/v1/chat/turns", json=payload)).text
-
-    completed = _data_of(body, "completed")
-    assert completed["targetMainEvent"] == {"name": "선왕의 유언", "progressTurns": 4}, (
-        f"목표가 null로 나가면 백엔드가 사건 진행을 지운다 — {completed['targetMainEvent']}"
-    )
-    assert completed["occurredMainEventName"] is None
-    assert completed["endingName"] is None
-
-
-# ping 페이로드는 스키마가 만든 것이어야 한다 — 호출부가 손으로 적은 dict가 아니라.
-async def test_ping_payload_comes_from_the_schema(
-    client, monkeypatch
-) -> None:
-    monkeypatch.setattr(chat_module, "_JUDGEMENT_PING_INTERVAL_SECONDS", 0.02)
-
-    async def _slow(req, ai_output, budget_seconds=None):
-        await asyncio.sleep(0.5)
-        return JudgementResult(None, None, None, None, None)
-
-    monkeypatch.setattr(chat_module, "generate_judgement", _slow)
-
-    async def _events(messages):
-        yield {"event": "token", "text": "안녕"}
-        yield {"event": "completed", "ai_output": "안녕", "model": "deepseek-flash",
-               "provider": "deepseek"}
-
-    monkeypatch.setattr(
-        chat_module,
-        "stream_chat_turn",
-        lambda messages, *, character_images: _events(messages),
-    )
-
-    body = (await client.post("/api/v1/chat/turns", json=_payload())).text
-
     assert _data_of(body, "ping") == PingData().model_dump() == {}
+    assert _data_of(body, "completed")["aiOutput"] == "안녕"
 
 
 @pytest.mark.parametrize("legacy_flag", [None, False, True])
@@ -869,72 +600,17 @@ async def test_child_image_disabled_without_slots(client, mock_events, monkeypat
     assert completed["characterImages"][0]["imageUrl"] == parent["image_url"]
 
 
-@pytest.mark.parametrize("first", ["image", "judgement"])
-async def test_child_and_judgement_run_concurrently(monkeypatch, mock_events, first) -> None:
-    from contextlib import aclosing
-    from src.services import chat_child_image
-    from src.services.image.generate_child import ChildImageResult
-
-    started_image, started_judgement = asyncio.Event(), asyncio.Event()
-    finish_image, finish_judgement = asyncio.Event(), asyncio.Event()
-    calls = []
-    async def image(inputs):
-        started_image.set()
-        await finish_image.wait()
-        return ChildImageResult("레이", "레이_실시간_test", "data")
-    async def judgement(req, output, budget_seconds=None):
-        calls.append((output, budget_seconds))
-        started_judgement.set()
-        await finish_judgement.wait()
-        return JudgementResult(None, None, None, None, None)
-    monkeypatch.setattr(chat_child_image, "generate_child_image", image)
-    monkeypatch.setattr(chat_module, "generate_judgement", judgement)
-    monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.01)
-    monkeypatch.setattr(chat_module, "_JUDGEMENT_PING_INTERVAL_SECONDS", 0.01)
-    mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
-    payload = _payload()
-    payload.update(image_slots=_image_slots(), character_images=[{
-        "name": "레이", "image_name": "레이_기본", "image_url": "https://cdn.manyak.app/parent.webp",
-    }])
-    async with aclosing(chat_module._event_stream(ChatTurnRequest(**payload), {})) as stream:
-        pending = asyncio.create_task(anext(stream))
-        await asyncio.wait_for(asyncio.gather(started_image.wait(), started_judgement.wait()), 1)
-        assert len(calls) == 1 and calls[0][0] == "레이: 안녕."
-        assert 100 < calls[0][1] <= 105
-        if first == "image":
-            finish_image.set()
-            event = await pending
-            while "event: character_image" not in event:
-                event = await anext(stream)
-            assert "event: token" in await anext(stream)
-            assert "event: ping" in await anext(stream)
-            finish_judgement.set()
-        else:
-            finish_judgement.set()
-            assert "event: ping" in await pending
-            finish_image.set()
-        rest = "".join([e async for e in stream])
-        assert "event: completed" in rest
-        assert len(calls) == 1
-
-
-async def test_disconnect_cancels_both_parallel_calls(monkeypatch, mock_events) -> None:
+async def test_disconnect_cancels_the_image_call(monkeypatch, mock_events) -> None:
     from contextlib import aclosing
     from src.services import chat_child_image
 
-    stopped_image, stopped_judgement = asyncio.Event(), asyncio.Event()
+    stopped_image = asyncio.Event()
     async def image(inputs):
         try:
             await asyncio.Event().wait()
         finally:
             stopped_image.set()
-    async def judgement(req, output, budget_seconds=None):
-        try:
-            await asyncio.Event().wait()
-        finally:
-            stopped_judgement.set()
     monkeypatch.setattr(chat_child_image, "generate_child_image", image)
-    monkeypatch.setattr(chat_module, "generate_judgement", judgement)
     monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.01)
     mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
     payload = _payload()
@@ -943,11 +619,11 @@ async def test_disconnect_cancels_both_parallel_calls(monkeypatch, mock_events) 
     }])
     async with aclosing(chat_module._event_stream(ChatTurnRequest(**payload), {})) as stream:
         assert "event: ping" in await anext(stream)
-    assert stopped_image.is_set() and stopped_judgement.is_set()
+    assert stopped_image.is_set()
 
 
 @pytest.mark.parametrize("during_send", [False, True])
-async def test_http_disconnect_waits_for_both_cleanup(monkeypatch, mock_events, during_send) -> None:
+async def test_http_disconnect_waits_for_image_cleanup(monkeypatch, mock_events, during_send) -> None:
     from src.services import chat_child_image
 
     stopped = set()
@@ -959,10 +635,7 @@ async def test_http_disconnect_waits_for_both_cleanup(monkeypatch, mock_events, 
             stopped.add(name)
     async def image(inputs):
         return await work("image")
-    async def judgement(req, output, budget_seconds=None):
-        return await work("judgement")
     monkeypatch.setattr(chat_child_image, "generate_child_image", image)
-    monkeypatch.setattr(chat_module, "generate_judgement", judgement)
     monkeypatch.setattr(chat_child_image, "_PING_INTERVAL_SECONDS", 0.01)
     mock_events([{"event": "completed", "ai_output": "레이: 안녕."}])
     payload = _payload()
@@ -981,7 +654,7 @@ async def test_http_disconnect_waits_for_both_cleanup(monkeypatch, mock_events, 
                 await asyncio.Event().wait()
     response = await chat_module.chat_turn(ChatTurnRequest(**payload))
     await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send), 1)
-    assert stopped == {"image", "judgement"}
+    assert stopped == {"image"}
 
 
 @pytest.mark.parametrize("error", [None, "timeout", "rate_limited", "rejected", "generation_failed"])
@@ -1199,9 +872,6 @@ async def test_general_prompt_records_general_version(client, mock_events, monke
 
     resp = await client.post("/api/v1/chat/turns", json=_payload())
 
-    expected = {
-        "GENERAL": chat_assembler.GENERAL_VERSION,
-        "JUDGEMENT": chat_module.JUDGEMENT_VERSION,
-    }
+    expected = {"GENERAL": chat_assembler.GENERAL_VERSION}
     assert _data_of(resp.text, "completed")["meta"]["promptVersions"] == expected
     assert captured["metadata"]["prompt_versions"] == expected

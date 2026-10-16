@@ -1470,10 +1470,7 @@ def test_layer_chat_allows_models_that_take_mid_conversation_system(monkeypatch,
     막은 이유가 "끝의 지시문(현재 상태·안전 지시)이 버려진다"였으므로, 버리지 않는 모델이면 풀린다.
     같은 회사라도 이 기능이 없는 Sonnet 5는 계속 막힌다(아래 테스트).
     """
-    # 판정은 JSON 강제 문제로 이 공급자를 따로 막으므로 다른 모델을 지정한다.
-    monkeypatch.setattr(
-        registry, "settings", _blocked_settings(chat_model=model, chat_judgement_model="deepseek-flash")
-    )
+    monkeypatch.setattr(registry, "settings", _blocked_settings(chat_model=model))
 
     llm.validate_startup()  # 예외가 나면 실패다
 
@@ -1482,7 +1479,7 @@ def test_layer_chat_still_blocks_claude_sonnet_5(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "settings",
-        _blocked_settings(chat_model="claude-sonnet-5", chat_judgement_model="deepseek-flash"),
+        _blocked_settings(chat_model="claude-sonnet-5"),
     )
 
     with pytest.raises(LlmConfigError):
@@ -1535,10 +1532,7 @@ def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:
 
 # ── general 프롬프트면 채팅 본문에 이 공급자를 열어 준다 (KNK-1624) ──────────
 def test_startup_allows_this_provider_in_the_chat_slot_with_general_prompt(monkeypatch) -> None:
-    """general은 지시문을 맨 앞 하나에만 둬 버려지는 지시가 없으므로 채팅 본문에 쓸 수 있다.
-
-    판정은 여전히 이 공급자를 못 쓰므로 다른 모델을 따로 정해 둔다.
-    """
+    """general은 지시문을 맨 앞 하나에만 둬 버려지는 지시가 없으므로 채팅 본문에 쓸 수 있다."""
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
     monkeypatch.setattr(
         registry,
@@ -1546,7 +1540,6 @@ def test_startup_allows_this_provider_in_the_chat_slot_with_general_prompt(monke
         _blocked_settings(
             chat_prompt="general",
             chat_model="anthropic-test-model",
-            chat_judgement_model="deepseek-flash",
         ),
     )
 
@@ -1566,41 +1559,6 @@ def test_general_prompt_does_not_open_the_choice_slot(monkeypatch) -> None:
         llm.validate_startup()
 
     assert "CHAT_CHOICE_MODEL" in str(exc_info.value)
-
-
-def test_inherited_judgement_model_explains_what_to_set(monkeypatch) -> None:
-    """판정 모델을 비운 채 본문만 이 공급자로 바꾸면, 물려받은 판정 자리에서 막고 고칠 곳을 알린다.
-
-    설정하지도 않은 CHAT_JUDGEMENT_MODEL이 오류에 나오므로, 왜 그런지까지 말해야 배포가 실패한
-    상황에서 바로 고칠 수 있다.
-    """
-    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
-    monkeypatch.setattr(
-        registry,
-        "settings",
-        _blocked_settings(chat_prompt="general", chat_model="anthropic-test-model"),
-    )
-
-    with pytest.raises(LlmConfigError) as exc_info:
-        llm.validate_startup()
-
-    message = str(exc_info.value)
-    assert "CHAT_JUDGEMENT_MODEL" in message
-    assert "판정 모델을 따로 지정하세요" in message
-
-
-def test_explicit_judgement_model_gets_no_inherit_hint(monkeypatch) -> None:
-    """판정 모델을 직접 이 공급자로 정했으면 '물려받았다'는 안내를 붙이지 않는다."""
-    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
-    monkeypatch.setattr(
-        registry, "settings", _blocked_settings(chat_judgement_model="anthropic-test-model")
-    )
-
-    with pytest.raises(LlmConfigError) as exc_info:
-        llm.validate_startup()
-
-    assert "CHAT_JUDGEMENT_MODEL" in str(exc_info.value)
-    assert "따랐습니다" not in str(exc_info.value)
 
 
 def test_blocked_slot_is_reported_before_a_missing_key(monkeypatch) -> None:

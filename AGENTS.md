@@ -1,7 +1,6 @@
 # 기본 지침
 
-이 파일이 프로젝트 지침의 정본입니다. `CLAUDE.md`는 이 파일을 가리키는 심링크라 Claude Code와
-Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 고칩니다.
+이 파일이 프로젝트 지침의 정본입니다. 지침을 바꿀 때는 이 파일만 고칩니다.
 
 작업을 시작할 때 형제 하네스 레포지토리의 운영 규칙 `../knk-harness/AGENTS.md`를 먼저 확인합니다
 (Claude Code는 SessionStart 훅(`.claude/settings.json`)이 자동 로드하고, Codex는 직접 엽니다).
@@ -13,7 +12,7 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 | 제품 배경·MVP 범위·사용자 요구 | `../knk-harness/docs/spec/1-background.md`, `../knk-harness/docs/spec/2-user-stories.md` |
 | 클라이언트 화면·호출 흐름·SSE 소비 방식 | `../knk-harness/docs/spec/3-1-client-spec.md`, `../knk-harness/docs/spec/3-2-web-spec.md` |
 | 백엔드 API·SSE·저장·오류 계약 | `../knk-harness/docs/spec/4-backend-server-spec.md` |
-| AI 요청·응답·실패 처리·채팅 판정 계약 | `../knk-harness/docs/spec/5-ai-server-spec.md` |
+| AI 요청·응답·실패 처리 계약 | `../knk-harness/docs/spec/5-ai-server-spec.md` |
 | AI 호출 구조·프롬프트·모델·관측 설정 | `../knk-harness/docs/design/3-ai-server-design.md` |
 | AI 설계 결정의 배경·대안·근거 | `../knk-harness/docs/adr/3-ai-server-adr.md` |
 | 이벤트·지표·AI 관측 | `../knk-harness/docs/spec/6-analytics.md` |
@@ -50,9 +49,9 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 - 코드 스타일 규칙(프로젝트 레이아웃·네이밍·임포트 순서·응답 모델·에러 처리·금지 패턴)은
   `.agents/STYLEGUIDE.md`를 따릅니다. 코드를 쓸 때도 리뷰할 때도 같은 기준입니다.
 - 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 위 인덱스에서 제품 명세와 로컬 `spec/` 문서를 골라 먼저 확인합니다.
-  외부 계약(요청·응답·판정·SSE)의 SSOT는 `docs/spec/5-ai-server-spec.md`, 현재 내부 구조·설정은 `docs/design/3-ai-server-design.md`, 설계 결정의 배경·대안·근거는 `docs/adr/3-ai-server-adr.md`입니다.
-- 채팅 프롬프트는 레이어 8종(CORE·SAFETY·STORY·CHARACTER·USER·MEMORY·JUDGEMENT·CHOICES)으로
-  나뉘어 템플릿으로 존재합니다. 본문 레이어 6종은 `prompt/chat/layer/`에, JUDGEMENT·CHOICES는 `prompt/chat/`에 있습니다.
+  외부 계약(요청·응답·SSE)의 SSOT는 `docs/spec/5-ai-server-spec.md`, 현재 내부 구조·설정은 `docs/design/3-ai-server-design.md`, 설계 결정의 배경·대안·근거는 `docs/adr/3-ai-server-adr.md`입니다.
+- 채팅 프롬프트는 레이어 7종(CORE·SAFETY·STORY·CHARACTER·USER·MEMORY·CHOICES)으로
+  나뉘어 템플릿으로 존재합니다. 본문 레이어 6종은 `prompt/chat/layer/`에, CHOICES는 `prompt/chat/`에 있습니다.
   레이어 없이 파일 하나로 쓴 범용 본문 프롬프트는 `prompt/chat/general/`에 따로 둡니다. 어떤 내용이 어느 레이어에 속하는지는
   `spec/chat/1-PROMPT-LAYER.md`·`2-LAYER-PLACEMENT.md`가 정합니다 — 임의 배치 금지.
 
@@ -70,7 +69,7 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
   ADR(`docs/adr/3-ai-server-adr.md`)에 반영합니다.
 
 ### 스킬 배치(.agents/skills)
-- 스킬 정본은 `.agents/skills/`이고, `.claude/skills/*`는 그것을 가리키는 심링크입니다(한 소스, 두 에이전트). `CLAUDE.md`→`AGENTS.md`도 같은 방식입니다.
+- 스킬 정본은 `.agents/skills/`이고, `.claude/skills/*`는 그것을 가리키는 심링크입니다(한 소스, 두 에이전트).
 - 배치 규칙 상세는 스킬을 만들거나 고칠 때 `.agents/skills/README.md`를 엽니다.
 - 하네스 공용 스킬은 복사하지도 수정하지도 않습니다(하네스 수정 금지 규칙과 동일).
 - `daily-sentry-report` 스킬은 claude.ai 클라우드 루틴이 매일 돌려 슬랙에 올립니다. 루틴은 **`dev`에 머지된 스킬**을 읽습니다 —
@@ -82,7 +81,7 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
   직접 올립니다(자동 갱신 장치 없음 — 브랜치당 파일별 1회면 충분). `prompt/` frontmatter의 배치 메타(`layer`·`priority`·`placement`·`slots`)는
   의미를 모르면 `spec/chat/2-LAYER-PLACEMENT.md`를 먼저 봅니다.
 - 파일은 LF 줄바꿈으로 저장합니다(CRLF면 frontmatter 파싱이 깨질 수 있음).
-- 프롬프트·판정 규칙처럼 실제 LLM 출력으로만 검증되는 변경은 유닛 테스트 통과로 "검증됨"을 주장하지 않습니다.
+- 프롬프트 규칙처럼 실제 LLM 출력으로만 검증되는 변경은 유닛 테스트 통과로 "검증됨"을 주장하지 않습니다.
   실측(라이브 호출) 결과가 있으면 그것을, 없으면 "실측 미실시"를 보고에 명시합니다.
 
 ### 실측·실험 (로컬 도구)

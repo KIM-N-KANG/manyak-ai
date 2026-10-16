@@ -414,7 +414,7 @@ async def stream_chat_turn(
         ai_output, completed_images = _insert_storage_markers(
             normalized, character_images or []
         )
-        # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가 판정 호출 메타를 합산하고
+        # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가
         # prompt_versions·provider를 더해 completed의 meta로 조립한다(KNK-243).
         # 선택지 몫 메타는 KNK-625로 /chat/choices 응답 meta에 분리됐다.
         yield {

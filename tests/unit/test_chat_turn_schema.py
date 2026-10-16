@@ -13,7 +13,6 @@ from src.schemas.chat_turn import (
     CharacterImageData,
     ChatTurnRequest,
     CompletedData,
-    TargetMainEventOut,
 )
 
 # 기존 계약(재료 필드 없음)의 최소 유효 페이로드 — 와이어(snake_case) 형태.
@@ -108,8 +107,6 @@ def test_request_without_event_materials_passes_with_defaults() -> None:
     req = ChatTurnRequest.model_validate(_BASE_PAYLOAD)
     assert req.user_source is None
     assert req.main_events == []
-    assert req.target_main_event is None
-    assert req.occurred_main_event_names == []
     assert req.endings == []
     assert req.character_images == []
 
@@ -119,8 +116,6 @@ def test_request_with_event_materials_parses() -> None:
     payload = {
         **_BASE_PAYLOAD,
         "main_events": [_MAIN_EVENT],
-        "target_main_event": {"name": "반란의 서막", "progress_turns": 3},
-        "occurred_main_event_names": ["선왕의 죽음"],
         "endings": [
             {
                 "name": "왕좌를 되찾다",
@@ -131,9 +126,6 @@ def test_request_with_event_materials_parses() -> None:
     }
     req = ChatTurnRequest.model_validate(payload)
     assert req.main_events[0].key_sentence == _MAIN_EVENT["key_sentence"]
-    assert req.target_main_event is not None
-    assert req.target_main_event.progress_turns == 3
-    assert req.occurred_main_event_names == ["선왕의 죽음"]
     assert req.endings[0].name == "왕좌를 되찾다"
 
 
@@ -210,15 +202,6 @@ def test_request_omits_missing_user_source(user_source: str | None) -> None:
 
 
 # ── 형식 위반 거부 ──────────────────────────────────────────────────────────
-def test_negative_progress_turns_rejected() -> None:
-    payload = {
-        **_BASE_PAYLOAD,
-        "target_main_event": {"name": "반란의 서막", "progress_turns": -1},
-    }
-    with pytest.raises(ValidationError):
-        ChatTurnRequest.model_validate(payload)
-
-
 def test_main_events_over_ten_rejected() -> None:
     # 계약상 주요 사건은 스토리당 최대 10 — 백엔드 저작 상한과 동일(§5-3-4).
     payload = {**_BASE_PAYLOAD, "main_events": [_MAIN_EVENT] * 11}
@@ -254,29 +237,6 @@ def test_ending_candidate_has_no_min_turns_field() -> None:
     }
     req = ChatTurnRequest.model_validate(payload)
     assert "min_turns" not in type(req.endings[0]).model_fields
-
-
-# ── completed 판정 메타 직렬화 (KNK-483) ────────────────────────────────────
-def test_completed_judgement_meta_defaults_to_null_camel_case() -> None:
-    # 재료 없는 턴(현행 트래픽)에서는 3필드가 camelCase 키의 null로 나가야 한다.
-    payload = CompletedData(ai_output="본문").model_dump(by_alias=True)
-    assert payload["aiOutput"] == "본문"
-    assert payload["targetMainEvent"] is None
-    assert payload["occurredMainEventName"] is None
-    assert payload["endingName"] is None
-    assert payload["characterImages"] == []
-
-
-def test_completed_judgement_meta_serializes_camel_case() -> None:
-    payload = CompletedData(
-        ai_output="본문",
-        target_main_event=TargetMainEventOut(name="반란의 서막", progress_turns=4),
-        occurred_main_event_name="선왕의 죽음",
-        ending_name="왕좌를 되찾다",
-    ).model_dump(by_alias=True)
-    assert payload["targetMainEvent"] == {"name": "반란의 서막", "progressTurns": 4}
-    assert payload["occurredMainEventName"] == "선왕의 죽음"
-    assert payload["endingName"] == "왕좌를 되찾다"
 
 
 def test_character_images_serialize_in_display_order_with_duplicates() -> None:

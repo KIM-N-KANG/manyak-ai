@@ -275,12 +275,11 @@ def test_slot_map_event_materials_empty_defaults() -> None:
     """재료 없는 요청(현행 트래픽)은 사건·엔딩 슬롯이 '(없음)' 문구다."""
     slots = chat_assembler._slot_map(_request())
     assert slots["{{main_events}}"] == "(없음)"
-    assert slots["{{target_main_event}}"] == "(없음)"
     assert slots["{{endings}}"] == "(없음)"
 
 
 def test_slot_map_event_materials_formatted() -> None:
-    from src.schemas.chat_turn import EndingCandidate, MainEvent, TargetMainEvent
+    from src.schemas.chat_turn import EndingCandidate, MainEvent
 
     req = _request()
     req = req.model_copy(
@@ -288,7 +287,6 @@ def test_slot_map_event_materials_formatted() -> None:
             "main_events": [
                 MainEvent(name="반란의 서막", description="귀족 연합.", key_sentence="증거를 손에 넣는다.")
             ],
-            "target_main_event": TargetMainEvent(name="반란의 서막", progress_turns=2),
             "endings": [
                 EndingCandidate(
                     name="왕좌를 되찾다", achievement_condition="왕좌를 되찾는다.", epilogue="대관식."
@@ -298,7 +296,6 @@ def test_slot_map_event_materials_formatted() -> None:
     )
     slots = chat_assembler._slot_map(req)
     assert "반란의 서막" in slots["{{main_events}}"] and "증거를 손에 넣는다." in slots["{{main_events}}"]
-    assert slots["{{target_main_event}}"] == "이름: 반란의 서막 (진행 2턴)"
     # STORY 슬롯 엔딩은 본문이 엔딩 응답을 생성해야 하므로 에필로그 가이드까지 포함한다.
     assert "달성 조건" in slots["{{endings}}"] and "에필로그 가이드: 대관식." in slots["{{endings}}"]
 
@@ -318,7 +315,7 @@ def test_general_message_order_and_roles() -> None:
 
 
 def test_general_fills_every_slot() -> None:
-    """설정은 [SYSTEM]에, 현재 상태·목표 사건·이번 입력은 마지막 [USER]에 들어가고 자리표시자가 남지 않는다."""
+    """설정은 [SYSTEM]에, 현재 상태·이번 입력은 마지막 [USER]에 들어가고 자리표시자가 남지 않는다."""
     messages = assemble(
         _request(summary="카이는 레이를 신뢰하게 됐다.", user_input="*촛불을 끈다*"), prompt="general"
     )
@@ -328,7 +325,6 @@ def test_general_fills_every_slot() -> None:
     assert "장례식 밤의 방문" in system
     assert "카이는 레이를 신뢰하게 됐다." in user and "카이는 레이를" not in system
     assert "*촛불을 끈다*" in user
-    assert "<target_event>\n(없음)\n</target_event>" in user
     assert all("{{" not in m["content"] for m in messages)
 
 
@@ -415,6 +411,6 @@ def test_body_prompt_versions_follows_setting(monkeypatch) -> None:
 def test_body_prompt_versions_returns_a_copy() -> None:
     """돌려받은 맵을 고쳐도 모듈의 레이어 버전 원본은 바뀌지 않는다."""
     versions = chat_assembler.body_prompt_versions("layer")
-    versions["JUDGEMENT"] = 99
+    versions["EXTRA"] = 99
 
-    assert "JUDGEMENT" not in chat_assembler.LAYER_VERSIONS
+    assert "EXTRA" not in chat_assembler.LAYER_VERSIONS
