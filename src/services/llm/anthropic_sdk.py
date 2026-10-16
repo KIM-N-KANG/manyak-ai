@@ -10,7 +10,8 @@
 OpenAI 계열과 다른 곳이 넷이다.
 
 1. **system을 messages 밖으로 뺀다.** 이 회사는 지시문 칸이 요청 최상위에 따로 있다.
-   칸이 하나뿐이라 맨 앞 것만 옮길 수 있다 — 나머지는 버린다(`_split_system` 참조).
+   칸이 하나뿐이라 맨 앞 것만 옮긴다. 나머지는 대화 중간 지시문을 받는 모델이면 그 자리에
+   그대로 두고, 아니면 버린다(`_split_system` 참조).
 2. **입력 토큰이 세 조각으로 온다.** 일반·캐시 생성·캐시 읽기를 더해야 전체 입력이 된다.
 3. **본문이 블록 목록으로 온다.** 글 블록만 골라 이어 붙인다(추론 블록 등은 버린다).
 4. **스트리밍에서 토큰이 두 이벤트에 나뉘어 온다.** 입력은 시작 신호에, 최종 출력은 끝
@@ -125,7 +126,9 @@ def _client(provider: str) -> AsyncAnthropic:
     return client
 
 
-def _split_system(messages: list[Message], model: str) -> tuple[list[dict] | None, list[Message]]:
+def _split_system(
+    messages: list[Message], resolved: ResolvedModel
+) -> tuple[list[dict] | None, list[Message]]:
     """대화 목록에서 맨 앞 지시문(system)을 떼어 별도 칸으로 올린다.
 
     OpenAI 계열은 지시문도 대화 한 줄로 목록 안에 들어가지만, 이 회사는 요청 최상위에
@@ -149,6 +152,10 @@ def _split_system(messages: list[Message], model: str) -> tuple[list[dict] | Non
     갈려(지원하지 않는 모델은 400) 여기서 일괄로 쓸 수 없다. 채팅을 이 공급자로 여는 티켓이
     쓸 모델을 정한 뒤 이 길을 먼저 검토한다(KNK-675 리뷰).
 
+    **그 길을 지원하는 모델이면 버리지 않고 그 자리에 둔다**(`supports_mid_conversation_system`).
+    Claude 5.5 세대가 공식 지원한다(beta 헤더 불필요). 위치 조건은 회사가 검사하고 어기면 400이라
+    여기서 다시 검사하지 않는다 — layer 채팅(맨 앞 1 + 대화 + 사용자 발화 + 끝 2)은 조건에 맞는다.
+
     캐시 표시(`cache_control`)는 **마지막 블록에만** 붙인다 — 그 지점까지를 캐시 대상으로
     잡는다는 뜻이라, 앞 블록에 붙이면 뒤가 캐시에서 빠진다. 조건 없이 붙이는 이유는 이
     어댑터를 쓰는 호출부 네 곳의 지시문이 모두 고정 템플릿 원문이기 때문이다.
@@ -164,7 +171,12 @@ def _split_system(messages: list[Message], model: str) -> tuple[list[dict] | Non
             continue
         # 아직 다른 역할이 하나도 안 나왔으면 "맨 앞"이다.
         if rest:
-            dropped += 1
+            if not resolved.supports_mid_conversation_system:
+                dropped += 1
+                continue
+            # 빈 지시문은 맨 앞과 같은 이유로 넣지 않는다(빈 글 블록은 400).
+            if (message.get("content") or "").strip():
+                rest.append({"role": "system", "content": message["content"]})
             continue
         # **내용이 빈 지시문은 넣지 않는다.** 이 공급자는 빈 글 블록을 거부하는데, 캐시 표시가
         # 붙으면 특히 그렇다. 그러면 "지시문이 비었다"는 사소한 입력이 400이 되고, 같은 입력을
@@ -179,7 +191,7 @@ def _split_system(messages: list[Message], model: str) -> tuple[list[dict] | Non
             "모델 %s: 맨 앞이 아닌 자리의 system 지시 %d개를 버렸다 — 이 공급자는 지시문 칸이 "
             "하나뿐이라 옮길 자리가 없다. 채팅 본문이 뒤에 두는 Depth·PHI(안전 가드레일)가 "
             "여기 해당한다(KNK-676에서 감수한 위험).",
-            model,
+            resolved.model,
             dropped,
         )
     if not leading:
@@ -235,7 +247,7 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         raise LlmConfigError(
             f"모델 '{resolved.model}'의 어댑터는 이미지 조각을 아직 옮기지 못합니다."
         )
-    system, messages = _split_system(req.messages, resolved.model)
+    system, messages = _split_system(req.messages, resolved)
     kwargs: dict[str, object] = {
         "model": resolved.model,
         "messages": messages,
@@ -247,7 +259,9 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         "max_tokens": req.max_tokens if req.max_tokens is not None else NOT_GIVEN,
         "thinking": _thinking_of(resolved),
     }
-    if resolved.reasoning_effort is not None:
+    # none은 "추론 끔"이라는 뜻이고 이 회사의 effort 값이 아니다 — 위 thinking으로 표현하고 effort는
+    # 보내지 않는다(보내면 400). 끈 상태의 effort는 high 이하여야 하는데, 생략하면 기본값이라 안전하다.
+    if resolved.reasoning_effort not in (None, "none"):
         kwargs["output_config"] = {"effort": resolved.reasoning_effort}
     if system is not None:
         kwargs["system"] = system
@@ -420,7 +434,7 @@ def _model_parameters(
     }
     if req.max_tokens is not None:
         params["max_tokens"] = req.max_tokens
-    if resolved.reasoning_effort is not None:
+    if resolved.reasoning_effort not in (None, "none"):
         params["effort"] = resolved.reasoning_effort
     if req.temperature is not None and resolved.supports_temperature:
         params["temperature"] = req.temperature

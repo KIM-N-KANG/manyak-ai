@@ -20,11 +20,15 @@ from src.services.llm.base import (
     ADAPTER_GOOGLE_SDK,
     ADAPTER_OPENAI_SDK,
     ADAPTER_TYPESAFE_API,
+    PROVIDER_ALIBABA,
     PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
     PROVIDER_GOOGLE,
+    PROVIDER_MOONSHOT,
     PROVIDER_OPENAI,
+    PROVIDER_OPENROUTER,
     PROVIDER_TYPESAFE,
+    PROVIDER_ZAI,
     STRUCTURED_OUTPUT_JSON_OBJECT,
     STRUCTURED_OUTPUT_JSON_SCHEMA,
     LlmConfigError,
@@ -73,7 +77,9 @@ _REGISTRY: dict[str, ResolvedModel] = {
         context_window_tokens=1_000_000,
         max_output_tokens=384_000,
         reasoning_effort=None,
-        supported_reasoning_efforts=frozenset({"high", "max"}),
+        # none은 추론 끔, low·high·max는 실제로 다른 단계다. medium·xhigh는 회사가 high로 바꾸는
+        # 별칭이라 넣지 않는다(같은 설정을 두 번 돌리게 된다, 2026-10-16 문서 확인).
+        supported_reasoning_efforts=frozenset({"none", "low", "high", "max"}),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
         # 이미지 입력: 가격표의 "Vision ✓"와 Vision 가이드(JPEG·PNG·GIF·WebP, 장당 32MiB)로
         # 확인했다(KNK-1359). 게시물 검수의 대체 모델이라 이 값이 없으면 대체 호출이 이미지를
@@ -387,6 +393,351 @@ _REGISTRY: dict[str, ResolvedModel] = {
             ),
         ),
     ),
+    # ── 채팅 grid search 후보(2026-10-16 추가) ─────────────────────────────────────
+    # 기본 추론 강도는 none~high 중 **이 모델이 받는 가장 낮은 값**으로 둔다(none이 되면 none, 아니면
+    # low). 비교 실험은 CHAT_REASONING_EFFORT로 강도를 따로 고르므로, 기본값은 고르지 않았을 때
+    # 비용·지연이 가장 적은 쪽이 안전하다.
+    # Haiku 5.5는 추론을 끌 수 있다(effort high 이하일 때만 — 끌 때는 effort를 보내지 않아 기본
+    # medium으로 간다). 4.6 이후 모델 중 유일하게 프롬프트 길이별 요금이 있다(10만 토큰 초과 시 5배).
+    "claude-haiku-5-5": ResolvedModel(
+        model="claude-haiku-5-5",
+        provider=PROVIDER_ANTHROPIC,
+        adapter=ADAPTER_ANTHROPIC_SDK,
+        use_thinking=False,
+        # 5.5 세대는 기본값이 아닌 temperature·top_p·top_k를 보내면 매 요청 400이다.
+        supports_temperature=False,
+        context_window_tokens=1_000_000,
+        max_output_tokens=128_000,
+        reasoning_effort=None,
+        supported_reasoning_efforts=frozenset(
+            {"none", "low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_SCHEMA}),
+        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요). layer 채팅의 끝 지시문
+        # (현재 상태·안전 지시)을 버리지 않고 보낼 수 있어 layer 채팅 본문에 쓸 수 있다.
+        supports_mid_conversation_system=True,
+        capabilities_verified_on=date(2026, 10, 16),
+        capabilities_source_urls=(
+            "https://platform.claude.com/docs/en/about-claude/models/overview",
+            "https://platform.claude.com/docs/en/build-with-claude/effort",
+            "https://platform.claude.com/docs/en/build-with-claude/thinking",
+            "https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages",
+        ),
+        # 날짜 없는 ID가 그 자체로 고정 스냅샷이다(공식 모델 개요).
+        snapshot_model="claude-haiku-5-5",
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.10"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.01"),
+                output_usd_per_1m_tokens=Decimal("0.50"),
+                cache_write_input_usd_per_1m_tokens=Decimal("0.125"),
+                source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+                verified_on=date(2026, 10, 16),
+                long_context_threshold_tokens=100_000,
+                long_context_input_multiplier=Decimal("5"),
+                long_context_output_multiplier=Decimal("5"),
+            ),
+        ),
+    ),
+    # Sonnet 5.5는 none을 두지 않는다(사용자 결정, 2026-10-16). `disabled`는 400이고, 문서가 대신 권하는
+    # `between_tools`(도구 없으면 글만 낸다)는 시운전에서 첫 글자 15초·답 길이 대비 토큰 약 2배로 나와
+    # 실제로 생각하지 않는다고 믿기 어려웠다. none으로 적고 생각한 결과를 섞지 않으려고 low부터 연다.
+    "claude-sonnet-5-5": ResolvedModel(
+        model="claude-sonnet-5-5",
+        provider=PROVIDER_ANTHROPIC,
+        adapter=ADAPTER_ANTHROPIC_SDK,
+        use_thinking=True,
+        # 5.5 세대는 기본값이 아닌 temperature·top_p·top_k를 보내면 매 요청 400이다.
+        supports_temperature=False,
+        context_window_tokens=1_000_000,
+        max_output_tokens=128_000,
+        reasoning_effort="low",
+        supported_reasoning_efforts=frozenset(
+            {"low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_SCHEMA}),
+        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요). layer 채팅의 끝 지시문
+        # (현재 상태·안전 지시)을 버리지 않고 보낼 수 있어 layer 채팅 본문에 쓸 수 있다.
+        supports_mid_conversation_system=True,
+        capabilities_verified_on=date(2026, 10, 16),
+        capabilities_source_urls=(
+            "https://platform.claude.com/docs/en/about-claude/models/overview",
+            "https://platform.claude.com/docs/en/build-with-claude/effort",
+            "https://platform.claude.com/docs/en/build-with-claude/thinking",
+            "https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages",
+        ),
+        # 날짜 없는 ID가 그 자체로 고정 스냅샷이다(공식 모델 개요).
+        snapshot_model="claude-sonnet-5-5",
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("2"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.10"),
+                output_usd_per_1m_tokens=Decimal("10"),
+                cache_write_input_usd_per_1m_tokens=Decimal("2.50"),
+                source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+                verified_on=date(2026, 10, 16),
+            ),
+        ),
+    ),
+    # Opus 5.5는 추론을 끌 수 없다("Adaptive (always on)", disabled·between_tools 모두 400). none 없음.
+    "claude-opus-5-5": ResolvedModel(
+        model="claude-opus-5-5",
+        provider=PROVIDER_ANTHROPIC,
+        adapter=ADAPTER_ANTHROPIC_SDK,
+        use_thinking=True,
+        # 5.5 세대는 기본값이 아닌 temperature·top_p·top_k를 보내면 매 요청 400이다.
+        supports_temperature=False,
+        context_window_tokens=1_000_000,
+        max_output_tokens=128_000,
+        reasoning_effort="low",
+        supported_reasoning_efforts=frozenset(
+            {"low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_SCHEMA}),
+        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요). layer 채팅의 끝 지시문
+        # (현재 상태·안전 지시)을 버리지 않고 보낼 수 있어 layer 채팅 본문에 쓸 수 있다.
+        supports_mid_conversation_system=True,
+        capabilities_verified_on=date(2026, 10, 16),
+        capabilities_source_urls=(
+            "https://platform.claude.com/docs/en/about-claude/models/overview",
+            "https://platform.claude.com/docs/en/build-with-claude/effort",
+            "https://platform.claude.com/docs/en/build-with-claude/thinking",
+            "https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages",
+        ),
+        # 날짜 없는 ID가 그 자체로 고정 스냅샷이다(공식 모델 개요).
+        snapshot_model="claude-opus-5-5",
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("4"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.20"),
+                output_usd_per_1m_tokens=Decimal("20"),
+                cache_write_input_usd_per_1m_tokens=Decimal("5"),
+                source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+                verified_on=date(2026, 10, 16),
+            ),
+        ),
+    ),
+    # gpt-6.1-sol은 none·minimal을 받지 않는다(기본 medium). none이 아니면 temperature를 빼라는
+    # 문서라 temperature를 받지 않는 것으로 적는다.
+    "gpt-6.1-sol": ResolvedModel(
+        model="gpt-6.1-sol",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=True,
+        supports_temperature=False,
+        context_window_tokens=1_050_000,
+        max_output_tokens=128_000,
+        reasoning_effort="low",
+        supported_reasoning_efforts=frozenset({"low", "medium", "high", "xhigh", "max"}),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 10, 16),
+        capabilities_source_urls=(
+            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+            "https://developers.openai.com/api/docs/guides/reasoning",
+        ),
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("2.00"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.10"),
+                output_usd_per_1m_tokens=Decimal("10.00"),
+                cache_write_input_usd_per_1m_tokens=Decimal("2.50"),
+                source_url="https://developers.openai.com/api/docs/pricing",
+                verified_on=date(2026, 10, 16),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+        ),
+    ),
+    # gemini-3.8-flash는 추론을 끌 수 없다(low·medium·high만, minimal은 오류). temperature는 문서가
+    # "deprecated, 빼라"고 해 받지 않는 것으로 적는다. 3.7-flash는 이제 3.8로 자동 연결된다.
+    "gemini-3.8-flash": ResolvedModel(
+        model="gemini-3.8-flash",
+        provider=PROVIDER_GOOGLE,
+        adapter=ADAPTER_GOOGLE_SDK,
+        use_thinking=True,
+        supports_temperature=False,
+        context_window_tokens=1_048_576,
+        max_output_tokens=65_536,
+        reasoning_effort="low",
+        supported_reasoning_efforts=frozenset({"low", "medium", "high"}),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        capabilities_verified_on=date(2026, 10, 16),
+        capabilities_source_urls=(
+            "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+            "https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.8",
+        ),
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.75"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.075"),
+                output_usd_per_1m_tokens=Decimal("3.75"),
+                source_url="https://ai.google.dev/gemini-api/docs/pricing",
+                verified_on=date(2026, 10, 16),
+                effective_until=date(2026, 12, 31),
+            ),
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("1.50"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.15"),
+                output_usd_per_1m_tokens=Decimal("7.50"),
+                source_url="https://ai.google.dev/gemini-api/docs/pricing",
+                verified_on=date(2026, 10, 16),
+                effective_from=date(2027, 1, 1),
+            ),
+        ),
+    ),
+    # ── 오픈소스 계열 후보(KNK-1628) ─────────────────────────────────────────────
+    # 채팅 configuration 비교(grid search) 후보다. 공급자 공식 문서만으로 적었고 실제 응답으로는
+    # 확인하지 않았다. 추론 강도 목록에는 **실제로 다르게 동작하는 값만** 적는다 — 공급자가 다른
+    # 값으로 바꿔 받는 별칭(예: GLM의 low·medium → high)을 넣으면 같은 설정을 두 번 돌리게 된다.
+    # json_object 지원은 문서로 확인하지 않았다(본문 생성은 JSON을 쓰지 않는다). JSON을 쓰는 자리에
+    # 고르기 전에 확인한다. 이미지 입력도 검수에 쓸 일이 없어 기본값(받지 않음)으로 둔다.
+    # Qwen3.8 텍스트 모델은 max·flash 둘이다. 명세의 "qwen-3.8"이 어느 쪽인지 정해지지 않아 둘 다 둔다.
+    # Alibaba 직접 대신 OpenRouter로 부른다(키가 OpenRouter 것이다, 사용자 결정). OpenRouter는
+    # `회사/모델` 이름을 받아 `model`을 그 이름으로 적고, 등록부 이름(env에 쓰는 이름)은 그대로 둔다.
+    # 추론 제어는 OpenRouter의 `reasoning.effort`다 — 회사 문법 변환은 어댑터가 한다.
+    #
+    # max는 추론을 끌 수 없다(카탈로그 `reasoning.mandatory: true`, none을 보내면 거부). 아무것도 안
+    # 보내면 xhigh로 돌아 가장 비싸므로 기본값을 low로 명시한다. 평문 `qwen/qwen3.8-max`는 카탈로그에
+    # 없어 고정판 이름을 쓴다.
+    "qwen3.8-max": ResolvedModel(
+        model="qwen/qwen3.8-max-0902",
+        provider=PROVIDER_OPENROUTER,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=True,
+        supports_temperature=True,
+        context_window_tokens=1_000_000,
+        max_output_tokens=131_072,
+        reasoning_effort="low",
+        supported_reasoning_efforts=frozenset({"low", "medium", "high", "xhigh"}),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
+        # 대화 끝 지시문을 받는다 — 문서로는 확인하지 못했고 실측으로 확인했다(2026-10-16, 끝 지시문에 둔
+        # 출력 규칙을 3회 중 2~3회 따름). layer 채팅 본문에 쓸 수 있다.
+        supports_mid_conversation_system=True,
+        capabilities_verified_on=date(2026, 10, 16),
+        capabilities_source_urls=(
+            "https://openrouter.ai/api/v1/models/qwen/qwen3.8-max-0902/endpoints",
+            "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+        ),
+        snapshot_model="qwen/qwen3.8-max-0902",
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("2"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.25"),
+                output_usd_per_1m_tokens=Decimal("6"),
+                source_url="https://openrouter.ai/qwen/qwen3.8-max-0902",
+                verified_on=date(2026, 10, 16),
+            ),
+        ),
+    ),
+    # flash는 추론을 끌 수 있지만 기본이 켜짐이라, 끌 때도 none을 명시해 보낸다. 강도 단계가 따로
+    # 없어 OpenRouter가 low·medium·high·xhigh를 max_tokens의 20·50·80·95% 추론 예산으로 바꾼다 —
+    # 값마다 예산이 달라 실제로 다르게 동작하므로 목록에 둔다.
+    "qwen3.8-flash": ResolvedModel(
+        model="qwen/qwen3.8-flash",
+        provider=PROVIDER_OPENROUTER,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=True,
+        context_window_tokens=1_000_000,
+        max_output_tokens=131_072,
+        reasoning_effort=None,
+        supported_reasoning_efforts=frozenset({"none", "low", "medium", "high", "xhigh"}),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
+        # 대화 끝 지시문을 받는다 — 문서로는 확인하지 못했고 실측으로 확인했다(2026-10-16, 끝 지시문에 둔
+        # 출력 규칙을 3회 중 2~3회 따름). layer 채팅 본문에 쓸 수 있다.
+        supports_mid_conversation_system=True,
+        capabilities_verified_on=date(2026, 10, 16),
+        capabilities_source_urls=(
+            "https://openrouter.ai/api/v1/models/qwen/qwen3.8-flash/endpoints",
+            "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+        ),
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("0.15"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.016"),
+                output_usd_per_1m_tokens=Decimal("0.47"),
+                source_url="https://openrouter.ai/qwen/qwen3.8-flash",
+                verified_on=date(2026, 10, 16),
+            ),
+        ),
+    ),
+    # GLM-5.2가 실제로 구분하는 강도는 high·max 둘뿐이다(low·medium → high, xhigh → max).
+    # temperature 범위가 [0, 1]이라 1을 넘는 값을 보내면 거부된다.
+    "glm-5.2": ResolvedModel(
+        model="glm-5.2",
+        provider=PROVIDER_ZAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+        supports_temperature=True,
+        context_window_tokens=1_000_000,
+        max_output_tokens=131_072,
+        reasoning_effort=None,
+        supported_reasoning_efforts=frozenset({"none", "high", "max"}),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
+        # 대화 끝 지시문을 받는다 — 문서로는 확인하지 못했고 실측으로 확인했다(2026-10-16, 끝 지시문에 둔
+        # 출력 규칙을 3회 중 2~3회 따름). layer 채팅 본문에 쓸 수 있다.
+        supports_mid_conversation_system=True,
+        capabilities_verified_on=date(2026, 10, 12),
+        capabilities_source_urls=(
+            "https://docs.z.ai/guides/llm/glm-5.2",
+            "https://docs.z.ai/api-reference/llm/chat-completion",
+            "https://docs.z.ai/guides/capabilities/thinking-mode",
+        ),
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("1.4"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.26"),
+                output_usd_per_1m_tokens=Decimal("4.4"),
+                source_url="https://docs.z.ai/guides/overview/pricing",
+                verified_on=date(2026, 10, 12),
+            ),
+        ),
+    ),
+    # Kimi K3는 추론을 끌 수 없고(어댑터가 끄라는 설정을 거부한다) temperature는 1.0 고정이라 보내면
+    # 오류다. 여러 턴 대화에서는 응답의 추론 내용까지 되돌려 보내라고 권하지만, 대화 기록에는 본문만
+    # 남아 그렇게 하지 못한다 — 품질에 영향이 있을 수 있다.
+    "kimi-k3": ResolvedModel(
+        model="kimi-k3",
+        provider=PROVIDER_MOONSHOT,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=True,
+        supports_temperature=False,
+        context_window_tokens=1_048_576,
+        max_output_tokens=1_048_576,
+        reasoning_effort="low",
+        supported_reasoning_efforts=frozenset({"low", "high", "max"}),
+        structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
+        # 대화 끝 지시문을 받는다 — 문서로는 확인하지 못했고 실측으로 확인했다(2026-10-16, 끝 지시문에 둔
+        # 출력 규칙을 3회 중 2~3회 따름). layer 채팅 본문에 쓸 수 있다.
+        supports_mid_conversation_system=True,
+        capabilities_verified_on=date(2026, 10, 12),
+        capabilities_source_urls=(
+            "https://platform.kimi.ai/docs/api/chat",
+            "https://platform.kimi.ai/docs/api/models-overview",
+            "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart",
+        ),
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("3.00"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.30"),
+                output_usd_per_1m_tokens=Decimal("15.00"),
+                source_url="https://platform.kimi.ai/docs/pricing/chat",
+                verified_on=date(2026, 10, 12),
+                # 기본 5분 보관 캐시의 쓰기 단가.
+                cache_write_input_usd_per_1m_tokens=Decimal("3.00"),
+            ),
+        ),
+    ),
 }
 
 
@@ -404,6 +755,17 @@ _REGISTRY: dict[str, ResolvedModel] = {
 # `CHAT_PROMPT=layer`일 때만 건다(`blocked_providers`). layer는 지금도 뒤의 둘이 버려지므로
 # 그대로 막는다.
 #
+# **layer라도 대화 중간 지시문을 받는 모델은 풀린다**(`supports_mid_conversation_system`, 2026-10-16).
+# 막은 이유가 "끝의 두 지시문이 버려진다"였으므로, 버리지 않고 그 자리에 보낼 수 있는 모델이면 그
+# 이유가 없다. 지금은 Claude 5.5 세대(공식 지원)와 Qwen·GLM·Kimi(실측 확인, 아래)가 해당한다. 공급자 단위 표는 그대로 두고 모델 단위
+# 예외로 둔다 — 같은 회사라도 Sonnet 5는 이 기능이 없어 계속 막혀야 한다.
+#
+# **Qwen·GLM·Kimi도 같은 이유로 layer에서 막는다**(KNK-1628). Qwen 호환 문서는 system을
+# `messages[0]`에만 허용하고(OpenRouter 중계도 대화 중간 system 전달을 문서로 확인하지 못했다),
+# GLM·Kimi는 대화 중간 system의 처리를 문서로 확인하지 못했다.
+# 확인 전에는 안전 지시가 빠진 채 돌 수 있다고 보고 general에서만 썼다. 2026-10-16 실측(대화 끝 지시문에
+# 둔 출력 규칙을 따르는지 모델별 3회)에서 넷 모두 따라 모델 단위 예외로 열었다.
+#
 # **선택지도 같은 공급자를 막는다**(KNK-1416). 선택지는 지시문 배치 문제는 없지만, 이 회사는
 # JSON 강제에 스키마 전체를 요구하는데 통로에 그 칸이 없어 어댑터가 인자를 빼고 보낸다
 # (`anthropic_sdk`). 형식 준수가 프롬프트에만 기대게 되므로 별도 검토 전에는 열지 않는다.
@@ -411,12 +773,19 @@ _REGISTRY: dict[str, ResolvedModel] = {
 # **판정도 같은 이유로 막는다**(KNK-1620). 판정도 JSON 강제로 부르는데, JSON이 깨지면 판정이
 # 비어 그 턴의 사건 진행이 기록되지 않는다.
 BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
-    "CHAT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
+    "CHAT_MODEL": frozenset(
+        {PROVIDER_ANTHROPIC, PROVIDER_ALIBABA, PROVIDER_OPENROUTER, PROVIDER_ZAI, PROVIDER_MOONSHOT}
+    ),
     "CHAT_JUDGEMENT_MODEL": frozenset({PROVIDER_ANTHROPIC}),
     "CHAT_CHOICE_MODEL": frozenset({PROVIDER_ANTHROPIC}),
     "MODERATION_MODEL": frozenset({PROVIDER_DEEPSEEK, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
     "MODERATION_FALLBACK_MODEL": frozenset({PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
 }
+
+# 채팅 본문 금지 중 layer 프롬프트 때문인 것. general이면 풀린다(`blocked_providers`).
+_LAYER_ONLY_CHAT_BLOCKS = frozenset(
+    {PROVIDER_ANTHROPIC, PROVIDER_ALIBABA, PROVIDER_OPENROUTER, PROVIDER_ZAI, PROVIDER_MOONSHOT}
+)
 
 
 # 조각 흘리기(스트리밍)로 부르는 용도. 이 env로 고른 모델은 담당 어댑터가 스트리밍을 할 수
@@ -428,15 +797,24 @@ BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
 STREAMING_ENVS = frozenset({"CHAT_MODEL"})
 
 
+def layer_chat_allows(env_name: str, resolved: ResolvedModel) -> bool:
+    """layer 채팅 본문 금지의 모델 단위 예외 — 끝 지시문을 버리지 않고 받는 모델이면 쓸 수 있다."""
+    return (
+        env_name == "CHAT_MODEL"
+        and resolved.provider in _LAYER_ONLY_CHAT_BLOCKS
+        and resolved.supports_mid_conversation_system
+    )
+
+
 def blocked_providers(env_name: str) -> frozenset[str]:
     """이 자리(env)에 지금 설정으로 쓸 수 없는 공급자.
 
-    채팅 본문의 Anthropic 금지는 지시문이 대화 뒤에 붙는 layer 프롬프트 때문이라, general이면
+    채팅 본문의 금지는 지시문이 대화 뒤에 붙는 layer 프롬프트 때문이라, general이면 전부
     뺀다(위 `BLOCKED_PROVIDERS` 주석). 나머지 자리는 표 그대로다.
     """
     blocked = BLOCKED_PROVIDERS.get(env_name, frozenset())
     if env_name == "CHAT_MODEL" and settings.chat_prompt == "general":
-        return blocked - {PROVIDER_ANTHROPIC}
+        return blocked - _LAYER_ONLY_CHAT_BLOCKS
     return blocked
 
 
@@ -502,6 +880,34 @@ def credentials(provider: str) -> ProviderCredentials:
             api_key_env="GEMINI_API_KEY",
             base_url_env="GEMINI_API_URL",
         )
+    if provider == PROVIDER_ALIBABA:
+        return ProviderCredentials(
+            api_key=settings.alibaba_api_key,
+            base_url=settings.alibaba_api_url,
+            api_key_env="ALIBABA_API_KEY",
+            base_url_env="ALIBABA_API_URL",
+        )
+    if provider == PROVIDER_ZAI:
+        return ProviderCredentials(
+            api_key=settings.zai_api_key,
+            base_url=settings.zai_api_url,
+            api_key_env="ZAI_API_KEY",
+            base_url_env="ZAI_API_URL",
+        )
+    if provider == PROVIDER_MOONSHOT:
+        return ProviderCredentials(
+            api_key=settings.moonshot_api_key,
+            base_url=settings.moonshot_api_url,
+            api_key_env="MOONSHOT_API_KEY",
+            base_url_env="MOONSHOT_API_URL",
+        )
+    if provider == PROVIDER_OPENROUTER:
+        return ProviderCredentials(
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_api_url,
+            api_key_env="OPENROUTER_API_KEY",
+            base_url_env="OPENROUTER_API_URL",
+        )
     raise LlmConfigError(f"공급자 '{provider}'의 접속 정보 규칙이 없습니다.")
 
 
@@ -548,7 +954,7 @@ def validate_selected_models() -> None:
             raise LlmConfigError(f"{env_name}: {exc}") from exc
         if (env_name == "JEV_MODEL") != (resolved.adapter == ADAPTER_TYPESAFE_API):
             raise LlmConfigError(f"{env_name}: 텍스트 생성 모델과 판정 전용 모델은 서로 바꿀 수 없습니다.")
-        if resolved.provider in blocked_providers(env_name):
+        if resolved.provider in blocked_providers(env_name) and not layer_chat_allows(env_name, resolved):
             # 판정 모델을 비워 두면 본문 모델을 물려받는다. 그때는 설정하지도 않은 값이 문제로
             # 보이므로, 무엇을 고치면 되는지 함께 알린다(KNK-1624).
             inherited = (
@@ -560,6 +966,14 @@ def validate_selected_models() -> None:
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데, 이 자리는 그 "
                 f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석).{inherited}"
+            )
+        effort = settings.chat_reasoning_effort.strip()
+        if env_name == "CHAT_MODEL" and effort and effort not in resolved.supported_reasoning_efforts:
+            # 첫 채팅에서야 실패하지 않게 기동에서 막는다. 회사가 받지 않는 강도(예: 추론을 끌 수 없는
+            # 모델의 none)는 비슷한 값으로 바꾸지 않는다 — 결과표에 다른 설정이 적히게 된다.
+            raise LlmConfigError(
+                f"CHAT_REASONING_EFFORT={effort}를 CHAT_MODEL={model}이 받지 않습니다 — "
+                f"받는 값: {sorted(resolved.supported_reasoning_efforts)}"
             )
         if env_name in {"MODERATION_MODEL", "MODERATION_FALLBACK_MODEL"}:
             mode = STRUCTURED_OUTPUT_JSON_SCHEMA if env_name == "MODERATION_MODEL" else STRUCTURED_OUTPUT_JSON_OBJECT

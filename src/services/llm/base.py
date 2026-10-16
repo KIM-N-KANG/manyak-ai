@@ -25,6 +25,12 @@ PROVIDER_OPENAI = "openai"
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_GOOGLE = "google"
 PROVIDER_TYPESAFE = "typesafe"
+# 오픈소스 계열 공급자(KNK-1628). 셋 다 OpenAI 호환 주소를 내줘 OpenAI SDK 어댑터를 같이 쓴다.
+PROVIDER_ALIBABA = "alibaba"
+PROVIDER_ZAI = "zai"
+PROVIDER_MOONSHOT = "moonshot"
+# 여러 회사 모델을 한 키로 중계하는 OpenAI 호환 서비스. 지금은 Qwen을 이쪽으로 부른다.
+PROVIDER_OPENROUTER = "openrouter"
 
 # 구조화 출력 능력. 요청 문법은 어댑터가 만들고, 등록부에는 모델이 받아들이는 방식만 적는다.
 STRUCTURED_OUTPUT_JSON_OBJECT = "json_object"
@@ -144,6 +150,10 @@ class ResolvedModel:
     # 이미지 조각(`image_part`)을 입력으로 받는지. 기본 False — 새 모델은 문서로 확인한 뒤에만
     # True로 적는다. 못 받는 모델에 이미지를 보내면 통로가 호출 전에 막는다(`llm.complete`).
     supports_image_input: bool = False
+    # 맨 앞이 아닌 자리(대화 중간·끝)의 지시문(system)을 지시문으로 받는지. layer 채팅은 대화 끝에
+    # 현재 상태와 안전 지시를 지시문으로 붙이므로, 이 값이 True인 모델만 layer 채팅 본문에 쓸 수
+    # 있다(`registry.validate_selected_models`). 기본 False — 공식 문서나 실측으로 확인한 뒤에만 켠다.
+    supports_mid_conversation_system: bool = False
     # 기능 정보도 가격처럼 언제 어느 공식 문서로 확인했는지 남긴다. 고정 스냅샷이 따로 없으면
     # snapshot_model은 None이다. Claude 4.6+의 dateless ID는 그 자체가 고정 스냅샷이다.
     capabilities_verified_on: date | None = None

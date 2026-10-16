@@ -391,6 +391,8 @@ async def stream_chat_turn(
                     messages=messages,
                     max_tokens=_MAX_TOKENS,
                     timeout=_TIMEOUT_SECONDS,
+                    # 비어 있으면 None — 등록부의 그 모델 기본 강도를 쓴다.
+                    reasoning_effort=settings.chat_reasoning_effort.strip() or None,
                 )
             )
         ) as events:

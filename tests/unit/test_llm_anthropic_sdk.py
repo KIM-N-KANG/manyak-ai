@@ -281,6 +281,46 @@ async def test_claude_sonnet_5_disables_thinking_without_effort(monkeypatch) -> 
     assert "output_config" not in messages.captured
 
 
+@pytest.mark.parametrize(
+    ("model", "effort", "thinking", "output_config"),
+    [
+        # Haiku 5.5는 disabled를 받는다. none은 effort 값이 아니라 끄기라 effort를 보내지 않는다.
+        ("claude-haiku-5-5", "none", {"type": "disabled"}, None),
+        ("claude-sonnet-5-5", "medium", {"type": "adaptive"}, {"effort": "medium"}),
+        ("claude-opus-5-5", "high", {"type": "adaptive"}, {"effort": "high"}),
+    ],
+)
+async def test_claude_5_5_effort_syntax(monkeypatch, model, effort, thinking, output_config) -> None:
+    """요청별 강도(none~high)를 5.5 세대 문법으로 옮긴다.
+
+    고치기 전에는 none이 `output_config.effort="none"`으로 나가(이 회사에 없는 값) 400이 났다.
+    """
+    messages = _FakeMessages(result=_response(model=model))
+    _install(monkeypatch, messages)
+
+    await llm.complete(_req(model=model, reasoning_effort=effort))
+
+    assert messages.captured["thinking"] == thinking
+    assert messages.captured.get("output_config") == output_config
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5-5"])
+async def test_claude_5_5_without_none_defaults_to_low(monkeypatch, model: str) -> None:
+    """Opus 5.5(끌 수 없음)와 Sonnet 5.5(끄기를 믿기 어려워 열지 않음)는 기본값이 low다.
+
+    none 요청은 호출 전에 막는다 — Sonnet 5.5에 disabled를 보내면 400이다.
+    """
+    messages = _FakeMessages(result=_response(model=model))
+    _install(monkeypatch, messages)
+
+    await llm.complete(_req(model=model))
+
+    assert messages.captured["thinking"] == {"type": "adaptive"}
+    assert messages.captured["output_config"] == {"effort": "low"}
+    with pytest.raises(LlmConfigError):
+        await llm.complete(_req(model=model, reasoning_effort="none"))
+
+
 async def test_configured_effort_is_sent_only_when_present(monkeypatch) -> None:
     """나중에 추론을 켜고 강도를 고르면 그때만 Anthropic effort 문법으로 옮긴다."""
     effort_model = ResolvedModel(
@@ -1397,7 +1437,8 @@ def test_the_blocked_slot_is_known_only_to_the_registry() -> None:
     때마다 그 층을 다시 고쳐야 한다(KNK-667). 어느 파일에도 "CHAT_MODEL"이 코드로 박히지
     않았는지는 위 `test_the_streaming_slot_is_known_only_to_the_registry`가 함께 지킨다.
     """
-    assert registry.BLOCKED_PROVIDERS["CHAT_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
+    # 채팅 본문은 Anthropic과 함께 Qwen·GLM·Kimi 공급자도 layer에서 막는다(KNK-1628).
+    assert PROVIDER_ANTHROPIC in registry.BLOCKED_PROVIDERS["CHAT_MODEL"]
     assert registry.BLOCKED_PROVIDERS["CHAT_CHOICE_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
 
 
@@ -1420,6 +1461,62 @@ def test_startup_rejects_this_provider_in_the_chat_slot(monkeypatch) -> None:
     message = str(exc_info.value)
     assert "CHAT_MODEL" in message  # 배포가 실패한 상황이다 — 무엇을 되돌릴지 있어야 한다
     assert PROVIDER_ANTHROPIC in message
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"])
+def test_layer_chat_allows_models_that_take_mid_conversation_system(monkeypatch, model: str) -> None:
+    """대화 중간 지시문을 받는 Claude 5.5 세대는 layer 채팅 본문에 쓸 수 있다.
+
+    막은 이유가 "끝의 지시문(현재 상태·안전 지시)이 버려진다"였으므로, 버리지 않는 모델이면 풀린다.
+    같은 회사라도 이 기능이 없는 Sonnet 5는 계속 막힌다(아래 테스트).
+    """
+    # 판정은 JSON 강제 문제로 이 공급자를 따로 막으므로 다른 모델을 지정한다.
+    monkeypatch.setattr(
+        registry, "settings", _blocked_settings(chat_model=model, chat_judgement_model="deepseek-flash")
+    )
+
+    llm.validate_startup()  # 예외가 나면 실패다
+
+
+def test_layer_chat_still_blocks_claude_sonnet_5(monkeypatch) -> None:
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _blocked_settings(chat_model="claude-sonnet-5", chat_judgement_model="deepseek-flash"),
+    )
+
+    with pytest.raises(LlmConfigError):
+        llm.validate_startup()
+
+
+async def test_mid_conversation_system_kept_in_place(monkeypatch) -> None:
+    """layer 배치(맨 앞 1 + 대화 + 끝 2)에서 끝의 지시문을 버리지 않고 그 자리에 보낸다.
+
+    고치기 전에는 Claude로 보내면 끝의 현재 상태·안전 지시가 경고 로그만 남기고 사라졌다.
+    빈 지시문은 맨 앞과 같은 이유(빈 글 블록은 400)로 넣지 않는다.
+    """
+    messages = _FakeMessages(result=_response(model="claude-haiku-5-5"))
+    _install(monkeypatch, messages)
+    layer_like = [
+        {"role": "system", "content": "앞"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "system", "content": "현재 상태"},
+        {"role": "system", "content": "   "},
+        {"role": "system", "content": "안전 지시"},
+    ]
+
+    await anthropic_sdk.complete(_req(model="claude-haiku-5-5", messages=layer_like), registry.resolve("claude-haiku-5-5"))
+
+    assert messages.captured["system"][0]["text"] == "앞"
+    assert messages.captured["messages"] == [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "system", "content": "현재 상태"},
+        {"role": "system", "content": "안전 지시"},
+    ]
 
 
 def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:

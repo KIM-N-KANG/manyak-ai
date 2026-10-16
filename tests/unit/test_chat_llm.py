@@ -774,6 +774,23 @@ async def test_stream_call_contract(install_llm_sdk) -> None:
     assert captured["max_tokens"] == chat_llm._MAX_TOKENS == 16_384
 
 
+async def test_chat_reasoning_effort_reaches_the_request(install_llm_sdk, monkeypatch) -> None:
+    """CHAT_REASONING_EFFORT를 고르면 본문 호출이 등록부 기본값 대신 그 강도로 나간다."""
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return FakeStream([_FakeChunk("본문")])
+
+    install_llm_sdk(_create)
+    monkeypatch.setattr(chat_llm.settings, "chat_model", "deepseek-flash")
+    monkeypatch.setattr(chat_llm.settings, "chat_reasoning_effort", "low")
+    _ = [e async for e in stream_chat_turn([{"role": "user", "content": "U"}])]
+
+    assert captured["reasoning_effort"] == "low"
+    assert "extra_body" not in captured  # 추론 끄기 문법이 함께 나가지 않는다
+
+
 # ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674) ────────────
 # 모든 테스트가 DeepSeek이면 "그냥 'deepseek'을 적어둔 코드"와 구분되지 않는다.
 # 다른 회사 모델을 하나 끼워 넣어, 값이 모델을 따라 바뀌는지 본다.

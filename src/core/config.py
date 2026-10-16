@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 채팅 본문 프롬프트 종류(KNK-1622). layer는 6레이어 조립, general은 파일 하나 조립이다.
@@ -39,6 +39,27 @@ class Settings(BaseSettings):
     # 주소 기본값은 None — SDK 기본 주소를 쓴다는 뜻이다.
     gemini_api_key: str = ""
     gemini_api_url: str | None = None
+    # 오픈소스 계열 공급자 접속 정보(KNK-1628). OpenAI SDK로 부르므로 주소를 비우면 SDK 기본값인
+    # OpenAI 주소로 키가 나간다 — 그래서 None이 아니라 각 회사의 OpenAI 호환 주소를 기본값으로 둔다.
+    # 키는 원래 이름이 없으면 로컬 .env의 개발용 칸(*_DEV)을 읽는다. 이 셋은 grid search에만 쓰여
+    # 운영 키가 없고, 같은 값을 원래 이름에 또 복사해 두지 않으려는 것이다(사용자 결정).
+    alibaba_api_key: str = Field(
+        default="", repr=False, validation_alias=AliasChoices("ALIBABA_API_KEY", "ALIBABA_API_KEY_DEV")
+    )
+    alibaba_api_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    zai_api_key: str = Field(
+        default="", repr=False, validation_alias=AliasChoices("ZAI_API_KEY", "ZAI_API_KEY_DEV")
+    )
+    zai_api_url: str = "https://api.z.ai/api/paas/v4"
+    moonshot_api_key: str = Field(
+        default="", repr=False, validation_alias=AliasChoices("MOONSHOT_API_KEY", "MOONSHOT_API_KEY_DEV")
+    )
+    moonshot_api_url: str = "https://api.moonshot.ai/v1"
+    # OpenRouter(Qwen 중계). 위 셋과 같은 이유로 회사 주소를 기본값에, 개발용 칸(*_DEV)을 대체 키로 둔다.
+    openrouter_api_key: str = Field(
+        default="", repr=False, validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPENROUTER_API_KEY_DEV")
+    )
+    openrouter_api_url: str = "https://openrouter.ai/api/v1"
     # JEV 판정(KNK-1448). 키 부재는 서버 기동 대신 해당 호출에서 드러낸다.
     typesafe_api_key: str = Field(default="", repr=False)
     typesafe_api_url: str = "https://api.typesafe.ai"
@@ -56,6 +77,10 @@ class Settings(BaseSettings):
     # 채팅 본문 프롬프트를 고른다(KNK-1622). 기본 layer라 env가 없으면 운영 동작은 그대로다.
     # 다른 값이면 Settings 생성에서 검증 오류가 나 서버가 뜨지 않는다.
     chat_prompt: ChatPrompt = "layer"
+    # 채팅 본문의 추론 강도(none·low·medium·high 등). 비우면 등록부에 적힌 그 모델의 기본값을 쓴다 —
+    # env가 없으면 운영 동작은 그대로다. 모델마다 받는 값이 달라, 고른 모델이 받지 않는 값이면
+    # 서버 기동에서 막는다(`registry.validate_selected_models`). 모델 비교 실험용이다.
+    chat_reasoning_effort: str = ""
     # 선택지는 본문과 따로 고른다(KNK-1416). 본문 모델을 바꿔도 별도 API인 선택지가 딸려가지
     # 않게 하려는 것이다. 운영 env가 없으면 이 기본값이 쓰이므로 분리 전 운영과 같은 모델로 둔다.
     chat_choice_model: str = "deepseek-flash"  # 선택지 전용
