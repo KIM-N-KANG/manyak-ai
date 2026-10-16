@@ -37,7 +37,7 @@
   등록부(`registry.py`)가 정본이고, 등록되지 않은 모델은 호출 대상이 될 수 없습니다. 용도별 모델은 env(`STORYLINES_MODEL`·`STORY_COMPILE_MODEL`·`CHAT_MODEL`·`CHAT_CHOICE_MODEL`)로 고르며 현재 값은 `src/core/config.py`를 봅니다.
 - 로컬 전용(git 무시) 디렉터리 — 존재하지만 커밋 대상이 아닙니다. 커밋에 딸려 들어가면 사고입니다:
   - `scripts/*` — 프롬프트 미리보기·실측 스크립트 창고(`test.sh`·`test.ps1`만 예외로 git 추적).
-  - `experiment/` — 프롬프트·모델 변경의 품질·시간·비용을 baseline과 비교하는 실험 환경. 사용법은 `experiment/README.md`.
+  - `evaluation/` — 프롬프트·모델·추론 강도 조합을 같은 입력으로 생성·채점해 비교하는 평가 환경. 사용법은 `evaluation/program.md`.
   - `references/` — 정제되지 않은 참고 원천 자료(크롤·발췌).
   - `.env`·`.env.jira` — 시크릿. 절대 커밋하거나 문서·예시에 값을 옮기지 않습니다.
 - **스킬은 폴더째 gitignore하지 않습니다.** 비밀은 폴더가 아니라 값 단위로 막습니다 — AWS 계정번호 같은 식별자는
@@ -87,9 +87,9 @@
 ### 실측·실험 (로컬 도구)
 - 라이브 LLM 호출은 과금됩니다. 실측을 실행하기 전에 예상 호출 규모를 보고하고 승인받습니다.
   - **예외: 릴리스 배포 QA는 상시 승인입니다**(사용자 결정). `release-deploy` 스킬의 `qa.sh`가 돌리는 라이브 호출은 다시 묻지 않습니다.
-    QA 밖의 실측(프롬프트 A/B, 실험 러너)은 종전대로 승인이 필요합니다.
-- 단발 실측·미리보기는 `scripts/`의 로컬 스크립트를, 조건 비교 실험(프롬프트 A/B, 모델·파라미터 변경)은 `experiment/` 러너를 씁니다.
-  실험은 `experiment/README.md`의 개시 체크리스트를 따르고, 본 실행 전 `--smoke`로 싼 시운전을 먼저 돌립니다.
+    QA 밖의 실측(프롬프트 A/B, 평가)은 종전대로 승인이 필요합니다.
+- 단발 실측·미리보기는 `scripts/`의 로컬 스크립트를, 조건 비교(프롬프트·모델·추론 강도)는 `evaluation/`을 씁니다.
+  평가는 `evaluation/program.md`의 실행 순서를 따르고, 본 실행 전 `--plan`으로 호출 수와 예상 비용을 보고합니다.
 
 ### 테스트
 - 테스트는 도커 격리 환경에서 실행합니다: macOS/Linux는 `scripts/test.sh`, Windows는 `scripts/test.ps1`.
