@@ -8,8 +8,9 @@ import re
 
 import pytest
 
-from src.schemas.story_compile import CharacterSetting
+from src.schemas.story_compile import IMAGE_ART_STYLES, CharacterSetting
 from src.services.image.prompt import (
+    _ART_STYLE_BLOCKS,
     THUMBNAIL_IMAGE_VERSION,
     THUMBNAIL_MAX_CHARACTERS,
     build_thumbnail_prompt,
@@ -88,6 +89,7 @@ def test_build_thumbnail_prompt_with_two_characters() -> None:
     prompt = build_thumbnail_prompt(
         [_char("A", hair="긴 은발"), _char("B", gender="여성", hair="붉은 포니테일")],
         _GENRE,
+        "ANIME",
     )
     assert "<genre>로맨스 판타지, 학원</genre>" in prompt
     assert prompt.count("<character>") == 2
@@ -99,7 +101,7 @@ def test_build_thumbnail_prompt_with_two_characters() -> None:
 
 def test_build_thumbnail_prompt_partial_character_omits_blank_fields() -> None:
     """외형이 일부 빈 인물이 들어가면 빈 칸은 태그째 빠지고 나머지만 실린다."""
-    prompt = build_thumbnail_prompt([_char("A", age="", face="  ")], _GENRE)
+    prompt = build_thumbnail_prompt([_char("A", age="", face="  ")], _GENRE, "ANIME")
     assert prompt.count("<character>") == 1
     assert "<age>" not in prompt
     assert "<face>" not in prompt
@@ -109,20 +111,20 @@ def test_build_thumbnail_prompt_partial_character_omits_blank_fields() -> None:
 
 def test_build_thumbnail_prompt_with_no_input_characters() -> None:
     """인물 카드가 아예 없을 때만 `없음`으로 장르 장면 표지를 만든다."""
-    prompt = build_thumbnail_prompt([], ["무협"])
+    prompt = build_thumbnail_prompt([], ["무협"], "ANIME")
     assert "<genre>무협</genre>" in prompt
     assert re.search(r"<characters>\s*없음\s*</characters>", prompt)
 
 
 def test_build_thumbnail_prompt_excludes_character_name() -> None:
     """인물 이름은 표지 프롬프트에 싣지 않는다(글자를 넣지 않고, 그림에 도움이 안 됨)."""
-    prompt = build_thumbnail_prompt([_char("유니크한이름")], _GENRE)
+    prompt = build_thumbnail_prompt([_char("유니크한이름")], _GENRE, "ANIME")
     assert "유니크한이름" not in prompt
 
 
 def test_build_thumbnail_prompt_keeps_fixed_blocks() -> None:
     """고정 블록(나이 지시·구도·출력)이 템플릿에서 빠지지 않고 들어온다."""
-    prompt = build_thumbnail_prompt([_char()], _GENRE)
+    prompt = build_thumbnail_prompt([_char()], _GENRE, "ANIME")
     for tag in ("<task>", "<character_interpretation>", "<age_direction>", "<composition>", "<output>"):
         assert tag in prompt
     assert prompt.startswith("<image_prompt>")
@@ -132,3 +134,23 @@ def test_build_thumbnail_prompt_keeps_fixed_blocks() -> None:
 def test_thumbnail_template_version_is_positive_int() -> None:
     assert isinstance(THUMBNAIL_IMAGE_VERSION, int)
     assert THUMBNAIL_IMAGE_VERSION >= 1
+
+
+# ── 표지 화풍 연동(KNK-1484) ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("style", IMAGE_ART_STYLES)
+def test_build_thumbnail_prompt_uses_requested_style_block(style) -> None:
+    """표지에는 인물 템플릿의 같은 화풍 블록이 그대로 들어가고, 다른 화풍 블록은 없다."""
+    prompt = build_thumbnail_prompt([_char()], _GENRE, style)
+    assert _ART_STYLE_BLOCKS[style] in prompt
+    for other in IMAGE_ART_STYLES:
+        if other != style:
+            assert _ART_STYLE_BLOCKS[other] not in prompt
+    assert "{{" not in prompt
+
+
+def test_thumbnail_template_has_no_fixed_anime_style() -> None:
+    """표지 본문에 특정 그림체를 고정하는 문장이 남으면 다른 화풍이 애니풍으로 끌려간다(KNK-1524 실측)."""
+    prompt = build_thumbnail_prompt([_char()], _GENRE, "SEMI_REAL")
+    for fixed in ("애니메이션 게임 일러스트로 생성", "현대 일본 애니메이션 작품 표지", "<hair_rendering>", "<outfit_rendering>", "셀 셰이딩을 기본으로"):
+        assert fixed not in prompt, fixed

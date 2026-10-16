@@ -1,17 +1,18 @@
-"""이미지 프롬프트 조립(KNK-939·KNK-1047).
+"""이미지 프롬프트 조립(KNK-939·KNK-1047·KNK-1484).
 
 컴파일 LLM이 생성한 외형 필드(JSON)를 이미지 프롬프트 템플릿에 끼워 완성한다.
 
-- 인물 이미지: prompt/image/CHARACTER-IMAGE-TEMPLATE.md의 <character> 블록에 인물 한 명.
+- 인물 이미지: prompt/image/CHARACTER-IMAGE-TEMPLATE.md — 자연어 `## 본문`에 인물 한 명의
+  외형과, 요청이 고른 화풍의 `## 화풍: <값>` 블록을 끼운다(KNK-1484).
 - 썸네일(표지): prompt/image/THUMBNAIL-IMAGE-TEMPLATE.md의 <characters> 블록에 인물 0~2명.
 
-자리표시자 외의 블록은 전부 고정이다.
+자리표시자 외의 본문은 전부 고정이다.
 """
 
 import re
 from pathlib import Path
 
-from src.schemas.story_compile import CharacterSetting
+from src.schemas.story_compile import IMAGE_ART_STYLES, CharacterSetting
 from src.services.prompt_meta import read_version
 
 # src/services/image/ → 프로젝트 루트까지 3단계 올라간다.
@@ -45,9 +46,47 @@ def _load_template(path: Path) -> str:
     return match.group(1)
 
 
+_SECTION_RE = re.compile(r"^## (.+?)\s*$", re.M)
+_CHARACTER_BODY_SECTION = "본문"
+_CHARACTER_STYLE_PREFIX = "화풍: "
+
+
+def _load_character_template(path: Path) -> tuple[str, dict[str, str]]:
+    """인물 템플릿에서 자연어 본문과 화풍별 블록을 꺼낸다(KNK-1484).
+
+    파일은 `## 본문` 하나와 `## 화풍: <값>` 여러 개로 나뉜다. 본문은 `{{art_style}}` 자리에
+    화풍 블록을 끼워 완성된다. 그림을 만드는 화풍(IMAGE_ART_STYLES) 블록이 하나라도 없으면
+    모듈 로드 시점에 실패시킨다 — 첫 컴파일 요청에서 KeyError로 드러나면 늦다.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError as e:
+        raise RuntimeError(f"이미지 프롬프트 템플릿을 찾을 수 없습니다: {path}") from e
+
+    parts = _SECTION_RE.split(raw)  # [머리말, 제목1, 내용1, 제목2, 내용2, ...]
+    sections = {parts[i]: parts[i + 1].strip() for i in range(1, len(parts) - 1, 2)}
+    body = sections.get(_CHARACTER_BODY_SECTION)
+    if not body:
+        raise RuntimeError(f"인물 이미지 템플릿에 `## {_CHARACTER_BODY_SECTION}` 절이 없습니다: {path}")
+    if "{{art_style}}" not in body:
+        raise RuntimeError(f"인물 이미지 템플릿 본문에 {{{{art_style}}}} 자리표시자가 없습니다: {path}")
+    styles = {
+        title[len(_CHARACTER_STYLE_PREFIX):]: text
+        for title, text in sections.items()
+        if title.startswith(_CHARACTER_STYLE_PREFIX) and text
+    }
+    missing = [style for style in IMAGE_ART_STYLES if style not in styles]
+    if missing:
+        raise RuntimeError(f"인물 이미지 템플릿에 화풍 블록이 없습니다: {missing} ({path})")
+    return body, styles
+
+
 # 모듈 로드 시 한 번 읽는다(컴파일 프롬프트와 같은 패턴).
-_TEMPLATE = _load_template(_TEMPLATE_PATH)
+_TEMPLATE, _ART_STYLE_BLOCKS = _load_character_template(_TEMPLATE_PATH)
 _THUMBNAIL_TEMPLATE = _load_template(_THUMBNAIL_TEMPLATE_PATH)
+# 표지도 요청 화풍으로 그린다(KNK-1484). 화풍 블록은 인물 템플릿 한 곳에서만 정의하고 표지는 그것을 끼운다.
+if "{{art_style}}" not in _THUMBNAIL_TEMPLATE:
+    raise RuntimeError(f"썸네일 템플릿에 {{{{art_style}}}} 자리표시자가 없습니다: {_THUMBNAIL_TEMPLATE_PATH}")
 
 
 def _render(template: str, mapping: dict[str, str]) -> str:
@@ -72,16 +111,20 @@ def has_full_appearance(character: CharacterSetting) -> bool:
     return all(value.strip() for value in appearance)
 
 
-def build_image_prompt(character: CharacterSetting, genre_tags: list[str]) -> str | None:
-    """인물 카드의 외형 필드와 장르 태그로 이미지 프롬프트를 조립한다.
+def build_image_prompt(
+    character: CharacterSetting, genre_tags: list[str], art_style: str
+) -> str | None:
+    """인물 카드의 외형 필드·장르 태그·화풍으로 이미지 프롬프트를 조립한다.
 
-    <character> 블록의 {{...}} 자리표시자를 교체한다.
-    외형 필드가 하나라도 비어 있으면 None을 반환한다(이미지 생성 불가).
+    본문의 {{...}} 자리표시자를 한 번에 교체한다. 화풍 블록도 같은 패스에 끼우므로 블록 안의
+    글자가 다시 치환되지 않는다. 외형 필드가 하나라도 비어 있으면 None을 반환한다(이미지 생성 불가).
+    art_style은 IMAGE_ART_STYLES 중 하나여야 한다 — 스키마가 막지만 코드 실수는 여기서 KeyError로 드러낸다.
     """
     if not has_full_appearance(character):
         return None
 
     mapping = {
+        "art_style": _ART_STYLE_BLOCKS[art_style],
         "genre": ", ".join(genre_tags),
         "gender": character.gender,
         "age": character.age,
@@ -131,14 +174,20 @@ def _render_characters(characters: list[CharacterSetting]) -> str:
     return "\n".join(blocks)
 
 
-def build_thumbnail_prompt(characters: list[CharacterSetting], genre_tags: list[str]) -> str:
-    """장르 태그와 인물 카드 전체로 썸네일(표지) 프롬프트를 조립한다.
+def build_thumbnail_prompt(
+    characters: list[CharacterSetting], genre_tags: list[str], art_style: str
+) -> str:
+    """장르 태그·인물 카드 전체·화풍으로 썸네일(표지) 프롬프트를 조립한다.
+
+    art_style은 인물 이미지와 같은 IMAGE_ART_STYLES 값이다 — 표지와 인물 그림이 한 작품처럼 보여야 한다.
+    NONE이면 호출부(compile_story)가 표지를 만들지 않으므로 여기로 오지 않는다.
 
     표지 인물은 여기서 select_thumbnail_characters로 고른다 — 호출부는 컴파일 인물
     전원을 그대로 넘긴다. 인물 이름은 싣지 않는다(표지에 글자를 넣지 않고, 이름은
     그림에 도움이 안 된다). 인물이 없어도 항상 문자열을 돌려준다(장르 장면 표지).
     """
     mapping = {
+        "art_style": _ART_STYLE_BLOCKS[art_style],
         "genre": ", ".join(genre_tags),
         "characters": _render_characters(select_thumbnail_characters(characters)),
     }

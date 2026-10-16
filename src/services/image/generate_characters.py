@@ -35,10 +35,11 @@ class CharacterImageResult:
 async def _generate_one(
     character: CharacterSetting,
     genre_tags: list[str],
+    art_style: str,
     semaphore: asyncio.Semaphore,
 ) -> CharacterImageResult:
     """인물 하나의 이미지를 생성한다. 실패해도 예외를 던지지 않는다."""
-    prompt = build_image_prompt(character, genre_tags)
+    prompt = build_image_prompt(character, genre_tags, art_style)
     if prompt is None:
         logger.info("이미지 생성 건너뜀: %s (외형 필드 부족)", character.name)
         return CharacterImageResult(name=character.name, error="외형 필드 부족")
@@ -69,17 +70,20 @@ async def _generate_one(
 async def generate_character_images(
     characters: list[CharacterSetting],
     genre_tags: list[str],
+    art_style: str,
 ) -> list[CharacterImageResult]:
     """주변 인물 전원의 이미지를 병렬 생성한다.
 
     반환 순서는 입력 characters 순서와 같다.
     실패한 인물은 image=None, error=사유로 돌아온다.
+    art_style은 요청이 고른 화풍(KNK-1484)이다 — NONE은 호출부(compile_story)가 여기 오기 전에
+    건너뛰므로 이 함수는 그림을 만드는 화풍만 받는다.
     """
     if not characters:
         return []
 
     semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
-    tasks = [asyncio.create_task(_generate_one(c, genre_tags, semaphore)) for c in characters]
+    tasks = [asyncio.create_task(_generate_one(c, genre_tags, art_style, semaphore)) for c in characters]
     try:
         return list(await asyncio.gather(*tasks))
     except Exception:

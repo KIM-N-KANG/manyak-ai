@@ -247,6 +247,16 @@ def test_core_keeps_the_rules_the_speaker_label_parser_relies_on() -> None:
     assert "[character:" not in front
 
 
+def test_core_fixes_narration_ending_to_da() -> None:
+    # 도입 나레이션이 합쇼체여도 지문은 '~다'로 끝나야 한다(KNK-1635). prologue가 매 턴
+    # STORY에 들어가 모델이 '~습니다'를 따라 쓰므로, 그걸 막는 규칙이 앞·뒤 양쪽에 남아 있는지 고정한다.
+    messages = assemble(_request())
+    front, phi = messages[0]["content"], messages[-1]["content"]
+
+    assert "지문 문장은 '~다'로 끝낸다" in front
+    assert "지문은 '~다'로 끝낸다('~습니다'·'~요' 금지)" in phi
+
+
 # ── 헬퍼 ────────────────────────────────────────────────────────────────────
 def test_start_setting_blob_format() -> None:
     start = ChatStartSettings(name="N", prologue="P", start_situation="S")

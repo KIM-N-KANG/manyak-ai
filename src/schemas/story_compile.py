@@ -16,6 +16,38 @@ class LorebookItem(BaseModel):
     content: str
 
 
+# 인물 이미지 화풍(KNK-1484). NONE을 뺀 열 값(IMAGE_ART_STYLES)은 prompt/image/CHARACTER-IMAGE-TEMPLATE.md의
+# `## 화풍: <값>` 블록과 1:1이고, NONE은 인물 이미지를 만들지 않는 선택이다.
+# 제타풍(여성향 반실사)은 경쟁 앱 이름 대신 그림체를 가리키는 SEMI_REAL로 부른다.
+# LIGHT_NOVEL(라노벨풍)은 라이트노벨 삽화·픽시브 계열 애니 일러스트다(제타 랭킹 상위 그림체, KNK-1524).
+# CINEMATIC(시네마틱풍)은 한국 웹소설 표지 일러스트에서 뽑은 고채도·강한 명암·극적 역광의 디지털 페인팅이다.
+# 이름은 출처(웹소설)가 아니라 그림 특징으로 짓는다 — SEMI_REAL을 앱 이름 대신 특징으로 부른 것과 같은 원칙.
+# OIL_PAINTING(유화풍)은 고전 유화 초상화, RETRO(레트로풍)는 1990년대 TV 애니메이션 셀화 그림체다(KNK-1524 멘토링 반영).
+# INK_WASH(수묵화풍)는 흑백 먹 번짐, MOE(모에풍)는 파스텔 데코 모에, SHOJO(순정만화풍)는 펜 선화에 옅은 채색을 얹은
+# 2000년대 순정만화 컬러 원고, WEBTOON(웹툰풍)은 평면 채색의 한국 로맨스 웹툰 그림체다(KNK-1524).
+ART_STYLE_ANIME = "ANIME"
+ART_STYLE_SEMI_REAL = "SEMI_REAL"
+ART_STYLE_LIGHT_NOVEL = "LIGHT_NOVEL"
+ART_STYLE_CINEMATIC = "CINEMATIC"
+ART_STYLE_OIL_PAINTING = "OIL_PAINTING"
+ART_STYLE_RETRO = "RETRO"
+ART_STYLE_INK_WASH = "INK_WASH"
+ART_STYLE_MOE = "MOE"
+ART_STYLE_SHOJO = "SHOJO"
+ART_STYLE_WEBTOON = "WEBTOON"
+ART_STYLE_NONE = "NONE"
+ArtStyle = Literal[
+    "ANIME", "SEMI_REAL", "LIGHT_NOVEL", "CINEMATIC", "OIL_PAINTING", "RETRO",
+    "INK_WASH", "MOE", "SHOJO", "WEBTOON", "NONE",
+]
+# 실제로 인물 이미지를 만드는 화풍 — 템플릿에 이 값들의 화풍 블록이 전부 있어야 한다.
+IMAGE_ART_STYLES: tuple[str, ...] = (
+    ART_STYLE_ANIME, ART_STYLE_SEMI_REAL, ART_STYLE_LIGHT_NOVEL, ART_STYLE_CINEMATIC,
+    ART_STYLE_OIL_PAINTING, ART_STYLE_RETRO, ART_STYLE_INK_WASH, ART_STYLE_MOE, ART_STYLE_SHOJO,
+    ART_STYLE_WEBTOON,
+)
+
+
 class StoryCompileRequest(BaseModel):
     """스토리 컴파일(시점 A-1) 입력 — 희소 입력.
 
@@ -30,6 +62,16 @@ class StoryCompileRequest(BaseModel):
     # 장르 공용 로어북(선택) — 미전달·빈 배열·null이면 프롬프트 미주입, 기존 요청과 하위호환(KNK-422).
     # 명시적 null도 "없음"으로 받도록 | None 허용(빌더는 `lorebooks or []`로 안전 처리).
     lorebooks: list[LorebookItem] | None = Field(default_factory=list)
+    # 인물 이미지 화풍(KNK-1484). 미전달·null이면 ANIME — 이 필드가 생기기 전과 같은 동작이라
+    # 기존 컴파일 요청이 그대로 통한다. NONE이면 인물 이미지를 만들지 않는다(KNK-1257 흡수).
+    # 표지 썸네일도 이 화풍으로 그린다. NONE이면 인물 이미지와 표지를 모두 만들지 않는다(표지는 error=skipped).
+    art_style: ArtStyle = ART_STYLE_ANIME
+
+    @field_validator("art_style", mode="before")
+    @classmethod
+    def _null_art_style_is_default(cls, value: object) -> object:
+        # 백엔드가 "선택 안 함"을 명시적 null로 보내도 기본 화풍으로 받는다(lorebooks와 같은 관례).
+        return ART_STYLE_ANIME if value is None else value
 
     @model_validator(mode="after")
     def _no_duplicate_names(self) -> "StoryCompileRequest":
@@ -252,8 +294,10 @@ class CharacterImageOut(BaseModel):
 # 썸네일 한 장의 이름. 지금은 스토리당 한 장이라 고정이다(KNK-1027 image_name 계약).
 THUMBNAIL_IMAGE_NAME = "썸네일_기본"
 # 썸네일 실패 사유 코드. spec/5-ai-server-spec.md §5-3-3 계약과 같다 — 이 밖의 값은 스키마가 막는다.
-ThumbnailErrorCode = Literal["timeout", "rate_limited", "rejected", "generation_failed"]
-THUMBNAIL_ERROR_CODES: tuple[str, ...] = ("timeout", "rate_limited", "rejected", "generation_failed")
+# skipped는 실패가 아니라 화풍 NONE이라 일부러 만들지 않은 경우다(KNK-1484). 백엔드는 error가 있으면 표지 없이 저장한다.
+ThumbnailErrorCode = Literal["timeout", "rate_limited", "rejected", "generation_failed", "skipped"]
+THUMBNAIL_ERROR_CODES: tuple[str, ...] = ("timeout", "rate_limited", "rejected", "generation_failed", "skipped")
+THUMBNAIL_SKIPPED = "skipped"
 
 
 class ThumbnailImageOut(BaseModel):

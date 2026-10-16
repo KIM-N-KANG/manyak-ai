@@ -19,6 +19,7 @@ from src.services.prompt import (
     COMPILE_GEMINI_VERSION,
     build_compile_prompt,
     _COMPILE_GEMINI_SYSTEM,
+    _COMPILE_SYSTEM,
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -436,3 +437,19 @@ def test_appearance_fields_default_empty() -> None:
     for c in parsed.prompt_settings.character_setting:
         assert c.age == ""
         assert c.body == ""
+
+
+def test_compile_prompt_fixes_prologue_ending_to_da() -> None:
+    # 스토리 상세 '주요 내용'(meta.description)도 '~습니다'로 나와 규칙 대상에 포함(KNK-1635)
+    rule = next(line for line in _COMPILE_SYSTEM.splitlines() if line.startswith("- `meta.one_line_intro`·"))
+    assert "`meta.one_line_intro`·`meta.description`·`start.prologue`·`start.start_situation`의 서술 문장은 웹소설 지문처럼 '~다'로 끝낸다" in rule
+    assert "'~습니다'·'~요'로 끝내지 않는다" in rule
+    assert "`meta.description`" in rule
+
+
+def test_gemini_compile_prompt_fixes_prologue_ending_to_da() -> None:
+    # 스토리 상세 '주요 내용'(meta.description)도 '~습니다'로 나와 규칙 대상에 포함(KNK-1635)
+    rule = next(line for line in _COMPILE_GEMINI_SYSTEM.splitlines() if line.startswith("5. "))
+    assert "화면에 그대로 보이는 글(`meta.one_line_intro`·`meta.description`·`start.prologue`·`start.start_situation`)은 독자에게 들려주는 낭독·해설이 아니라 웹소설 본문이다. 서술 문장은 '~다'로 끝낸다" in rule
+    assert "도입 나레이션" not in _COMPILE_GEMINI_SYSTEM
+    assert "`meta.description`" in rule

@@ -8,10 +8,10 @@ from src.services import story_llm
 def _no_image_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     """일반 단위 테스트에서는 실제 이미지 API를 호출하지 않는다(KNK-940·KNK-1047)."""
 
-    async def fake_images(characters, genre_tags):
+    async def fake_images(characters, genre_tags, art_style):
         return []
 
-    async def fake_thumbnail(characters, genre_tags):
+    async def fake_thumbnail(characters, genre_tags, art_style):
         return ThumbnailImageOut(image_name="썸네일_기본", error="generation_failed")
 
     monkeypatch.setattr(story_llm, "_generate_character_images_safe", fake_images)

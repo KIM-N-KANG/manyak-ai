@@ -29,8 +29,10 @@ from src.core.sentry import (
 from src.schemas.response_meta import StoryResponseMeta
 from src.schemas.story import CharacterInput, StoryItem, StorylinesRequest, StorylinesResponse
 from src.schemas.story_compile import (
+    ART_STYLE_NONE,
     THUMBNAIL_ERROR_CODES,
     THUMBNAIL_IMAGE_NAME,
+    THUMBNAIL_SKIPPED,
     CharacterDescription,
     CharacterImageOut,
     CharacterSetting,
@@ -922,16 +924,18 @@ def _default_image_name(character_name: str) -> str:
 async def _generate_character_images_safe(
     characters: list,
     genre_tags: list[str],
+    art_style: str,
 ) -> list[CharacterImageOut]:
     """인물별 이미지를 생성해 base64로 변환한다. 전체 실패해도 예외를 던지지 않는다.
 
     이미지 생성은 컴파일의 부가물이라, 여기서 터진 예외가 컴파일 200을 502로
     만들면 안 된다. 모든 예외를 잡아 빈 배열로 폴백한다.
+    art_style은 요청이 고른 화풍이다(KNK-1484). NONE은 호출부가 이 함수를 부르지 않는다.
     """
     from src.services.image.generate_characters import generate_character_images
 
     try:
-        results = await generate_character_images(characters, genre_tags)
+        results = await generate_character_images(characters, genre_tags, art_style)
 
         images: list[CharacterImageOut] = []
         for r in results:
@@ -968,6 +972,7 @@ async def _generate_character_images_safe(
 async def _generate_thumbnail_image_safe(
     characters: list[CharacterSetting],
     genre_tags: list[str],
+    art_style: str,
 ) -> ThumbnailImageOut:
     """썸네일 한 장을 생성해 base64로 변환한다. 취소(CancelledError)를 빼면 예외를 던지지 않는다(KNK-1047).
 
@@ -979,7 +984,7 @@ async def _generate_thumbnail_image_safe(
 
     start = time.monotonic()
     try:
-        result = await generate_thumbnail_image(characters, genre_tags)
+        result = await generate_thumbnail_image(characters, genre_tags, art_style)
         if result.image is not None:
             return ThumbnailImageOut(
                 image_name=THUMBNAIL_IMAGE_NAME,
@@ -1192,10 +1197,20 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     # 동시에 돌리므로 대기 시간은 둘 중 오래 걸리는 쪽만큼이다.
     # 전제: 두 함수 모두 예외를 삼키고 결과 객체로 돌려준다(취소는 예외). 한쪽이 이 전제를
     # 어기고 예외를 던지면 gather가 끊기고 다른 쪽 호출은 아무도 안 기다리는 채로 끝까지 돈다.
-    character_images, thumbnail_image = await asyncio.gather(
-        _generate_character_images_safe(spec.prompt_settings.character_setting, request.genre_tags),
-        _generate_thumbnail_image_safe(spec.prompt_settings.character_setting, request.genre_tags),
-    )
+    characters = spec.prompt_settings.character_setting
+    if request.art_style == ART_STYLE_NONE:
+        # 화풍 "없음"(KNK-1484·KNK-1257 흡수): 인물 이미지와 표지 모두 호출하지 않는다.
+        # 빈 배열은 백엔드 계약상 "매칭할 인물 이미지가 없음"이라 인물 0명과 같은 길을 탄다. 표지는 필수 필드라
+        # 객체는 내려가되 error=skipped다 — 백엔드는 error가 있으면 표지 없이 저장한다(실패 처리와 같은 길).
+        logger.info("인물 이미지·표지 생략: art_style=NONE")
+        character_images: list[CharacterImageOut] = []
+        thumbnail_image = ThumbnailImageOut(image_name=THUMBNAIL_IMAGE_NAME, error=THUMBNAIL_SKIPPED)
+    else:
+        # 표지도 요청 화풍으로 그린다(KNK-1484) — 표지와 인물 이미지가 한 작품처럼 보여야 한다.
+        character_images, thumbnail_image = await asyncio.gather(
+            _generate_character_images_safe(characters, request.genre_tags, request.art_style),
+            _generate_thumbnail_image_safe(characters, request.genre_tags, request.art_style),
+        )
 
     # 썸네일은 필수 응답 필드라 응답을 만들 때 실제 결과를 넘긴다(임시값 없음).
     response = spec_to_response(spec, thumbnail_image=thumbnail_image)
