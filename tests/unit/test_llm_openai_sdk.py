@@ -763,6 +763,14 @@ async def test_stream_finish_reason_error_is_a_failure(monkeypatch) -> None:
     assert not any(isinstance(ev, StreamCompleted) for ev in seen)
 
 
+async def test_complete_finish_reason_error_is_a_failure(monkeypatch) -> None:
+    """단발 호출도 `finish_reason: "error"`면 실패다 — 빈 본문을 정상 결과로 돌려주지 않는다."""
+    _install(monkeypatch, _FakeCompletions(result=_response(content="", finish_reason="error")))
+
+    with pytest.raises(LlmUnavailable):
+        await openai_sdk.complete(_req(model="qwen3.8-flash"), registry.resolve("qwen3.8-flash"))
+
+
 async def test_stream_repeated_finish_reason_in_usage_chunk_completes_once(monkeypatch) -> None:
     """OpenRouter는 usage 조각에 finish_reason을 한 번 더 싣는다 — 종료는 여전히 한 번이다."""
     chunks = [_chunk("가"), _chunk(finish_reason="stop"), _chunk(finish_reason="stop", usage=_usage(10, 1, 0))]

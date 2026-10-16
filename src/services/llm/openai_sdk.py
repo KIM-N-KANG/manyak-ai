@@ -381,6 +381,13 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
             response = await create(**kwargs)
         except OpenAIError as exc:
             raise _translate(exc, resolved) from exc
+        finish_reason = _finish_reason_of(response)
+        if finish_reason == "error":
+            # OpenRouter는 공급자 실패를 HTTP 200 안의 `finish_reason: "error"`로 알린다(`stream`과 같은
+            # 이유). 그대로 두면 빈 본문이 정상으로 돌아가 호출부가 "형식 오류"로 잘못 기록한다.
+            raise LlmUnavailable(
+                "응답이 finish_reason=error로 끝났습니다.", provider=resolved.provider, model=resolved.model
+            )
         return LlmResult(
             text=_text_of(response),
             # 응답이 돌려준 실제 모델명. 비어 오면 요청에 쓴 이름으로 채운다 — 빈 값을 올리면
@@ -388,7 +395,7 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
             model=getattr(response, "model", None) or req.model,
             provider=resolved.provider,
             usage=_usage_of(response, resolved),
-            finish_reason=_finish_reason_of(response),
+            finish_reason=finish_reason,
         )
 
 
