@@ -13,8 +13,8 @@ AI가 발행하는 SSE 이벤트는 token·character_image·completed·error·pi
 started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed의 ai_output·character_images·meta는
 와이어 계약 키(aiOutput·characterImages·camelCase)로 직렬화한다(by_alias=True). completed의 choices는 하위호환 빈 배열 고정 —
 백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3)이라 선행 배포에 안전하다.
-판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 판정 제거(KNK-1626) 뒤
-항상 null이다. 백엔드 계약을 바꾸지 않으려고 필드는 남겨 둔다.
+판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 판정 제거(KNK-1626)와 함께
+completed에서 뺐다. 백엔드는 없는 필드를 null로 읽어 동작이 같다.
 """
 
 import json

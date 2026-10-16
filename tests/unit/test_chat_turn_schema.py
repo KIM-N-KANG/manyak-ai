@@ -13,7 +13,6 @@ from src.schemas.chat_turn import (
     CharacterImageData,
     ChatTurnRequest,
     CompletedData,
-    TargetMainEventOut,
 )
 
 # 기존 계약(재료 필드 없음)의 최소 유효 페이로드 — 와이어(snake_case) 형태.
@@ -256,27 +255,13 @@ def test_ending_candidate_has_no_min_turns_field() -> None:
     assert "min_turns" not in type(req.endings[0]).model_fields
 
 
-# ── completed 판정 메타 직렬화 (KNK-483) ────────────────────────────────────
-def test_completed_judgement_meta_defaults_to_null_camel_case() -> None:
-    # 재료 없는 턴(현행 트래픽)에서는 3필드가 camelCase 키의 null로 나가야 한다.
+# ── completed에 판정 메타가 없다 (KNK-1626) ─────────────────────────────────
+def test_completed_has_no_judgement_fields() -> None:
     payload = CompletedData(ai_output="본문").model_dump(by_alias=True)
     assert payload["aiOutput"] == "본문"
-    assert payload["targetMainEvent"] is None
-    assert payload["occurredMainEventName"] is None
-    assert payload["endingName"] is None
+    for key in ("targetMainEvent", "occurredMainEventName", "endingName"):
+        assert key not in payload
     assert payload["characterImages"] == []
-
-
-def test_completed_judgement_meta_serializes_camel_case() -> None:
-    payload = CompletedData(
-        ai_output="본문",
-        target_main_event=TargetMainEventOut(name="반란의 서막", progress_turns=4),
-        occurred_main_event_name="선왕의 죽음",
-        ending_name="왕좌를 되찾다",
-    ).model_dump(by_alias=True)
-    assert payload["targetMainEvent"] == {"name": "반란의 서막", "progressTurns": 4}
-    assert payload["occurredMainEventName"] == "선왕의 죽음"
-    assert payload["endingName"] == "왕좌를 되찾다"
 
 
 def test_character_images_serialize_in_display_order_with_duplicates() -> None:

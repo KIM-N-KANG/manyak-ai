@@ -97,9 +97,7 @@ class MainEvent(BaseModel):
 class TargetMainEvent(BaseModel):
     """목표 사건 상태 — 이 채팅이 현재 향해 진행 중인 주요 사건(채팅당 최대 1개).
 
-    AI는 무상태(D2)라 직전 턴 completed 메타(`targetMainEvent`)를 백엔드가
-    저장했다가 매 턴 되돌려 싣는다. progress_turns는 목표를 향해 진행한 턴 수이며
-    이탈 턴에는 동결된다(증가 판정도 AI 몫 — §5-3-4 진행 규칙).
+    본문 프롬프트 재료로만 쓴다. 판정 제거(KNK-1626) 뒤로 AI는 목표 상태를 돌려주지 않는다.
     """
 
     name: str
@@ -286,16 +284,6 @@ class CharacterImageData(BaseModel):
     image_url: str = Field(serialization_alias="imageUrl")
 
 
-class TargetMainEventOut(BaseModel):
-    """completed 판정 메타의 목표 사건 상태. 와이어는 camelCase.
-
-    판정 제거(KNK-1626) 뒤로는 채워지지 않는다. 백엔드 계약을 바꾸지 않으려고 남겨 둔다.
-    """
-
-    name: str
-    progress_turns: int = Field(ge=0, serialization_alias="progressTurns")
-
-
 class CompletedData(BaseModel):
     """event: completed — 한 턴 응답 완료.
 
@@ -320,16 +308,8 @@ class CompletedData(BaseModel):
     )
     # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
     meta: ChatResponseMeta | None = None
-    # ── 주요 사건·엔딩 판정 메타 (KNK-483, §5-3-4·D11) ─────────────────────────
-    # 판정 제거(KNK-1626) 뒤로 셋 다 항상 null이다. 백엔드 계약을 바꾸지 않으려고 필드는
-    # 남겨 둔다. 백엔드는 null을 받으면 목표를 해제하고 사건 완결·엔딩 도달을 기록하지 않는다.
-    target_main_event: TargetMainEventOut | None = Field(
-        default=None, serialization_alias="targetMainEvent"
-    )
-    occurred_main_event_name: str | None = Field(
-        default=None, serialization_alias="occurredMainEventName"
-    )
-    ending_name: str | None = Field(default=None, serialization_alias="endingName")
+    # 판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 판정 제거(KNK-1626)와
+    # 함께 뺐다. 백엔드 DTO는 세 필드가 없으면 null로 읽어(ignoreUnknown·기본값 null) 동작이 같다.
 
 
 class ErrorData(BaseModel):

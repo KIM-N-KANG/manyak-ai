@@ -171,10 +171,9 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     assert meta["outputTokenCount"] is None
     assert "input_token_count" not in body  # snake_case 아님(chat은 camel)
 
-    # 판정은 제거됐다(KNK-1626). 필드는 계약상 남아 항상 null이고, JUDGEMENT 버전 키는 없다.
-    assert completed["targetMainEvent"] is None
-    assert completed["occurredMainEventName"] is None
-    assert completed["endingName"] is None
+    # 판정은 제거됐다(KNK-1626). 판정 필드도, JUDGEMENT 버전 키도 없다.
+    for key in ("targetMainEvent", "occurredMainEventName", "endingName"):
+        assert key not in completed
     assert "JUDGEMENT" not in meta["promptVersions"]
 
 
@@ -280,10 +279,10 @@ async def test_chat_turn_sse_error(client, mock_events) -> None:
     assert _data_of(resp.text, "error") == {"code": "LLM_ERROR", "message": "실패"}
 
 
-async def test_chat_turn_leaves_judgement_fields_null_even_with_materials(
+async def test_chat_turn_sends_no_judgement_fields_even_with_materials(
     client, mock_events
 ) -> None:
-    # 판정 제거(KNK-1626) 회귀: 사건·엔딩 재료와 진행 중 목표가 실려도 판정 3필드는 null이고,
+    # 판정 제거(KNK-1626) 회귀: 사건·엔딩 재료와 진행 중 목표가 실려도 판정 3필드가 없고,
     # meta 토큰은 본문 호출 값만 싣는다(판정 토큰 합산 없음).
     mock_events([{"event": "completed", "ai_output": "장면", "model": "deepseek-flash",
                   "provider": "deepseek", "input_tokens": 10, "output_tokens": 3}])
@@ -302,9 +301,8 @@ async def test_chat_turn_leaves_judgement_fields_null_even_with_materials(
 
     assert resp.status_code == 200
     completed = _data_of(resp.text, "completed")
-    assert completed["targetMainEvent"] is None
-    assert completed["occurredMainEventName"] is None
-    assert completed["endingName"] is None
+    for key in ("targetMainEvent", "occurredMainEventName", "endingName"):
+        assert key not in completed
     meta = completed["meta"]
     assert "JUDGEMENT" not in meta["promptVersions"]
     assert meta["inputTokenCount"] == 10
