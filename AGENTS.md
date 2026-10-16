@@ -1,7 +1,6 @@
 # 기본 지침
 
-이 파일이 프로젝트 지침의 정본입니다. `CLAUDE.md`는 이 파일을 가리키는 심링크라 Claude Code와
-Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 고칩니다.
+이 파일이 프로젝트 지침의 정본입니다. 지침을 바꿀 때는 이 파일만 고칩니다.
 
 작업을 시작할 때 형제 하네스 레포지토리의 운영 규칙 `../knk-harness/AGENTS.md`를 먼저 확인합니다
 (Claude Code는 SessionStart 훅(`.claude/settings.json`)이 자동 로드하고, Codex는 직접 엽니다).
@@ -70,7 +69,7 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
   ADR(`docs/adr/3-ai-server-adr.md`)에 반영합니다.
 
 ### 스킬 배치(.agents/skills)
-- 스킬 정본은 `.agents/skills/`이고, `.claude/skills/*`는 그것을 가리키는 심링크입니다(한 소스, 두 에이전트). `CLAUDE.md`→`AGENTS.md`도 같은 방식입니다.
+- 스킬 정본은 `.agents/skills/`이고, `.claude/skills/*`는 그것을 가리키는 심링크입니다(한 소스, 두 에이전트).
 - 배치 규칙 상세는 스킬을 만들거나 고칠 때 `.agents/skills/README.md`를 엽니다.
 - 하네스 공용 스킬은 복사하지도 수정하지도 않습니다(하네스 수정 금지 규칙과 동일).
 - `daily-sentry-report` 스킬은 claude.ai 클라우드 루틴이 매일 돌려 슬랙에 올립니다. 루틴은 **`dev`에 머지된 스킬**을 읽습니다 —
