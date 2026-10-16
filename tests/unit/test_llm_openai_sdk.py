@@ -373,6 +373,116 @@ async def test_registry_settings_are_not_mutated(monkeypatch) -> None:
     assert completions2.captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+# ── 오픈소스 계열 공급자 문법(KNK-1628) ─────────────────────────────────────
+@pytest.mark.parametrize(
+    ("model", "extra_body", "reasoning_effort"),
+    [
+        # Qwen은 OpenRouter 문법(reasoning 객체)이다. max는 끌 수 없어 기본값이 low다.
+        ("qwen3.8-max", {"reasoning": {"effort": "low"}}, None),
+        ("qwen3.8-flash", {"reasoning": {"effort": "none"}}, None),
+        ("glm-5.2", {"thinking": {"type": "disabled"}}, None),
+        # Kimi는 끌 수 없어 등록부 기본값이 가장 약한 강도다.
+        ("kimi-k3", None, "low"),
+    ],
+)
+def test_open_model_default_thinking_syntax(
+    model: str, extra_body: dict | None, reasoning_effort: str | None
+) -> None:
+    """등록부 기본값을 공급자마다 다른 끄기 문법으로 옮긴다."""
+    body = openai_sdk._build_kwargs(_req(model=model), registry.resolve(model))
+
+    assert body.get("extra_body") == extra_body
+    assert body.get("reasoning_effort") == reasoning_effort
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "expected"),
+    [
+        # none은 끄기 문법으로, 나머지는 최상위 reasoning_effort로 나간다. OpenRouter만 둘 다
+        # reasoning 객체 하나로 보낸다.
+        ("qwen3.8-flash", "none", {"reasoning": {"effort": "none"}}),
+        ("qwen3.8-flash", "xhigh", {"reasoning": {"effort": "xhigh"}}),
+        ("qwen3.8-max", "high", {"reasoning": {"effort": "high"}}),
+        ("deepseek-flash", "none", {"thinking": {"type": "disabled"}}),
+        ("deepseek-flash", "low", {"reasoning_effort": "low"}),
+        ("glm-5.2", "none", {"thinking": {"type": "disabled"}}),
+        ("glm-5.2", "max", {"reasoning_effort": "max"}),
+        ("kimi-k3", "max", {"reasoning_effort": "max"}),
+    ],
+)
+def test_open_model_effort_override(model: str, effort: str, expected: dict) -> None:
+    """평가가 요청마다 강도를 바꿔 부를 때(`LlmRequest.reasoning_effort`)의 최종 전송 본문."""
+    body = llm.request_body(_req(model=model, reasoning_effort=effort))
+
+    thinking_keys = {"enable_thinking", "thinking", "reasoning_effort", "reasoning"}
+    assert {key: body[key] for key in thinking_keys if key in body} == expected
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [
+        ("glm-5.2", "low"),
+        ("kimi-k3", "medium"),
+        ("deepseek-flash", "medium"),
+        # 회사가 아예 받지 않는 강도도 같은 자리에서 막힌다 — 추론을 끌 수 없는 모델의 none.
+        ("qwen3.8-max", "none"),
+        ("gpt-6.1-sol", "none"),
+        ("gemini-3.8-flash", "none"),
+        ("claude-opus-5-5", "none"),
+    ],
+)
+def test_open_model_rejects_alias_efforts(model: str, effort: str) -> None:
+    """공급자가 다른 값으로 바꿔 받거나 아예 받지 않는 강도는 등록하지 않았다.
+
+    비슷한 값으로 바꿔 보내면 결과표에 적힌 설정과 실제로 돈 설정이 달라진다.
+    """
+    with pytest.raises(LlmConfigError):
+        llm.request_body(_req(model=model, reasoning_effort=effort))
+
+
+def test_kimi_rejects_thinking_off() -> None:
+    """Kimi K3는 추론을 끌 수 없다 — 끄라는 설정을 조용히 넘기지 않고 거부한다."""
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.request_body(_req(model="kimi-k3", reasoning_effort="none"))
+
+    assert "kimi-k3" in str(exc_info.value)
+
+
+def test_kimi_uses_max_completion_tokens_and_drops_temperature() -> None:
+    """Kimi는 max_tokens가 deprecated이고 temperature가 1.0 고정이라 보내면 오류다."""
+    body = openai_sdk._build_kwargs(
+        _req(model="kimi-k3", max_tokens=8000, temperature=0.75), registry.resolve("kimi-k3")
+    )
+
+    assert body["max_completion_tokens"] == 8000
+    assert "max_tokens" not in body
+    assert "temperature" not in body
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-max", "glm-5.2"])
+def test_other_open_models_use_max_tokens(model: str) -> None:
+    body = openai_sdk._build_kwargs(_req(model=model, max_tokens=8000), registry.resolve(model))
+
+    assert body["max_tokens"] == 8000
+    assert "max_completion_tokens" not in body
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-max", "glm-5.2", "kimi-k3"])
+async def test_open_model_usage_reads_cache_details(monkeypatch, model: str) -> None:
+    """DeepSeek 말고는 캐시 적중을 prompt_tokens_details에 준다.
+
+    고치기 전에는 OpenAI가 아니면 전부 DeepSeek 필드(prompt_cache_hit_tokens)로 읽어, 새 공급자의
+    캐시 사용량이 None으로 비고 비용이 실제보다 크게 잡혔다(KNK-1628).
+    """
+    response = _response(model=model, usage=_openai_usage(100, 20, 64, 16))
+    _install(monkeypatch, _FakeCompletions(result=response))
+
+    usage = (await openai_sdk.complete(_req(model=model), registry.resolve(model))).usage
+
+    assert usage.input_tokens == 100
+    assert usage.cache_read_input_tokens == 64
+
+
 # ── 응답 해석 ────────────────────────────────────────────────────────────────
 async def test_complete_maps_result_fields(monkeypatch) -> None:
     _install(monkeypatch, _FakeCompletions(result=_response(content="안녕", finish_reason="stop")))
@@ -635,6 +745,41 @@ async def test_stream_error_after_deltas_becomes_neutral_error(monkeypatch) -> N
             seen.append(ev)
 
     assert seen == [TextDelta("가")]  # 이미 보낸 조각은 그대로 나갔다
+
+
+async def test_stream_finish_reason_error_is_a_failure(monkeypatch) -> None:
+    """OpenRouter는 스트림 도중 실패를 HTTP 200 안의 `finish_reason: "error"`로 알린다.
+
+    고치기 전에는 정상 완료로 끝나 빈(또는 잘린) 본문이 저장됐다.
+    """
+    chunks = [_chunk("가"), _chunk(finish_reason="error"), _chunk(usage=_usage(10, 1, 0))]
+    _install(monkeypatch, _FakeCompletions(result=_agen(chunks)))
+
+    seen: list = []
+    with pytest.raises(LlmUnavailable):
+        async for ev in openai_sdk.stream(_req(model="qwen3.8-flash"), registry.resolve("qwen3.8-flash")):
+            seen.append(ev)
+
+    assert not any(isinstance(ev, StreamCompleted) for ev in seen)
+
+
+async def test_complete_finish_reason_error_is_a_failure(monkeypatch) -> None:
+    """단발 호출도 `finish_reason: "error"`면 실패다 — 빈 본문을 정상 결과로 돌려주지 않는다."""
+    _install(monkeypatch, _FakeCompletions(result=_response(content="", finish_reason="error")))
+
+    with pytest.raises(LlmUnavailable):
+        await openai_sdk.complete(_req(model="qwen3.8-flash"), registry.resolve("qwen3.8-flash"))
+
+
+async def test_stream_repeated_finish_reason_in_usage_chunk_completes_once(monkeypatch) -> None:
+    """OpenRouter는 usage 조각에 finish_reason을 한 번 더 싣는다 — 종료는 여전히 한 번이다."""
+    chunks = [_chunk("가"), _chunk(finish_reason="stop"), _chunk(finish_reason="stop", usage=_usage(10, 1, 0))]
+    _install(monkeypatch, _FakeCompletions(result=_agen(chunks)))
+
+    events = [ev async for ev in openai_sdk.stream(_req(model="qwen3.8-flash"), registry.resolve("qwen3.8-flash"))]
+
+    assert [type(ev) for ev in events] == [TextDelta, StreamCompleted]
+    assert events[-1].finish_reason == "stop"
 
 
 async def test_stream_failure_before_first_chunk(monkeypatch) -> None:

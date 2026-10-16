@@ -527,3 +527,113 @@ def test_observe_generation_survives_update_failure(monkeypatch, caplog) -> None
         with observe_generation("이미지 생성:인물", model="m") as gen:
             gen.finish(usage_details={"input": 1})  # 예외가 새면 실패
     assert any("생성 관측 기록 실패" in r.message for r in caplog.records)
+
+
+# ── start_stream_generation: 스트리밍 호출의 수동 관측(KNK-1627) ───────────────
+class _FakeStreamSpan:
+    def __init__(self, update_error: Exception | None = None) -> None:
+        self.updates: list[dict] = []
+        self.end_calls = 0
+        self._update_error = update_error
+
+    def update(self, **fields) -> None:
+        if self._update_error is not None:
+            raise self._update_error
+        self.updates.append(fields)
+
+    def end(self) -> None:
+        self.end_calls += 1
+
+
+def _install_fake_stream_client(monkeypatch, span, captured: dict) -> None:
+    class _FakeClient:
+        def start_observation(self, **kwargs):
+            captured.update(kwargs)
+            return span
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", lambda: _FakeClient(), raising=False)
+
+
+def test_stream_generation_noop_when_disabled(monkeypatch) -> None:
+    """비활성이면 SDK를 건드리지 않고, 핸들의 모든 닫기가 안전하다."""
+    monkeypatch.setattr(lf._state, "enabled", False)
+    monkeypatch.setattr(
+        langfuse_pkg, "get_client", lambda: (_ for _ in ()).throw(AssertionError("불렀다")),
+        raising=False,
+    )
+
+    handle = lf.start_stream_generation("g", model="m")
+    handle.finish(output="x")
+    handle.fail(RuntimeError("x"))
+    handle.cancel()
+
+
+def test_stream_generation_opens_without_becoming_current(monkeypatch) -> None:
+    """관측은 start_observation으로 연다 — 현재 관측으로 올리면 yield를 넘나들며 부모가 틀어진다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+    span, captured = _FakeStreamSpan(), {}
+    _install_fake_stream_client(monkeypatch, span, captured)
+
+    handle = lf.start_stream_generation(
+        "Anthropic-generation", model="m", model_parameters={"max_tokens": 1}, input_data=["msg"]
+    )
+    handle.finish(output="본문", usage_details={"input": 1, "output": 2})
+
+    assert captured == {
+        "name": "Anthropic-generation",
+        "as_type": "generation",
+        "model": "m",
+        "model_parameters": {"max_tokens": 1},
+        "input": ["msg"],
+    }
+    assert span.updates == [{"output": "본문", "usage_details": {"input": 1, "output": 2}}]
+    assert span.end_calls == 1
+
+
+def test_stream_generation_ends_only_once(monkeypatch) -> None:
+    """두 번째 닫기는 무시한다 — 취소 뒤 정리 경로가 다시 닫아도 기록이 겹치지 않는다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+    span = _FakeStreamSpan()
+    _install_fake_stream_client(monkeypatch, span, {})
+
+    handle = lf.start_stream_generation("g", model="m")
+    handle.cancel(output="부분")
+    handle.finish(output="전체")
+
+    assert span.updates == [{"level": "WARNING", "status_message": "cancelled", "output": "부분"}]
+    assert span.end_calls == 1
+
+
+def test_stream_generation_fail_records_type_only(monkeypatch) -> None:
+    """실패는 ERROR와 예외 타입 이름만 남긴다 — 공급자 메시지에 입력 원문이 섞일 수 있다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+    span = _FakeStreamSpan()
+    _install_fake_stream_client(monkeypatch, span, {})
+
+    lf.start_stream_generation("g", model="m").fail(ValueError("사용자 입력 원문"))
+
+    assert span.updates == [{"level": "ERROR", "status_message": "ValueError"}]
+
+
+def test_stream_generation_still_ends_when_update_fails(monkeypatch) -> None:
+    """기록(update)이 실패해도 관측은 닫고, 예외는 밖으로 새지 않는다."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+    span = _FakeStreamSpan(update_error=RuntimeError("sdk"))
+    _install_fake_stream_client(monkeypatch, span, {})
+
+    lf.start_stream_generation("g", model="m").finish(output="x")
+
+    assert span.end_calls == 1
+
+
+def test_stream_generation_start_failure_falls_back_to_noop(monkeypatch) -> None:
+    """SDK 시작이 실패해도 본작업은 진행된다(아무것도 안 하는 핸들)."""
+    monkeypatch.setattr(lf._state, "enabled", True)
+
+    class _Broken:
+        def start_observation(self, **kwargs):
+            raise RuntimeError("sdk down")
+
+    monkeypatch.setattr(langfuse_pkg, "get_client", lambda: _Broken(), raising=False)
+
+    lf.start_stream_generation("g", model="m").finish(output="x")  # 예외가 나면 실패다

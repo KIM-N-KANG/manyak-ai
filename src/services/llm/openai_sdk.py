@@ -1,7 +1,7 @@
-"""OpenAI SDK 어댑터 — DeepSeek·GPT 공용(KNK-671).
+"""OpenAI SDK 어댑터 — DeepSeek·GPT·Qwen·GLM·Kimi 공용(KNK-671, KNK-1628).
 
-어댑터는 **SDK 계열 단위**다. DeepSeek과 GPT는 같은 OpenAI SDK로 부르고 주소·키만 다르므로
-이 파일 하나가 둘을 담당한다. 하는 일은 셋이다.
+어댑터는 **SDK 계열 단위**다. 이 회사들은 모두 OpenAI 호환 주소를 내줘 같은 OpenAI SDK로 부르고
+주소·키만 다르므로 이 파일 하나가 전부를 담당한다. 하는 일은 셋이다.
 
 1. 등록부의 **뜻**(추론 모드·temperature 수용)을 이 SDK의 **문법**으로 옮긴다.
 2. 응답에서 본문·모델명·토큰을 꺼내 `LlmResult`로 만든다. 응답 껍데기가 깨져도 예외를
@@ -26,8 +26,12 @@ from openai import (
 
 from src.core.tracing import start_span
 from src.services.llm.base import (
+    PROVIDER_ALIBABA,
     PROVIDER_DEEPSEEK,
+    PROVIDER_MOONSHOT,
     PROVIDER_OPENAI,
+    PROVIDER_OPENROUTER,
+    PROVIDER_ZAI,
     STRUCTURED_OUTPUT_JSON_OBJECT,
     STRUCTURED_OUTPUT_JSON_SCHEMA,
     LlmBadRequest,
@@ -150,6 +154,49 @@ def _provider_kwargs(resolved: ResolvedModel) -> dict[str, object]:
         if resolved.reasoning_effort is not None:
             return {"reasoning_effort": resolved.reasoning_effort}
         return {} if resolved.use_thinking else {"reasoning_effort": "none"}
+    if resolved.provider == PROVIDER_ALIBABA:
+        # Qwen은 추론이 기본이라 끌 때 extra_body에 싣는다. 켤 때 강도는 최상위 인자다 — 문서상
+        # reasoning_effort와 thinking_budget을 함께 넣으면 오류라 강도만 쓴다.
+        if not resolved.use_thinking:
+            return {"extra_body": {"enable_thinking": False}}
+        return (
+            {}
+            if resolved.reasoning_effort is None
+            else {"reasoning_effort": resolved.reasoning_effort}
+        )
+    if resolved.provider == PROVIDER_OPENROUTER:
+        # OpenRouter는 추론을 `reasoning` 객체 하나로 다룬다. 최상위 `reasoning_effort`는 모델에 따라
+        # 조용히 무시되므로(qwen3.8-flash의 지원 인자 목록에 없다) 이 객체만 쓴다. 기본이 "추론 켜짐"인
+        # 모델이 있어 끌 때도 none을 명시한다. 강도 없이 켜기는 등록부가 허용하지 않는다 — 그러면
+        # 모델 기본값(qwen3.8-max는 가장 비싼 xhigh)으로 돌기 때문이다.
+        if not resolved.use_thinking:
+            return {"extra_body": {"reasoning": {"effort": "none"}}}
+        if resolved.reasoning_effort is None:
+            raise LlmConfigError(
+                f"모델 '{resolved.model}'은 추론 강도를 정해야 합니다 — 등록부에 reasoning_effort를 적으세요."
+            )
+        return {"extra_body": {"reasoning": {"effort": resolved.reasoning_effort}}}
+    if resolved.provider == PROVIDER_ZAI:
+        # GLM도 추론이 기본이다. 끄는 문법은 DeepSeek과 같은 모양(extra_body.thinking)이다.
+        if not resolved.use_thinking:
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return (
+            {}
+            if resolved.reasoning_effort is None
+            else {"reasoning_effort": resolved.reasoning_effort}
+        )
+    if resolved.provider == PROVIDER_MOONSHOT:
+        # Kimi K3는 추론을 끌 수 없다(문서: "always has thinking mode enabled"). 끄라는 설정을
+        # 조용히 넘기면 추론이 켜진 채 호출되므로 거부한다.
+        if not resolved.use_thinking:
+            raise LlmConfigError(
+                f"모델 '{resolved.model}'은 추론을 끌 수 없습니다 — 등록부에서 use_thinking=True로 두세요."
+            )
+        return (
+            {}
+            if resolved.reasoning_effort is None
+            else {"reasoning_effort": resolved.reasoning_effort}
+        )
     if not resolved.use_thinking:
         raise LlmConfigError(
             f"공급자 '{resolved.provider}'에서 추론을 끄는 문법을 이 어댑터가 모릅니다 — "
@@ -204,11 +251,12 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
                 f"모델 '{resolved.model}'의 max_tokens={req.max_tokens}이 최대 출력 "
                 f"{resolved.max_output_tokens}을 넘습니다."
             )
-        # 최신 GPT는 max_tokens 대신 max_completion_tokens를 쓴다. DeepSeek 호환 API는
-        # 기존 max_tokens를 유지한다.
+        # 최신 GPT와 Kimi는 max_tokens 대신 max_completion_tokens를 쓴다(Kimi는 max_tokens가
+        # deprecated). DeepSeek·GLM은 max_tokens다. Qwen은 max_tokens가 deprecated지만 동작하고,
+        # max_completion_tokens 지원 목록에 Qwen3.8이 명시돼 있지 않아 확인된 쪽인 max_tokens를 쓴다.
         token_key = (
             "max_completion_tokens"
-            if resolved.provider == PROVIDER_OPENAI
+            if resolved.provider in (PROVIDER_OPENAI, PROVIDER_MOONSHOT)
             else "max_tokens"
         )
         kwargs[token_key] = req.max_tokens
@@ -258,18 +306,22 @@ def _text_of(response: object) -> str:
 def _usage_of(payload: object, resolved: ResolvedModel) -> TokenUsage:
     """usage를 옮긴다.
 
-    `prompt_tokens`는 캐시 적중분을 **이미 포함한 합계**다(DeepSeek·GPT) — 여기서 캐시 값을
-    더하면 두 번 세어 적재값이 부풀려진다. 캐시 적중 토큰은 내역으로만 남긴다.
+    `prompt_tokens`는 캐시 적중분을 **이미 포함한 합계**다(DeepSeek·GPT·Qwen·Kimi) — 여기서 캐시
+    값을 더하면 두 번 세어 적재값이 부풀려진다. 캐시 적중 토큰은 내역으로만 남긴다.
     누락된 값은 0이 아니라 None으로 남긴다(백엔드 계약: 누락 시 null).
+
+    캐시 적중을 DeepSeek만 자기 이름(`prompt_cache_hit_tokens`)으로 주고, 나머지는 OpenAI 규약대로
+    `prompt_tokens_details`에 준다(KNK-1628). 그래서 DeepSeek을 예외로 둔다 — 반대로 두면 새
+    공급자를 붙일 때마다 캐시 사용량이 조용히 비어 비용이 틀어진다.
     """
     usage = getattr(payload, "usage", None)
-    if resolved.provider == PROVIDER_OPENAI:
+    if resolved.provider == PROVIDER_DEEPSEEK:
+        cache_creation_input_tokens = None
+        cache_read_input_tokens = getattr(usage, "prompt_cache_hit_tokens", None)
+    else:
         details = getattr(usage, "prompt_tokens_details", None)
         cache_creation_input_tokens = getattr(details, "cache_write_tokens", None)
         cache_read_input_tokens = getattr(details, "cached_tokens", None)
-    else:
-        cache_creation_input_tokens = None
-        cache_read_input_tokens = getattr(usage, "prompt_cache_hit_tokens", None)
     return TokenUsage(
         input_tokens=getattr(usage, "prompt_tokens", None),
         output_tokens=getattr(usage, "completion_tokens", None),
@@ -329,6 +381,13 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
             response = await create(**kwargs)
         except OpenAIError as exc:
             raise _translate(exc, resolved) from exc
+        finish_reason = _finish_reason_of(response)
+        if finish_reason == "error":
+            # OpenRouter는 공급자 실패를 HTTP 200 안의 `finish_reason: "error"`로 알린다(`stream`과 같은
+            # 이유). 그대로 두면 빈 본문이 정상으로 돌아가 호출부가 "형식 오류"로 잘못 기록한다.
+            raise LlmUnavailable(
+                "응답이 finish_reason=error로 끝났습니다.", provider=resolved.provider, model=resolved.model
+            )
         return LlmResult(
             text=_text_of(response),
             # 응답이 돌려준 실제 모델명. 비어 오면 요청에 쓴 이름으로 채운다 — 빈 값을 올리면
@@ -336,7 +395,7 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
             model=getattr(response, "model", None) or req.model,
             provider=resolved.provider,
             usage=_usage_of(response, resolved),
-            finish_reason=_finish_reason_of(response),
+            finish_reason=finish_reason,
         )
 
 
@@ -412,6 +471,12 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
                 await chunks.close()
             except Exception:  # 정리 실패가 원래 오류·취소를 덮으면 안 된다 — 삼키되 로그로 남긴다.
                 logger.warning("스트림 정리에 실패했다 — 원래 결과를 그대로 둔다", exc_info=True)
+        if finish_reason == "error":
+            # OpenRouter는 스트림이 열린 뒤의 공급자 실패를 HTTP 200 안의 `finish_reason: "error"`
+            # 조각으로 알린다. 그대로 두면 빈 본문이 정상 완료처럼 저장된다.
+            raise LlmUnavailable(
+                "스트림이 finish_reason=error로 끝났습니다.", provider=resolved.provider, model=resolved.model
+            )
         yield StreamCompleted(
             model=model,
             provider=resolved.provider,

@@ -768,9 +768,27 @@ async def test_stream_call_contract(install_llm_sdk) -> None:
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
     # 타임아웃을 호출마다 넘긴다 — 비우면 상한이 SDK 기본값(10분)으로 늘어난다(KNK-673).
     assert captured["timeout"] == chat_llm._TIMEOUT_SECONDS == 90.0
-    # 본문은 지문·대사를 자유 생성하므로 json 모드·출력 상한을 걸지 않는다.
+    # 본문은 지문·대사를 자유 생성하므로 json 모드를 걸지 않는다.
     assert "response_format" not in captured
-    assert "max_tokens" not in captured
+    # 출력 상한은 싣는다 — Anthropic 필수 항목이라 공급자와 무관하게 같은 값을 보낸다(KNK-1624).
+    assert captured["max_tokens"] == chat_llm._MAX_TOKENS == 16_384
+
+
+async def test_chat_reasoning_effort_reaches_the_request(install_llm_sdk, monkeypatch) -> None:
+    """CHAT_REASONING_EFFORT를 고르면 본문 호출이 등록부 기본값 대신 그 강도로 나간다."""
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return FakeStream([_FakeChunk("본문")])
+
+    install_llm_sdk(_create)
+    monkeypatch.setattr(chat_llm.settings, "chat_model", "deepseek-flash")
+    monkeypatch.setattr(chat_llm.settings, "chat_reasoning_effort", "low")
+    _ = [e async for e in stream_chat_turn([{"role": "user", "content": "U"}])]
+
+    assert captured["reasoning_effort"] == "low"
+    assert "extra_body" not in captured  # 추론 끄기 문법이 함께 나가지 않는다
 
 
 # ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674) ────────────

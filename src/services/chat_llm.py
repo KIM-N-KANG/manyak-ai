@@ -28,7 +28,7 @@ from src.schemas.chat_turn import (
     CharacterImageMapping,
 )
 from src.services import llm
-from src.services.chat_assembler import LAYER_VERSIONS
+from src.services.chat_assembler import body_prompt_versions
 from src.services.llm.base import LlmError, LlmRequest, TextDelta
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 # 이 호출의 제한 시간(초). 첫 토큰까지의 상한이고, 스트리밍이라 통상 빠르게 시작된다.
 # **호출마다 반드시 넘긴다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
 _TIMEOUT_SECONDS = 90.0
+
+# 본문 출력 상한(토큰, KNK-1624). 평소 본문(1500~2200자, 많아야 4천여 토큰)에는 닿지 않는
+# 안전 상한이다. Anthropic은 이 값이 요청 필수라 없으면 매 턴 400이고, 추론을 켜는 모델은
+# 추론 토큰도 이 한도에 함께 세므로 넉넉하게 둔다. 공급자와 무관하게 같은 값을 보낸다 —
+# 호출부가 공급자를 알면 모델을 바꿀 때마다 이 파일을 고쳐야 한다(KNK-667 원칙).
+# 등록된 모델의 최대 출력(65,536 이상)보다 작아야 어댑터 검사에 걸리지 않는다.
+_MAX_TOKENS = 16_384
 
 # 인물 이름 상한. 클라이언트·백엔드가 30자로 막는다(spec/3-1-client-spec.md §3-1-4).
 _SPEAKER_NAME_MAX_CHARS = 30
@@ -382,7 +389,10 @@ async def stream_chat_turn(
                 LlmRequest(
                     model=settings.chat_model,
                     messages=messages,
+                    max_tokens=_MAX_TOKENS,
                     timeout=_TIMEOUT_SECONDS,
+                    # 비어 있으면 None — 등록부의 그 모델 기본 강도를 쓴다.
+                    reasoning_effort=settings.chat_reasoning_effort.strip() or None,
                 )
             )
         ) as events:
@@ -430,7 +440,7 @@ async def stream_chat_turn(
             feature=FEATURE_CHAT_RESPONSE,
             provider=provider,
             model=settings.chat_model,
-            prompt_versions=LAYER_VERSIONS,
+            prompt_versions=body_prompt_versions(),
             retry_count=0,  # 본문은 재호출 없음
             latency_ms=int((time.monotonic() - start) * 1000),
         )

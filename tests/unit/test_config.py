@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from src.core.config import Settings
 
 
@@ -27,6 +30,53 @@ def test_choice_model_field_reads_its_env(monkeypatch) -> None:
     assert (s.chat_model, s.chat_choice_model) == ("chat-x", "choice-x")
 
 
+def test_judgement_model_reads_its_env(monkeypatch) -> None:
+    """판정 모델은 CHAT_MODEL과 따로 CHAT_JUDGEMENT_MODEL을 읽는다(KNK-1620)."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_MODEL", "chat-x")
+    monkeypatch.setenv("CHAT_JUDGEMENT_MODEL", "judge-x")
+
+    s = Settings(_env_file=None)
+
+    assert (s.chat_model, s.effective_chat_judgement_model) == ("chat-x", "judge-x")
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_judgement_model_follows_chat_model_when_blank(monkeypatch, value: str) -> None:
+    """CHAT_JUDGEMENT_MODEL이 비었거나 공백뿐이면 CHAT_MODEL을 따른다(운영 동작 유지)."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_MODEL", "chat-x")
+    monkeypatch.setenv("CHAT_JUDGEMENT_MODEL", value)
+
+    s = Settings(_env_file=None)
+
+    assert s.effective_chat_judgement_model == "chat-x"
+
+
+def test_chat_prompt_defaults_to_layer(monkeypatch) -> None:
+    """CHAT_PROMPT가 없으면 layer라 운영 동작이 그대로다(KNK-1622)."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.delenv("CHAT_PROMPT", raising=False)
+
+    assert Settings(_env_file=None).chat_prompt == "layer"
+
+
+def test_chat_prompt_reads_general(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_PROMPT", "general")
+
+    assert Settings(_env_file=None).chat_prompt == "general"
+
+
+def test_chat_prompt_rejects_unknown_value(monkeypatch) -> None:
+    """오타 같은 다른 값은 조용히 layer로 떨어지지 않고 기동에서 실패한다."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_PROMPT", "genral")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_model_defaults(monkeypatch) -> None:
     """env 미설정 시 컴파일은 Terra, 스토리라인·채팅은 DeepSeek flash를 쓴다."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
@@ -37,6 +87,7 @@ def test_model_defaults(monkeypatch) -> None:
     assert s.storylines_model == "deepseek-flash"
     assert s.chat_model == "deepseek-flash"
     assert s.chat_choice_model == "deepseek-flash"
+    assert s.chat_judgement_model == ""
 
 
 def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> None:

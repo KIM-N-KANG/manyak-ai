@@ -254,8 +254,8 @@ async def generate_judgement(
     #
     # **아래 except가 이 예외를 흡수해 주지는 않는다.** 여기서 나는 예외는 LlmConfigError
     # 하나인데 LlmError를 상속하지 않아, 어디에 두든 밖으로 샌다. 그 경로는 기동 검사
-    # (`validate_startup`)가 막는 몫이다 — CHAT_MODEL이 등록부에 없으면 서버가 안 뜬다.
-    provider = llm.provider_of(settings.chat_model)
+    # (`validate_startup`)가 막는 몫이다 — 판정 모델이 등록부에 없으면 서버가 안 뜬다.
+    provider = llm.provider_of(settings.effective_chat_judgement_model)
     start = time.monotonic()
     try:
         # wait_for가 재시도까지 포함한 전체 상한이다(위 상수 주석 참조). 시간이 다 되면
@@ -263,7 +263,7 @@ async def generate_judgement(
         result_llm = await asyncio.wait_for(
             llm.complete(
                 LlmRequest(
-                    model=settings.chat_model,
+                    model=settings.effective_chat_judgement_model,
                     messages=[
                         {"role": "system", "content": _SYSTEM},
                         {"role": "user", "content": _build_user(req, ai_output)},
@@ -309,7 +309,7 @@ async def generate_judgement(
             feature=FEATURE_CHAT_RESPONSE,
             provider=provider,
             error_code=error_code,
-            model=settings.chat_model,
+            model=settings.effective_chat_judgement_model,
             prompt_versions={"JUDGEMENT": JUDGEMENT_VERSION},
             # 우리 코드가 다시 부르지 않는다는 뜻이다(선택지처럼 재호출 루프가 없다 — D12).
             # SDK가 안에서 최대 3회까지 시도하는 것은 이 숫자에 안 잡힌다(위 상수 주석).

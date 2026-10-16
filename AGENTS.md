@@ -52,7 +52,8 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 - 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 위 인덱스에서 제품 명세와 로컬 `spec/` 문서를 골라 먼저 확인합니다.
   외부 계약(요청·응답·판정·SSE)의 SSOT는 `docs/spec/5-ai-server-spec.md`, 현재 내부 구조·설정은 `docs/design/3-ai-server-design.md`, 설계 결정의 배경·대안·근거는 `docs/adr/3-ai-server-adr.md`입니다.
 - 채팅 프롬프트는 레이어 8종(CORE·SAFETY·STORY·CHARACTER·USER·MEMORY·JUDGEMENT·CHOICES)으로
-  나뉘어 `prompt/chat/`에 템플릿으로 존재합니다. 어떤 내용이 어느 레이어에 속하는지는
+  나뉘어 템플릿으로 존재합니다. 본문 레이어 6종은 `prompt/chat/layer/`에, JUDGEMENT·CHOICES는 `prompt/chat/`에 있습니다.
+  레이어 없이 파일 하나로 쓴 범용 본문 프롬프트는 `prompt/chat/general/`에 따로 둡니다. 어떤 내용이 어느 레이어에 속하는지는
   `spec/chat/1-PROMPT-LAYER.md`·`2-LAYER-PLACEMENT.md`가 정합니다 — 임의 배치 금지.
 
 ### 작업 워크플로
