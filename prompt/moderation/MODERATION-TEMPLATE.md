@@ -1,6 +1,6 @@
 ---
-version: 3
-updated: 2026-10-07
+version: 4
+updated: 2026-10-19
 ---
 
 # 게시물의 명백한 금지 내용 검수
@@ -24,11 +24,12 @@ updated: 2026-10-07
 | 텍스트 — 시작 설정 | `startSettings[].name`, `startSettings[].prologue`, `startSettings[].startSituation`, `startSettings[].suggestedInputs[]` |
 | 텍스트 — 엔딩 | `startSettings[].endings[].name`, `startSettings[].endings[].requirement.achievementCondition`, `startSettings[].endings[].epilogue` |
 | 텍스트 — 주요 사건 | `mainEvents[].name`, `mainEvents[].description`, `mainEvents[].keySentence` |
-| 텍스트 — 인물·이미지 이름 | `characters[].name`, `characters[].images[].imageName` |
+| 텍스트 — 인물 | `protagonistName`, `characters[].name`, `characters[].description`, `characters[].images[].imageName` |
 | 이미지 — 표지 | `thumbnailUrl`에 대응하는 첨부 이미지 |
 | 이미지 — 인물 | `characters[].images[].imageUrl`에 대응하는 첨부 이미지 |
 
 - 이미지 속 글자는 텍스트 기준으로 검사함.
+- `{username}`은 채팅마다 주인공 이름으로 바뀌는 자리 표시임. 표시 자체는 위반 근거로 삼지 않고, 그 자리에 사람 이름이 들어간 문장으로 읽어 판정함.
 - 공개 설정·최소 턴 수·ID·처리 상태는 제외함.
 - 선택 항목 생략은 위반 아님.
 
