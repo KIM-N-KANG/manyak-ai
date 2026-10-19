@@ -52,12 +52,15 @@ class ModerationCharacterImage(_ModerationInput):
 
 class ModerationCharacter(_ModerationInput):
     name: str | None = None
+    description: str | None = None
     images: list[ModerationCharacterImage] | None = None
 
 
 class StoryModerationRequest(_ModerationInput):
     submission_id: UUID
     story_id: str | None = None
+    # 토큰 없는 기본 주인공 이름 원문이다. 페르소나 이름은 오지 않는다.
+    protagonist_name: str | None = None
     title: str | None = None
     one_line_intro: str | None = None
     description: str | None = None
