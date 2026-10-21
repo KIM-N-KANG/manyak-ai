@@ -1,11 +1,11 @@
 ---
-version: 4
-updated: 2026-10-11
+version: 5
+updated: 2026-10-21
 ---
 
 # LAYER-PLACEMENT.md
 
-> **적용 범위.** 이 문서는 레이어 템플릿(`prompt/chat/layer/`의 6종)에 적용한다. 레이어 없이 파일 하나로 쓴 범용 본문 프롬프트(`prompt/chat/general/`)는 이 문서의 레이어 정의와 배치 규칙을 따르지 않는다. 그 구조와 고르는 방법은 [4-SERVICE-IMPLEMENTATION.md] 4.4를 본다.
+> **적용 범위.** 이 문서는 레이어 템플릿(`prompt/chat/layer/`의 6종)에 적용한다. 레이어 없이 파일 하나로 쓴 범용 본문 프롬프트(`prompt/chat/CHAT-TEMPLATE.md`)는 이 문서의 레이어 정의와 배치 규칙을 따르지 않는다. 그 구조와 고르는 방법은 [4-SERVICE-IMPLEMENTATION.md] 4.4를 본다.
 
 > 본 문서는 **[PROMPT-LAYER.md]의 레이어 정의(누가 무엇을 담당하는가)**와 **[CONTEXT-ARCHITECTURE.md]의 조립 원리(프롬프트가 어떻게 조립·주입되는가)**를 연결하는 **배치 명세서**다. 각 레이어가 실제 프롬프트 조립에서 **어디에·언제·얼마나 자주** 배치되는지를 확정하여, 이후 프롬프트 템플릿 작성의 기준선을 제공한다.
 

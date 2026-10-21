@@ -1,6 +1,6 @@
 ---
-version: 28
-updated: 2026-10-16
+version: 29
+updated: 2026-10-21
 ---
 
 # [서비스 구현 명세서] — 6레이어 채팅 시스템의 구체화
@@ -728,7 +728,7 @@ Docker 테스트에서 다음 범위를 확인했다.
 
 ### 4.4 범용 본문 프롬프트 (general, KNK-1617)
 
-**무엇.** 본문 프롬프트를 레이어 6종 대신 파일 하나(`prompt/chat/general/CHAT-TEMPLATE.md`)로 쓰는 두 번째 방식이다.
+**무엇.** 본문 프롬프트를 레이어 6종 대신 파일 하나(`prompt/chat/CHAT-TEMPLATE.md`)로 쓰는 두 번째 방식이다.
 환경 변수 `CHAT_PROMPT`로 고른다. 값은 `layer`(기본)와 `general` 둘뿐이고, 다른 값이면 서버가 뜨지 않는다.
 선택지(CHOICES) 프롬프트는 두 방식이 같다. [1-PROMPT-LAYER.md]·[2-LAYER-PLACEMENT.md]의
 레이어 정의와 배치 규칙은 general에 적용하지 않는다.

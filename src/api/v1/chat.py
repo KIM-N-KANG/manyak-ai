@@ -95,8 +95,7 @@ async def _event_stream(
     스트림 전체를 감싸므로 본문·이미지 호출이 한 트레이스에 묶인다.
     """
     # 분석 차원 부착(KNK-640): 본문 프롬프트 버전을 싣는다. 채팅 턴은 재호출이 없어 retry_count=0.
-    # 본문 버전은 이 턴에 실제로 조립할 프롬프트(layer/general) 기준이다(KNK-1623). 관측과
-    # completed meta가 같은 값을 쓰도록 한 번만 구한다.
+    # 관측과 completed meta가 같은 단일 채팅 템플릿 버전을 쓰도록 한 번만 구한다.
     prompt_versions = body_prompt_versions()
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
     with observe_request(
