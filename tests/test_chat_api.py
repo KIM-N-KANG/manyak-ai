@@ -860,3 +860,36 @@ async def test_chat_prompt_records_same_version_in_response_and_trace(
     expected = {"CHAT": 1}
     assert _data_of(resp.text, "completed")["meta"]["promptVersions"] == expected
     assert captured["metadata"]["prompt_versions"] == expected
+
+
+@pytest.mark.parametrize("routing", [
+    {"user_id": "not-a-uuid"}, {"user_id": ""}, {"user_id": 123},
+    {"model_tier": None}, {"model_tier": "basic"}, {"model_tier": "PREMIUM"},
+    {"model_tier": ""}, {"model_tier": 1},
+])
+async def test_invalid_routing_fields_return_422_before_generation(client, monkeypatch, routing) -> None:
+    def unexpected_generation(*args, **kwargs):
+        pytest.fail("Invalid routing input must not reach generation")
+
+    monkeypatch.setattr(chat_module, "stream_chat_turn", unexpected_generation)
+    response = await client.post("/api/v1/chat/turns", json={**_payload(), **routing})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == next(iter(routing))
+
+
+async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) -> None:
+    captured = []
+
+    async def fake_stream(messages, *, character_images):
+        captured.append(messages)
+        yield {"event": "error", "code": "test", "message": "test"}
+
+    monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
+    for routing in [{}, {"user_id": None, "model_tier": "ADVANCED"},
+                    {"user_id": "3f2504e0-4f89-41d3-9a0c-0305e82c330a", "model_tier": "BASIC"},
+                    {"user_id": "3f2504e0-4f89-41d3-9a0c-0305e82c330b", "model_tier": "ADVANCED"}]:
+        response = await client.post("/api/v1/chat/turns", json={**_payload(), **routing})
+        assert response.status_code == 200
+    assert len(captured) == 4
+    assert captured[0]
+    assert all(messages == captured[0] for messages in captured[1:])

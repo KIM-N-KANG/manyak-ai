@@ -293,3 +293,17 @@ def test_completed_choices_defaults_to_empty_and_rejects_items() -> None:
     assert CompletedData(ai_output="본문").choices == []
     with pytest.raises(ValidationError):
         CompletedData(ai_output="본문", choices=["가"])
+
+
+def test_routing_defaults_preserve_legacy_payload() -> None:
+    req = ChatTurnRequest.model_validate(_BASE_PAYLOAD)
+    assert req.user_id is None
+    assert req.model_tier == "BASIC"
+
+
+@pytest.mark.parametrize("user_id", [None, "3f2504e0-4f89-41d3-9a0c-0305e82c330a", "3F2504E0-4F89-41D3-9A0C-0305E82C330A"])
+@pytest.mark.parametrize("tier", ["BASIC", "ADVANCED"])
+def test_routing_fields_accept_guest_and_member(user_id, tier) -> None:
+    req = ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "user_id": user_id, "model_tier": tier})
+    assert req.model_dump(mode="json")["user_id"] == (user_id.lower() if user_id else None)
+    assert req.model_tier == tier

@@ -12,6 +12,7 @@
 import logging
 from typing import Literal
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -159,8 +160,8 @@ class ChatImageSlot(BaseModel):
         return value
 
 
-class ChatTurnRequest(BaseModel):
-    """채팅 턴 API 입력 (매 턴, 완전 stateless).
+class ChatCommonRequest(BaseModel):
+    """본문과 선택지 생성에서 공유하는 요청 재료.
 
     session_id를 두지 않는다 — AI는 무상태라 식별자로 조회·분기할 게 없고, 대화를
     묶는 책임은 백엔드(chatId)에 있다. genre는 `stories.genre`에서 직접 치환된다
@@ -215,6 +216,13 @@ class ChatTurnRequest(BaseModel):
                 return cleaned
         logger.warning("Langfuse user_source 값 무시 — 허용된 입력 출처가 아님")
         return None
+
+
+class ChatTurnRequest(ChatCommonRequest):
+    """채팅 턴 입력. 회원 UUID와 등급은 라우팅에만 쓰고 프롬프트에서 제외한다."""
+
+    user_id: UUID | None = None
+    model_tier: Literal["BASIC", "ADVANCED"] = "BASIC"
 
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────
