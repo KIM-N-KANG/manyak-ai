@@ -269,7 +269,7 @@ def test_registry_metadata_and_optional_key_at_startup(settings):
 
 
 @pytest.mark.parametrize("field,value", [
-    ("chat_model", "jev-1.13.0"), ("story_compile_model", "jev-1.13.0"),
+    ("chat_choice_model", "jev-1.13.0"), ("story_compile_model", "jev-1.13.0"),
     ("jev_model", "deepseek-flash"), ("jev_model", "unregistered"),
     ("typesafe_api_url", "http://api.typesafe.ai"),
     ("typesafe_api_url", "https://user:password@api.typesafe.ai"),

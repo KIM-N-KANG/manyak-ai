@@ -375,7 +375,7 @@ async def test_uses_choice_model_not_chat_model(
     monkeypatch, other_provider_model, install_llm_sdk
 ) -> None:
     choice_model = other_provider_model()
-    monkeypatch.setattr(chat_choices.settings, "chat_model", "deepseek-flash")
+    monkeypatch.setenv("CHAT_MODEL", "deepseek-flash")
     monkeypatch.setattr(chat_choices.settings, "chat_choice_model", choice_model)
     sent: list[str] = []
 
@@ -394,7 +394,7 @@ async def test_failure_reports_choice_model_not_chat_model(
     monkeypatch, other_provider_model, install_llm_sdk
 ) -> None:
     choice_model = other_provider_model()
-    monkeypatch.setattr(chat_choices.settings, "chat_model", "deepseek-flash")
+    monkeypatch.setenv("CHAT_MODEL", "deepseek-flash")
     monkeypatch.setattr(chat_choices.settings, "chat_choice_model", choice_model)
     calls: list = []
     monkeypatch.setattr(chat_choices, "capture_ai_exception", lambda *a, **k: calls.append(k))

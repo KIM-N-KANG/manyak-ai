@@ -51,6 +51,8 @@ def _clear_llm_env(monkeypatch) -> None:
         "JEV_MODEL",
         "TYPESAFE_API_KEY",
         "TYPESAFE_API_URL",
+        "GEMINI_API_KEY",
+        "GEMINI_API_URL",
         "OPENAI_API_KEY",
         "OPENAI_API_URL",
         "ANTHROPIC_API_KEY",
@@ -78,6 +80,7 @@ def _settings(**overrides: str) -> Settings:
     values: dict[str, str] = {
         "deepseek_api_key": "deepseek-test-key",
         "openai_api_key": "openai-test-key",
+        "gemini_api_key": "google-test-key",
     } | overrides
     return Settings(_env_file=None, **values)
 
@@ -404,8 +407,8 @@ def test_gpt_5_6_luna_pricing_reflects_july_30_price_cut() -> None:
 
 
 def test_gpt_6_luna_passes_chat_model_startup_checks(monkeypatch) -> None:
-    """CHAT_MODEL로 골라도 금지 공급자·스트리밍 검사를 통과한다(KNK-1411)."""
-    monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
+    """기본 본문 라우팅 모델이 금지 공급자·스트리밍 검사를 통과한다."""
+    monkeypatch.setattr(registry, "settings", _settings())
 
     llm.validate_startup()  # 예외 없이 통과
 
@@ -503,15 +506,17 @@ def test_chat_does_not_require_mid_conversation_system_support(monkeypatch) -> N
     """단일 본문은 중간 system 지원이 없어도 등록된 모델을 사용할 수 있다."""
     unverified = ResolvedModel(
         model="glm-unverified",
+        supported_reasoning_efforts=frozenset({"none"}),
         provider=PROVIDER_ZAI,
         adapter=ADAPTER_OPENAI_SDK,
         use_thinking=False,
     )
     monkeypatch.setitem(registry._REGISTRY, "glm-unverified", unverified)
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", ("glm-unverified", "none"))
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(chat_model="glm-unverified", ZAI_API_KEY="k"),
+        _settings(ZAI_API_KEY="k"),
     )
 
     llm.validate_startup()
@@ -521,11 +526,12 @@ def test_chat_does_not_require_mid_conversation_system_support(monkeypatch) -> N
 def test_open_models_pass_startup_for_chat_body(monkeypatch, model: str) -> None:
     """단일 프롬프트는 공급자에 따른 레이어 제한 없이 기동한다."""
     keys = {"OPENROUTER_API_KEY": "k", "ZAI_API_KEY": "k", "MOONSHOT_API_KEY": "k"}
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", (model, registry.resolve(model).reasoning_effort))
     monkeypatch.setattr(
         registry,
         "settings",
         _settings(
-            chat_model=model, **keys
+            **keys
         ),
     )
 
@@ -605,6 +611,8 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
 
 def test_missing_moderation_key_does_not_block_other_features(monkeypatch) -> None:
     """검수에만 필요한 키는 기동을 막지 않지만 스토리에 쓰는 키는 필요하다."""
+    # 검수에만 키가 필요한 조건을 만들기 위해 검사 대상에서 본문 라우팅을 제외한다.
+    monkeypatch.setattr(registry, "ROUTING_TARGETS", {})
     monkeypatch.setattr(
         registry,
         "settings",
@@ -646,7 +654,9 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
     assert registry.selected_models() == (
         ("STORYLINES_MODEL", "deepseek-flash"),
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
-        ("CHAT_MODEL", "deepseek-flash"),
+        ("CHAT_BASIC", "gpt-6-luna"),
+        ("CHAT_ADVANCED_EVEN", "gpt-6.1-sol"),
+        ("CHAT_ADVANCED_ODD", "gemini-3.8-flash"),
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
         ("MODERATION_MODEL", "gpt-6-luna"),
         ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
@@ -654,19 +664,12 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
     )
 
 
-def test_chat_model_change_leaves_choice_model(monkeypatch) -> None:
-    """CHAT_MODEL만 바꾸면 선택지는 기본 모델에 남는다(KNK-1416).
-
-    분리 전에는 선택지도 CHAT_MODEL을 같이 써서, 본문 모델을 바꾸면 별도 API인 선택지까지
-    딸려갔다. 운영에 새 env가 없어도 이 성질이 지켜져야 한다.
-    """
-    monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
-
+def test_chat_routes_leave_choice_model_independent(monkeypatch) -> None:
+    monkeypatch.setattr(registry, "settings", _settings(chat_choice_model="gpt-5.6-luna"))
     selected = dict(registry.selected_models())
-
-    assert selected["CHAT_MODEL"] == "gpt-6-luna"
-    assert selected["CHAT_CHOICE_MODEL"] == "deepseek-flash"
-    llm.validate_startup()  # 예외 없이 통과
+    assert selected["CHAT_BASIC"] == "gpt-6-luna"
+    assert selected["CHAT_CHOICE_MODEL"] == "gpt-5.6-luna"
+    llm.validate_startup()
 
 
 def test_choice_slot_blocks_anthropic(monkeypatch) -> None:
@@ -693,7 +696,7 @@ def test_startup_ignores_removed_judgement_model(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(chat_model="claude-haiku-5-5", anthropic_api_key="ant-key"),
+        _settings(),
     )
 
     assert "CHAT_JUDGEMENT_MODEL" not in dict(registry.selected_models())
@@ -770,7 +773,7 @@ def test_validate_names_the_env_for_provider_without_credentials(monkeypatch) ->
 
     **공급자 이름은 규칙이 생길 일이 없는 값을 쓴다.** 예전에는 여기에 "anthropic"을 썼는데,
     KNK-675에서 그 공급자의 규칙이 실제로 생기자 검사 지점이 조용히 "키가 비었다"로 옮겨갔다.
-    두 오류 메시지에 모두 CHAT_MODEL이 들어 있어 테스트는 계속 통과했고, 정작 이 테스트가
+    두 오류 메시지에 모두 STORYLINES_MODEL이 들어 있어 테스트는 계속 통과했고, 정작 이 테스트가
     지키려던 경로는 아무도 밟지 않게 됐다.
 
     같은 일이 또 생기지 않도록 **어느 단계에서 막혔는지도 함께 단언한다** — env 이름만 보면
@@ -784,14 +787,14 @@ def test_validate_names_the_env_for_provider_without_credentials(monkeypatch) ->
     )
     monkeypatch.setitem(registry._REGISTRY, "model-of-an-unsupported-provider", future)
     monkeypatch.setattr(
-        registry, "settings", _settings(chat_model="model-of-an-unsupported-provider")
+        registry, "settings", _settings(storylines_model="model-of-an-unsupported-provider")
     )
 
     with pytest.raises(LlmConfigError) as exc_info:
         registry.validate_selected_models()
 
     message = str(exc_info.value)
-    assert "CHAT_MODEL" in message
+    assert "STORYLINES_MODEL" in message
     assert "접속 정보 규칙이 없습니다" in message
 
 
@@ -905,13 +908,12 @@ def test_grid_search_model_prices() -> None:
 )
 def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effort: str) -> None:
     """채팅 모델이 받지 않는 강도는 첫 채팅이 아니라 서버 기동에서 막는다."""
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", (model, effort))
     keys = {"ANTHROPIC_API_KEY": "k", "MOONSHOT_API_KEY": "k", "GEMINI_API_KEY": "k"}
     monkeypatch.setattr(
         registry,
         "settings",
         _settings(
-            chat_model=model,
-            chat_reasoning_effort=effort,
             **keys,
         ),
     )
@@ -919,7 +921,8 @@ def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effo
     with pytest.raises(LlmConfigError) as exc_info:
         registry.validate_selected_models()
 
-    assert "CHAT_REASONING_EFFORT" in str(exc_info.value)
+    assert "CHAT_BASIC" in str(exc_info.value)
+    assert "추론 강도" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -927,13 +930,12 @@ def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effo
     [("claude-haiku-5-5", "none"), ("claude-sonnet-5-5", "high"), ("qwen3.8-flash", "medium"), ("gpt-6.1-sol", "low")],
 )
 def test_chat_reasoning_effort_accepted_at_startup(monkeypatch, model: str, effort: str) -> None:
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", (model, effort))
     keys = {"ANTHROPIC_API_KEY": "k", "OPENROUTER_API_KEY": "k"}
     monkeypatch.setattr(
         registry,
         "settings",
         _settings(
-            chat_model=model,
-            chat_reasoning_effort=effort,
             **keys,
         ),
     )
@@ -941,30 +943,57 @@ def test_chat_reasoning_effort_accepted_at_startup(monkeypatch, model: str, effo
     llm.validate_startup()  # 예외 없이 통과
 
 
-@pytest.mark.parametrize(
-    ("model", "provider", "effort"),
-    [
-        ("gpt-6-luna", PROVIDER_OPENAI, "none"),
-        ("gpt-6.1-sol", PROVIDER_OPENAI, "low"),
-        ("gemini-3.8-flash", PROVIDER_GOOGLE, "low"),
-    ],
-)
-def test_planned_chat_models_pass_startup(monkeypatch, model, provider, effort) -> None:
-    monkeypatch.setattr(
-        registry, "settings", _settings(chat_model=model, gemini_api_key="google-test-key")
-    )
+@pytest.mark.parametrize("slot,model,provider,effort", [
+    ("CHAT_BASIC", "gpt-6-luna", PROVIDER_OPENAI, "low"),
+    ("CHAT_ADVANCED_EVEN", "gpt-6.1-sol", PROVIDER_OPENAI, "low"),
+    ("CHAT_ADVANCED_ODD", "gemini-3.8-flash", PROVIDER_GOOGLE, "medium"),
+])
+def test_chat_routes_pass_startup(monkeypatch, slot, model, provider, effort) -> None:
+    monkeypatch.setattr(registry, "settings", _settings())
+    assert registry.ROUTING_TARGETS[slot] == (model, effort)
     llm.validate_startup()
-    resolved = registry.resolve(model)
-    assert resolved.provider == provider
-    assert resolved.reasoning_effort == effort
+    assert registry.resolve(model).provider == provider
 
 
-@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6.1-sol", "gemini-3.8-flash"])
-def test_planned_chat_models_reject_unsupported_effort(monkeypatch, model) -> None:
-    monkeypatch.setattr(
-        registry, "settings", _settings(
-            chat_model=model, chat_reasoning_effort="unsupported", gemini_api_key="google-test-key"
-        )
-    )
-    with pytest.raises(LlmConfigError, match="CHAT_REASONING_EFFORT"):
+@pytest.mark.parametrize("slot", list(registry.ROUTING_TARGETS))
+@pytest.mark.parametrize("problem", ["unregistered", "effort", "streaming", "adapter", "evaluation"])
+def test_each_chat_route_rejects_invalid_configuration(monkeypatch, slot, problem) -> None:
+    from dataclasses import replace
+    from src.services.llm import google_sdk, openai_sdk
+
+    monkeypatch.setattr(registry, "settings", _settings())
+    model, effort = registry.ROUTING_TARGETS[slot]
+    if problem == "unregistered":
+        monkeypatch.delitem(registry._REGISTRY, model)
+    elif problem == "effort":
+        monkeypatch.setitem(registry.ROUTING_TARGETS, slot, (model, "unsupported"))
+    elif problem == "streaming":
+        adapter = google_sdk if registry.resolve(model).provider == PROVIDER_GOOGLE else openai_sdk
+        monkeypatch.setattr(adapter, "SUPPORTS_STREAMING", False)
+        # 다른 라우팅 자리의 검사에서 먼저 막히지 않도록 이 자리만 스트리밍 대상으로 둔다.
+        monkeypatch.setattr(registry, "STREAMING_SLOTS", frozenset({slot}))
+    elif problem == "adapter":
+        monkeypatch.setitem(registry._REGISTRY, model, replace(registry.resolve(model), adapter="missing-adapter"))
+    else:
+        monkeypatch.setitem(registry.ROUTING_TARGETS, slot, ("jev-1.13.0", effort))
+    with pytest.raises(LlmConfigError, match=slot):
         llm.validate_startup()
+
+
+@pytest.mark.parametrize("field,env", [("openai_api_key", "OPENAI_API_KEY"), ("gemini_api_key", "GEMINI_API_KEY")])
+@pytest.mark.parametrize("value", ["", "   ", " key", "key\nvalue", "key value", "키"])
+def test_chat_route_keys_are_required_and_validated(monkeypatch, field, env, value) -> None:
+    # 컴파일을 다른 공급자로 돌려도 채팅 자체가 키를 요구해야 한다.
+    monkeypatch.setattr(registry, "settings", _settings(story_compile_model="deepseek-flash", **{field: value}))
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+    assert env in str(exc_info.value)
+    assert "CHAT_" in str(exc_info.value)
+
+
+def test_removed_chat_settings_are_ignored_at_startup(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_MODEL", "unregistered-old-model")
+    monkeypatch.setenv("CHAT_REASONING_EFFORT", "unsupported")
+    monkeypatch.setattr(registry, "settings", _settings())
+    llm.validate_startup()
+    assert "CHAT_MODEL" not in dict(registry.selected_models())

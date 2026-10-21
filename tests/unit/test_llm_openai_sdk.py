@@ -1041,7 +1041,7 @@ def test_validate_startup_rejects_model_the_adapter_cannot_express(monkeypatch) 
     )
     monkeypatch.setitem(registry._REGISTRY, "gpt-x", unsupported)
     monkeypatch.setattr(
-        registry, "settings", Settings(_env_file=None, deepseek_api_key="k", chat_model="gpt-x")
+        registry, "settings", Settings(_env_file=None, deepseek_api_key="k", storylines_model="gpt-x")
     )
     monkeypatch.setattr(
         registry,
@@ -1057,7 +1057,7 @@ def test_validate_startup_rejects_model_the_adapter_cannot_express(monkeypatch) 
     with pytest.raises(LlmConfigError) as exc_info:
         llm.validate_startup()
 
-    assert "CHAT_MODEL" in str(exc_info.value)
+    assert "STORYLINES_MODEL" in str(exc_info.value)
 
 
 def test_validate_startup_names_the_env_for_missing_adapter(monkeypatch) -> None:

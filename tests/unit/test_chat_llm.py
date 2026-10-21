@@ -778,7 +778,6 @@ async def test_stream_call_contract(install_llm_sdk) -> None:
 
 async def test_chat_reasoning_effort_reaches_the_request(install_llm_sdk, monkeypatch) -> None:
     """기존 전역 모델·추론 설정이 요청별 라우팅을 덮어쓰지 않는다."""
-    from src.core.config import settings
     captured: dict = {}
 
     async def _create(**kwargs):
@@ -786,8 +785,8 @@ async def test_chat_reasoning_effort_reaches_the_request(install_llm_sdk, monkey
         return FakeStream([_FakeChunk("본문")])
 
     install_llm_sdk(_create)
-    monkeypatch.setattr(settings, "chat_model", "deepseek-flash")
-    monkeypatch.setattr(settings, "chat_reasoning_effort", "high")
+    monkeypatch.setenv("CHAT_MODEL", "deepseek-flash")
+    monkeypatch.setenv("CHAT_REASONING_EFFORT", "high")
     _ = [e async for e in stream_chat_turn([{"role": "user", "content": "U"}])]
 
     assert captured["reasoning_effort"] == "low"

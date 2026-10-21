@@ -351,10 +351,10 @@ class _SpeakerLabelStreamParser:
 def select_chat_model(user_id: UUID | None, model_tier: Literal["BASIC", "ADVANCED"]) -> tuple[str, str]:
     """게스트는 기본 모델, 고급 회원은 UUID 마지막 16진수 자리의 홀짝으로 배정한다."""
     if user_id is None or model_tier == "BASIC":
-        return "gpt-6-luna", "low"
+        return llm.routing_target("CHAT_BASIC")
     if user_id.int % 2 == 0:
-        return "gpt-6.1-sol", "low"
-    return "gemini-3.8-flash", "medium"
+        return llm.routing_target("CHAT_ADVANCED_EVEN")
+    return llm.routing_target("CHAT_ADVANCED_ODD")
 
 
 async def stream_chat_turn(

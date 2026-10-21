@@ -307,7 +307,7 @@ class LlmAdapter(Protocol):
     # 어댑터가 채팅에 꽂혀도 기동이 통과하고, 첫 사용자 요청에서야 터진다(KNK-676 리뷰 P2).
     #
     # **"어느 용도가 스트리밍인지"는 어댑터가 모른다.** 그 판정은 등록부가 한다
-    # (`registry.STREAMING_ENVS`) — 어댑터는 자기가 할 수 있는지만 밝힌다.
+    # (`registry.STREAMING_SLOTS`) — 어댑터는 자기가 할 수 있는지만 밝힌다.
     SUPPORTS_STREAMING: bool
 
     def check_supported(self, resolved: ResolvedModel) -> None:
