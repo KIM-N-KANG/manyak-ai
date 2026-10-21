@@ -1417,73 +1417,25 @@ def test_the_streaming_slot_is_known_only_to_the_registry() -> None:
     assert "CHAT_MODEL" not in _code_of(adapter_source)
 
 
-# ── 채팅 자리에 이 공급자를 못 꽂게 한다 (KNK-675) ──────────────────────────
+# ── 본문 허용과 선택지 공급자 제한 ──────────────────────────
 def _blocked_settings(**overrides) -> Settings:
-    # chat_prompt를 명시한다 — 금지 여부가 이 값에 달려 있어, 실행 환경의 CHAT_PROMPT를 따라가면
-    # 같은 테스트가 환경마다 다르게 끝난다(KNK-1624).
     values = {
         "_env_file": None,
         "deepseek_api_key": "k",
         "anthropic_api_key": "ant",
-        "chat_prompt": "layer",
     }
     return Settings(**(values | overrides))
 
 
 def test_the_blocked_slot_is_known_only_to_the_registry() -> None:
-    """"채팅에는 이 공급자를 쓸 수 없다"는 규칙은 등록부에만 있다.
+    """용도별 공급자 제한은 등록부에만 있다.
 
     `STREAMING_ENVS`와 같은 이유다 — 통로·어댑터에 용도 이름을 박으면 모델·공급자를 바꿀
     때마다 그 층을 다시 고쳐야 한다(KNK-667). 어느 파일에도 "CHAT_MODEL"이 코드로 박히지
     않았는지는 위 `test_the_streaming_slot_is_known_only_to_the_registry`가 함께 지킨다.
     """
-    # 채팅 본문은 Anthropic과 함께 Qwen·GLM·Kimi 공급자도 layer에서 막는다(KNK-1628).
-    assert PROVIDER_ANTHROPIC in registry.BLOCKED_PROVIDERS["CHAT_MODEL"]
+    assert registry.blocked_providers("CHAT_MODEL") == frozenset()
     assert registry.BLOCKED_PROVIDERS["CHAT_CHOICE_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
-
-
-def test_startup_rejects_this_provider_in_the_chat_slot(monkeypatch) -> None:
-    """CHAT_MODEL에 이 공급자의 모델을 꽂으면 **기동에서** 막는다.
-
-    막지 않으면 서버도 채팅도 정상으로 도는데 **안전 지시(PHI)만 빠진 채 호출된다** —
-    이 회사는 지시문 칸이 하나뿐이라 채팅이 뒤에 두는 Depth·PHI가 버려지기 때문이다
-    (`anthropic_sdk._split_system`). 오류가 나지 않아 경고 로그를 보지 않으면 모른다.
-
-    직전까지는 "이 어댑터는 스트리밍을 못 한다"는 이유로 걸렸는데, 조각 흘리기를 구현하면서
-    (KNK-696) 그 그물이 사라졌다. 이 테스트가 그 자리를 대신한다.
-    """
-    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
-    monkeypatch.setattr(registry, "settings", _blocked_settings(chat_model="anthropic-test-model"))
-
-    with pytest.raises(LlmConfigError) as exc_info:
-        llm.validate_startup()
-
-    message = str(exc_info.value)
-    assert "CHAT_MODEL" in message  # 배포가 실패한 상황이다 — 무엇을 되돌릴지 있어야 한다
-    assert PROVIDER_ANTHROPIC in message
-
-
-@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"])
-def test_layer_chat_allows_models_that_take_mid_conversation_system(monkeypatch, model: str) -> None:
-    """대화 중간 지시문을 받는 Claude 5.5 세대는 layer 채팅 본문에 쓸 수 있다.
-
-    막은 이유가 "끝의 지시문(현재 상태·안전 지시)이 버려진다"였으므로, 버리지 않는 모델이면 풀린다.
-    같은 회사라도 이 기능이 없는 Sonnet 5는 계속 막힌다(아래 테스트).
-    """
-    monkeypatch.setattr(registry, "settings", _blocked_settings(chat_model=model))
-
-    llm.validate_startup()  # 예외가 나면 실패다
-
-
-def test_layer_chat_still_blocks_claude_sonnet_5(monkeypatch) -> None:
-    monkeypatch.setattr(
-        registry,
-        "settings",
-        _blocked_settings(chat_model="claude-sonnet-5"),
-    )
-
-    with pytest.raises(LlmConfigError):
-        llm.validate_startup()
 
 
 async def test_mid_conversation_system_kept_in_place(monkeypatch) -> None:
@@ -1517,11 +1469,7 @@ async def test_mid_conversation_system_kept_in_place(monkeypatch) -> None:
 
 
 def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:
-    """같은 모델이라도 채팅이 아닌 자리면 통과한다.
-
-    **짝으로 확인해야 의미가 있다.** 윗 테스트만 보면 "이 공급자를 아예 못 쓰게 막는" 코드도
-    똑같이 통과한다 — 막은 것이 "이 공급자"가 아니라 "채팅 자리"임을 여기서 고정한다.
-    """
+    """스토리라인에서도 기존처럼 이 공급자를 사용할 수 있다."""
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
     monkeypatch.setattr(
         registry, "settings", _blocked_settings(storylines_model="anthropic-test-model")
@@ -1530,15 +1478,14 @@ def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:
     llm.validate_startup()  # 예외가 나면 실패다
 
 
-# ── general 프롬프트면 채팅 본문에 이 공급자를 열어 준다 (KNK-1624) ──────────
-def test_startup_allows_this_provider_in_the_chat_slot_with_general_prompt(monkeypatch) -> None:
-    """general은 지시문을 맨 앞 하나에만 둬 버려지는 지시가 없으므로 채팅 본문에 쓸 수 있다."""
+# ── 단일 본문 프롬프트의 공급자 허용 ──────────
+def test_startup_allows_this_provider_in_the_chat_slot(monkeypatch) -> None:
+    """단일 본문은 중간 system 지원 여부에 따른 차단 없이 기동한다."""
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
     monkeypatch.setattr(
         registry,
         "settings",
         _blocked_settings(
-            chat_prompt="general",
             chat_model="anthropic-test-model",
         ),
     )
@@ -1546,13 +1493,13 @@ def test_startup_allows_this_provider_in_the_chat_slot_with_general_prompt(monke
     llm.validate_startup()  # 예외가 나면 실패다
 
 
-def test_general_prompt_does_not_open_the_choice_slot(monkeypatch) -> None:
-    """general이 여는 것은 채팅 본문뿐이다. 선택지는 JSON 강제 문제로 계속 막는다."""
+def test_single_chat_prompt_does_not_open_the_choice_slot(monkeypatch) -> None:
+    """본문 공급자 제한을 없애도 선택지의 JSON 강제 제한은 유지한다."""
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
     monkeypatch.setattr(
         registry,
         "settings",
-        _blocked_settings(chat_prompt="general", chat_choice_model="anthropic-test-model"),
+        _blocked_settings(chat_choice_model="anthropic-test-model"),
     )
 
     with pytest.raises(LlmConfigError) as exc_info:
@@ -1571,7 +1518,7 @@ def test_blocked_slot_is_reported_before_a_missing_key(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "settings",
-        _blocked_settings(anthropic_api_key="", chat_model="anthropic-test-model"),
+        _blocked_settings(anthropic_api_key="", chat_choice_model="anthropic-test-model"),
     )
 
     with pytest.raises(LlmConfigError) as exc_info:

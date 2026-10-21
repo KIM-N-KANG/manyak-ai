@@ -78,8 +78,6 @@ def _settings(**overrides: str) -> Settings:
     values: dict[str, str] = {
         "deepseek_api_key": "deepseek-test-key",
         "openai_api_key": "openai-test-key",
-        # 채팅 본문 금지가 이 값에 달려 있어 실행 환경의 CHAT_PROMPT와 무관하게 고정한다(KNK-1624).
-        "chat_prompt": "layer",
     } | overrides
     return Settings(_env_file=None, **values)
 
@@ -501,20 +499,8 @@ def test_open_model_key_falls_back_to_dev_slot(monkeypatch, env_prefix: str) -> 
     assert getattr(_settings(), f"{env_prefix.lower()}_api_key") == "main-key"
 
 
-@pytest.mark.parametrize("model", ["qwen3.8-max", "qwen3.8-flash", "glm-5.2", "kimi-k3"])
-def test_open_models_allowed_for_layer_chat_body(monkeypatch, model: str) -> None:
-    """layer 채팅은 대화 끝에 지시문(현재 상태·안전 지시)을 붙인다. 이 모델들은 그 지시문을 따르는 것을
-    실측으로 확인해(2026-10-16) layer 채팅 본문에도 쓸 수 있다."""
-    keys = {"OPENROUTER_API_KEY": "k", "ZAI_API_KEY": "k", "MOONSHOT_API_KEY": "k"}
-    monkeypatch.setattr(
-        registry, "settings", _settings(chat_model=model, **keys)
-    )
-
-    registry.validate_selected_models()  # 예외 없이 통과
-
-
-def test_layer_chat_still_blocks_unverified_model_of_open_provider(monkeypatch) -> None:
-    """같은 공급자라도 끝 지시문 수용을 확인하지 않은 모델은 계속 막는다 — 예외는 모델 단위다."""
+def test_chat_does_not_require_mid_conversation_system_support(monkeypatch) -> None:
+    """단일 본문은 중간 system 지원이 없어도 등록된 모델을 사용할 수 있다."""
     unverified = ResolvedModel(
         model="glm-unverified",
         provider=PROVIDER_ZAI,
@@ -528,21 +514,18 @@ def test_layer_chat_still_blocks_unverified_model_of_open_provider(monkeypatch) 
         _settings(chat_model="glm-unverified", ZAI_API_KEY="k"),
     )
 
-    with pytest.raises(LlmConfigError) as exc_info:
-        registry.validate_selected_models()
-
-    assert "CHAT_MODEL" in str(exc_info.value)
+    llm.validate_startup()
 
 
 @pytest.mark.parametrize("model", ["qwen3.8-max", "qwen3.8-flash", "glm-5.2", "kimi-k3"])
-def test_open_models_pass_startup_for_general_chat_body(monkeypatch, model: str) -> None:
-    """general 프롬프트면 채팅 본문 자리에 쓸 수 있다 — grid search 후보(KNK-1628)."""
+def test_open_models_pass_startup_for_chat_body(monkeypatch, model: str) -> None:
+    """단일 프롬프트는 공급자에 따른 레이어 제한 없이 기동한다."""
     keys = {"OPENROUTER_API_KEY": "k", "ZAI_API_KEY": "k", "MOONSHOT_API_KEY": "k"}
     monkeypatch.setattr(
         registry,
         "settings",
         _settings(
-            chat_prompt="general", chat_model=model, **keys
+            chat_model=model, **keys
         ),
     )
 
@@ -710,7 +693,7 @@ def test_startup_ignores_removed_judgement_model(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "settings",
-        _settings(chat_prompt="general", chat_model="claude-haiku-5-5", anthropic_api_key="ant-key"),
+        _settings(chat_model="claude-haiku-5-5", anthropic_api_key="ant-key"),
     )
 
     assert "CHAT_JUDGEMENT_MODEL" not in dict(registry.selected_models())
@@ -927,7 +910,6 @@ def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effo
         registry,
         "settings",
         _settings(
-            chat_prompt="general",
             chat_model=model,
             chat_reasoning_effort=effort,
             **keys,
@@ -950,7 +932,6 @@ def test_chat_reasoning_effort_accepted_at_startup(monkeypatch, model: str, effo
         registry,
         "settings",
         _settings(
-            chat_prompt="general",
             chat_model=model,
             chat_reasoning_effort=effort,
             **keys,
@@ -958,3 +939,32 @@ def test_chat_reasoning_effort_accepted_at_startup(monkeypatch, model: str, effo
     )
 
     llm.validate_startup()  # 예외 없이 통과
+
+
+@pytest.mark.parametrize(
+    ("model", "provider", "effort"),
+    [
+        ("gpt-6-luna", PROVIDER_OPENAI, "none"),
+        ("gpt-6.1-sol", PROVIDER_OPENAI, "low"),
+        ("gemini-3.8-flash", PROVIDER_GOOGLE, "low"),
+    ],
+)
+def test_planned_chat_models_pass_startup(monkeypatch, model, provider, effort) -> None:
+    monkeypatch.setattr(
+        registry, "settings", _settings(chat_model=model, gemini_api_key="google-test-key")
+    )
+    llm.validate_startup()
+    resolved = registry.resolve(model)
+    assert resolved.provider == provider
+    assert resolved.reasoning_effort == effort
+
+
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6.1-sol", "gemini-3.8-flash"])
+def test_planned_chat_models_reject_unsupported_effort(monkeypatch, model) -> None:
+    monkeypatch.setattr(
+        registry, "settings", _settings(
+            chat_model=model, chat_reasoning_effort="unsupported", gemini_api_key="google-test-key"
+        )
+    )
+    with pytest.raises(LlmConfigError, match="CHAT_REASONING_EFFORT"):
+        llm.validate_startup()

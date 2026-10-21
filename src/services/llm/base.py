@@ -150,9 +150,8 @@ class ResolvedModel:
     # 이미지 조각(`image_part`)을 입력으로 받는지. 기본 False — 새 모델은 문서로 확인한 뒤에만
     # True로 적는다. 못 받는 모델에 이미지를 보내면 통로가 호출 전에 막는다(`llm.complete`).
     supports_image_input: bool = False
-    # 맨 앞이 아닌 자리(대화 중간·끝)의 지시문(system)을 지시문으로 받는지. layer 채팅은 대화 끝에
-    # 현재 상태와 안전 지시를 지시문으로 붙이므로, 이 값이 True인 모델만 layer 채팅 본문에 쓸 수
-    # 있다(`registry.validate_selected_models`). 기본 False — 공식 문서나 실측으로 확인한 뒤에만 켠다.
+    # 대화 중간·끝의 system 메시지를 제자리에 전달할 수 있는지. 공급자 어댑터가 사용한다.
+    # 기본 False — 공식 문서나 실측으로 확인한 뒤에만 켠다.
     supports_mid_conversation_system: bool = False
     # 기능 정보도 가격처럼 언제 어느 공식 문서로 확인했는지 남긴다. 고정 스냅샷이 따로 없으면
     # snapshot_model은 None이다. Claude 4.6+의 dateless ID는 그 자체가 고정 스냅샷이다.

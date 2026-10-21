@@ -16,7 +16,6 @@ from src.schemas.chat_turn import (
     ChatTurnRequest,
     PingData,
 )
-from src.services import chat_assembler
 from tests.conftest import FakeStream
 
 
@@ -55,16 +54,6 @@ async def test_non_chat_validation_keeps_default_error_format(client) -> None:
     assert response.json()["detail"][0]["input"] == {}
 
 
-@pytest.fixture(autouse=True)
-def _chat_prompt_layer(monkeypatch):
-    """이 파일의 검사는 layer 기준(레이어 키·USER 레이어)이라 layer로 고정한다(KNK-1622·1623).
-
-    로컬 `.env`에 CHAT_PROMPT=general이 켜져 있어도 깨지지 않게 한다. general 검사는 테스트
-    안에서 직접 바꾼다. 공용 conftest에 두지 않는 이유는 라이브 테스트까지 묶이기 때문이다.
-    """
-    from src.core.config import settings
-
-    monkeypatch.setattr(settings, "chat_prompt", "layer")
 
 
 @pytest.fixture(autouse=True)
@@ -163,7 +152,7 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     meta = completed["meta"]
     assert meta["provider"] == "not-deepseek"  # 이벤트에 실린 값이 그대로 meta로
     assert meta["retryCount"] == 0  # 본문은 재호출 없음 — 0 고정
-    assert meta["promptVersions"]["SAFETY"] >= 1  # 6레이어 버전 객체
+    assert meta["promptVersions"] == {"CHAT": 1}
     assert "NEXT_ACTIONS" not in meta["promptVersions"]  # 선택지 버전 키는 /chat/choices로 이동
     assert meta["model"]  # 이벤트에 model 없으면 설정값으로 폴백
     # mock 이벤트에 토큰이 없어 null
@@ -188,10 +177,10 @@ async def test_chat_turn_passes_protagonist_name_to_body_prompt(client, monkeypa
 
     assert response.status_code == 200
     assert "event: completed" in response.text
-    user_layer = captured[0]["content"].split("# USER-PROMPT", 1)[1]
-    assert "주인공 이름: 민우" in user_layer
-    assert "신중한 성격의 사립 탐정." in user_layer
-    assert "카이" not in user_layer
+    protagonist = captured[0]["content"].split("<protagonist>", 1)[1].split("</protagonist>", 1)[0]
+    assert "주인공 이름: 민우" in protagonist
+    assert "신중한 성격의 사립 탐정." in protagonist
+    assert "카이" not in protagonist
 
 
 async def test_chat_turn_serializes_character_image_event(client, mock_events) -> None:
@@ -362,7 +351,7 @@ async def test_chat_turn_trace_receives_connection_metadata(
         "turn_number": 7,
         "is_regenerated": True,
         "user_source": "edited_choice",
-        "prompt_versions": chat_assembler.LAYER_VERSIONS,
+        "prompt_versions": {"CHAT": 1},
         "retry_count": 0,
     }
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
@@ -846,14 +835,11 @@ async def test_off_selects_both_speakers_and_stores_same_images(client, mock_eve
     assert all(f"[[{image.image_url}]]" in completed["aiOutput"] for image in selected)
 
 
-async def test_general_prompt_records_general_version(client, mock_events, monkeypatch) -> None:
-    """general로 조립한 턴은 레이어 키 대신 GENERAL 버전을 기록한다(KNK-1623).
-
-    레이어 키가 그대로 실리면 백엔드 기록만 보고는 어느 프롬프트로 나온 응답인지 구분할 수 없다.
-    """
+async def test_chat_prompt_records_same_version_in_response_and_trace(
+    client, mock_events, monkeypatch
+) -> None:
+    """응답과 관측에 동일한 CHAT 버전을 기록한다."""
     from contextlib import contextmanager
-
-    from src.core.config import settings
 
     captured: dict = {}
 
@@ -866,12 +852,11 @@ async def test_general_prompt_records_general_version(client, mock_events, monke
 
         yield _Trace()
 
-    monkeypatch.setattr(settings, "chat_prompt", "general")
     monkeypatch.setattr(chat_module, "observe_request", _fake_observe)
     mock_events([{"event": "completed", "ai_output": "장면", "model": "m", "provider": "p"}])
 
     resp = await client.post("/api/v1/chat/turns", json=_payload())
 
-    expected = {"GENERAL": chat_assembler.GENERAL_VERSION}
+    expected = {"CHAT": 1}
     assert _data_of(resp.text, "completed")["meta"]["promptVersions"] == expected
     assert captured["metadata"]["prompt_versions"] == expected

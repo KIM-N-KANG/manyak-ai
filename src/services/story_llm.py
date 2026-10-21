@@ -669,7 +669,7 @@ def _merge_blocks(data: dict, refill: dict, blocks: list[str]) -> None:
 
 
 def _inject_genre(data: dict, genre_tags: list[str]) -> None:
-    """genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 덮어쓴다(spec/story/2-COMPILE.md §4-3)."""
+    """genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 덮어쓴다(하네스 docs/domain/STORY/AI/6-1-AI-EXECUTION.md)."""
     if isinstance(data.get("meta"), dict):
         data["meta"]["genre"] = ", ".join(genre_tags)
 
@@ -1042,7 +1042,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     흐름: LLM 세분 JSON → genre·주인공 이름/성별 주입 → 빈 필수키·사용자 인물 카드 검증(KNK-833) →
     모자란 블록과 이름·소개·외형 필드를 한 번에 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
     → StorySpec 파싱 → nested 통글 변환.
-    PromptCompiler 추상 경계는 spec/chat/4-SERVICE-IMPLEMENTATION.md §6.
+    컴파일 구현 기준은 하네스 docs/domain/STORY/AI/6-2-SOFTWARE-IMPLEMENTATION.md를 따른다.
     """
     compile_provider = llm.provider_of(settings.story_compile_model)
     system_prompt, user_prompt, version_key = build_compile_prompt(

@@ -1,6 +1,6 @@
 ---
-version: 2
-updated: 2026-10-16
+version: 1
+updated: 2026-10-21
 ---
 
 ## [SYSTEM]
