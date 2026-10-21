@@ -856,3 +856,67 @@ async def test_provider_is_resolved_before_the_llm_call(monkeypatch, install_llm
         [e async for e in stream_chat_turn([])]
 
     assert calls["n"] == 0  # LLM을 부르기도 전에 막힌다
+
+
+@pytest.mark.parametrize(
+    ("model", "provider", "effort"),
+    [
+        ("gpt-6-luna", "openai", "none"),
+        ("gpt-6.1-sol", "openai", "low"),
+        ("gemini-3.8-flash", "google", "low"),
+    ],
+)
+async def test_planned_chat_models_stream_through_provider_sdk(
+    monkeypatch, install_llm_sdk, model, provider, effort
+) -> None:
+    """본문 서비스부터 공급자 SDK까지 모델·추론 설정·완료 정보를 확인한다."""
+    from types import SimpleNamespace
+
+    from src.services.llm import google_sdk
+
+    captured: dict = {}
+    messages = [
+        {"role": "system", "content": "이야기 지시"},
+        {"role": "assistant", "content": "*이전 장면*"},
+        {"role": "user", "content": "이번 입력"},
+    ]
+    monkeypatch.setattr(chat_llm.settings, "chat_model", model)
+    monkeypatch.setattr(chat_llm.settings, "chat_reasoning_effort", "")
+
+    async def google_chunks():
+        yield SimpleNamespace(
+            text="*새 장면*", usage_metadata=None, model_version=model,
+            candidates=[SimpleNamespace(finish_reason=SimpleNamespace(name="STOP"))],
+        )
+
+    async def create(**kwargs):
+        captured.update(kwargs)
+        if provider == "google":
+            return google_chunks()
+        return FakeStream([_FakeChunk("*새 장면*")])
+
+    if provider == "google":
+        monkeypatch.setattr(
+            google_sdk, "_client", lambda _: SimpleNamespace(
+                aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=create))
+            )
+        )
+    else:
+        install_llm_sdk(create)
+
+    events = [event async for event in stream_chat_turn(messages)]
+    completed = next(event for event in events if event["event"] == "completed")
+    assert completed["ai_output"] == "*새 장면*"
+    assert completed["provider"] == provider
+    assert completed["model"] == model
+    assert captured["model"] == model
+    if provider == "google":
+        config = captured["config"]
+        assert config.system_instruction == "이야기 지시"
+        assert config.thinking_config.thinking_level.value.lower() == effort
+        assert [content.role for content in captured["contents"]] == ["model", "user"]
+    else:
+        assert captured["reasoning_effort"] == effort
+        assert captured["messages"] == messages
+        assert captured["stream"] is True
+        assert "temperature" not in captured

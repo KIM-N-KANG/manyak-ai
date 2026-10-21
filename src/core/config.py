@@ -1,10 +1,5 @@
-from typing import Literal
-
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-# 채팅 본문 프롬프트 종류(KNK-1622). layer는 6레이어 조립, general은 파일 하나 조립이다.
-ChatPrompt = Literal["layer", "general"]
 
 
 class Settings(BaseSettings):
@@ -69,9 +64,6 @@ class Settings(BaseSettings):
     story_compile_model: str = "gpt-5.6-terra"  # 스토리 컴파일 전용
     storylines_model: str = "deepseek-flash"  # 스토리라인 생성 전용(fast, KNK-215)
     chat_model: str = "deepseek-flash"  # 채팅 본문 전용(fast, KNK-215)
-    # 채팅 본문 프롬프트를 고른다(KNK-1622). 기본 layer라 env가 없으면 운영 동작은 그대로다.
-    # 다른 값이면 Settings 생성에서 검증 오류가 나 서버가 뜨지 않는다.
-    chat_prompt: ChatPrompt = "layer"
     # 채팅 본문의 추론 강도(none·low·medium·high 등). 비우면 등록부에 적힌 그 모델의 기본값을 쓴다 —
     # env가 없으면 운영 동작은 그대로다. 모델마다 받는 값이 달라, 고른 모델이 받지 않는 값이면
     # 서버 기동에서 막는다(`registry.validate_selected_models`). 모델 비교 실험용이다.

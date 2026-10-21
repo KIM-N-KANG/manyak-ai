@@ -97,9 +97,7 @@ def _build_config(req: LlmRequest, resolved: ResolvedModel) -> types.GenerateCon
 
     # system instruction — messages에서 system role을 분리한다.
     # Gemini의 system_instruction은 칸이 하나뿐이라 복수 system 메시지를 합친다.
-    # **채팅처럼 system을 앞뒤에 나눠 놓는 경우(앞 1 + 뒤 2) 뒤쪽 지시의 배치 효과가
-    # 사라진다** — Anthropic과 같은 문제다. 컴파일은 system이 앞 1개뿐이라 지금은 문제없지만,
-    # 채팅에서 이 어댑터를 쓰려면 BLOCKED_PROVIDERS에 넣거나 배치 문제를 먼저 풀어야 한다.
+    # 중간·끝의 system도 맨 앞 지시문으로 합쳐지므로 원래 위치는 보존되지 않는다.
     system_parts = []
     for msg in req.messages:
         if msg.get("role") == "system":

@@ -1,5 +1,4 @@
 import pytest
-from pydantic import ValidationError
 
 from src.core.config import Settings
 
@@ -28,30 +27,6 @@ def test_choice_model_field_reads_its_env(monkeypatch) -> None:
     s = Settings(_env_file=None)
 
     assert (s.chat_model, s.chat_choice_model) == ("chat-x", "choice-x")
-
-
-def test_chat_prompt_defaults_to_layer(monkeypatch) -> None:
-    """CHAT_PROMPT가 없으면 layer라 운영 동작이 그대로다(KNK-1622)."""
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
-    monkeypatch.delenv("CHAT_PROMPT", raising=False)
-
-    assert Settings(_env_file=None).chat_prompt == "layer"
-
-
-def test_chat_prompt_reads_general(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
-    monkeypatch.setenv("CHAT_PROMPT", "general")
-
-    assert Settings(_env_file=None).chat_prompt == "general"
-
-
-def test_chat_prompt_rejects_unknown_value(monkeypatch) -> None:
-    """오타 같은 다른 값은 조용히 layer로 떨어지지 않고 기동에서 실패한다."""
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
-    monkeypatch.setenv("CHAT_PROMPT", "genral")
-
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
 
 
 def test_model_defaults(monkeypatch) -> None:
@@ -131,3 +106,17 @@ def test_settings_no_longer_carries_a_global_provider(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
 
     assert not hasattr(Settings(_env_file=None), "llm_provider")
+
+
+@pytest.mark.parametrize("legacy_value", ["layer", "general", "genral"])
+def test_legacy_chat_prompt_is_ignored_in_environment_and_dotenv(
+    monkeypatch, tmp_path, legacy_value: str
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_PROMPT", legacy_value)
+    env = tmp_path / ".env"
+    env.write_text(f"CHAT_PROMPT={legacy_value}\n", encoding="utf-8")
+    for settings in (Settings(_env_file=None), Settings(_env_file=str(env))):
+        assert not hasattr(settings, "chat_prompt")
+    monkeypatch.delenv("CHAT_PROMPT")
+    assert not hasattr(Settings(_env_file=str(env)), "chat_prompt")

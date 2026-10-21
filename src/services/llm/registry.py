@@ -413,8 +413,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
             {"none", "low", "medium", "high", "xhigh", "max"}
         ),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_SCHEMA}),
-        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요). layer 채팅의 끝 지시문
-        # (현재 상태·안전 지시)을 버리지 않고 보낼 수 있어 layer 채팅 본문에 쓸 수 있다.
+        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요).
         supports_mid_conversation_system=True,
         capabilities_verified_on=date(2026, 10, 16),
         capabilities_source_urls=(
@@ -456,8 +455,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
             {"low", "medium", "high", "xhigh", "max"}
         ),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_SCHEMA}),
-        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요). layer 채팅의 끝 지시문
-        # (현재 상태·안전 지시)을 버리지 않고 보낼 수 있어 layer 채팅 본문에 쓸 수 있다.
+        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요).
         supports_mid_conversation_system=True,
         capabilities_verified_on=date(2026, 10, 16),
         capabilities_source_urls=(
@@ -494,8 +492,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
             {"low", "medium", "high", "xhigh", "max"}
         ),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_SCHEMA}),
-        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요). layer 채팅의 끝 지시문
-        # (현재 상태·안전 지시)을 버리지 않고 보낼 수 있어 layer 채팅 본문에 쓸 수 있다.
+        # 대화 중간 지시문(`role: "system"`)을 공식 지원한다(beta 헤더 불필요).
         supports_mid_conversation_system=True,
         capabilities_verified_on=date(2026, 10, 16),
         capabilities_source_urls=(
@@ -618,7 +615,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
         supported_reasoning_efforts=frozenset({"low", "medium", "high", "xhigh"}),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
         # 대화 끝 지시문을 받는다 — 문서로는 확인하지 못했고 실측으로 확인했다(2026-10-16, 끝 지시문에 둔
-        # 출력 규칙을 3회 중 2~3회 따름). layer 채팅 본문에 쓸 수 있다.
+        # 출력 규칙을 3회 중 2~3회 따름).
         supports_mid_conversation_system=True,
         capabilities_verified_on=date(2026, 10, 16),
         capabilities_source_urls=(
@@ -651,7 +648,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
         supported_reasoning_efforts=frozenset({"none", "low", "medium", "high", "xhigh"}),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
         # 대화 끝 지시문을 받는다 — 문서로는 확인하지 못했고 실측으로 확인했다(2026-10-16, 끝 지시문에 둔
-        # 출력 규칙을 3회 중 2~3회 따름). layer 채팅 본문에 쓸 수 있다.
+        # 출력 규칙을 3회 중 2~3회 따름).
         supports_mid_conversation_system=True,
         capabilities_verified_on=date(2026, 10, 16),
         capabilities_source_urls=(
@@ -683,7 +680,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
         supported_reasoning_efforts=frozenset({"none", "high", "max"}),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
         # 대화 끝 지시문을 받는다 — 문서로는 확인하지 못했고 실측으로 확인했다(2026-10-16, 끝 지시문에 둔
-        # 출력 규칙을 3회 중 2~3회 따름). layer 채팅 본문에 쓸 수 있다.
+        # 출력 규칙을 3회 중 2~3회 따름).
         supports_mid_conversation_system=True,
         capabilities_verified_on=date(2026, 10, 12),
         capabilities_source_urls=(
@@ -717,7 +714,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
         supported_reasoning_efforts=frozenset({"low", "high", "max"}),
         structured_output_modes=frozenset({STRUCTURED_OUTPUT_JSON_OBJECT}),
         # 대화 끝 지시문을 받는다 — 문서로는 확인하지 못했고 실측으로 확인했다(2026-10-16, 끝 지시문에 둔
-        # 출력 규칙을 3회 중 2~3회 따름). layer 채팅 본문에 쓸 수 있다.
+        # 출력 규칙을 3회 중 2~3회 따름).
         supports_mid_conversation_system=True,
         capabilities_verified_on=date(2026, 10, 12),
         capabilities_source_urls=(
@@ -743,46 +740,14 @@ _REGISTRY: dict[str, ResolvedModel] = {
 
 # 이 자리에 쓸 수 없는 공급자. 위반하면 서버 기동에서 막는다(`validate_selected_models`).
 #
-# **채팅 본문에 Anthropic을 막는 이유**(KNK-675): 채팅은 지시문(system)을 앞에 1개, 뒤에
-# 2개(Depth·PHI) 놓는데, Anthropic은 요청 최상위의 지시문 칸이 하나뿐이라 앞의 1개만 옮기고
-# 뒤의 둘은 버려진다(`anthropic_sdk._split_system`). 그중 PHI가 안전 가드레일이다. 즉 막지
-# 않으면 **서버도 채팅도 정상으로 도는데 안전 지시만 빠진 채 호출된다** — 오류가 없어 한참
-# 뒤에야 알게 된다. 직전까지는 "이 어댑터는 스트리밍을 못 한다"는 이유로 아래 검사에 걸렸지만,
-# 조각 흘리기를 구현하면서(KNK-696) 그 그물이 사라졌다.
-#
-# **general 프롬프트면 풀린다**(KNK-1624). general은 지시문을 맨 앞 하나에만 두고 대화 뒤에
-# 붙이지 않아(`chat_assembler._assemble_general`) 버려지는 지시문이 없다. 그래서 금지는
-# `CHAT_PROMPT=layer`일 때만 건다(`blocked_providers`). layer는 지금도 뒤의 둘이 버려지므로
-# 그대로 막는다.
-#
-# **layer라도 대화 중간 지시문을 받는 모델은 풀린다**(`supports_mid_conversation_system`, 2026-10-16).
-# 막은 이유가 "끝의 두 지시문이 버려진다"였으므로, 버리지 않고 그 자리에 보낼 수 있는 모델이면 그
-# 이유가 없다. 지금은 Claude 5.5 세대(공식 지원)와 Qwen·GLM·Kimi(실측 확인, 아래)가 해당한다. 공급자 단위 표는 그대로 두고 모델 단위
-# 예외로 둔다 — 같은 회사라도 Sonnet 5는 이 기능이 없어 계속 막혀야 한다.
-#
-# **Qwen·GLM·Kimi도 같은 이유로 layer에서 막는다**(KNK-1628). Qwen 호환 문서는 system을
-# `messages[0]`에만 허용하고(OpenRouter 중계도 대화 중간 system 전달을 문서로 확인하지 못했다),
-# GLM·Kimi는 대화 중간 system의 처리를 문서로 확인하지 못했다.
-# 확인 전에는 안전 지시가 빠진 채 돌 수 있다고 보고 general에서만 썼다. 2026-10-16 실측(대화 끝 지시문에
-# 둔 출력 규칙을 따르는지 모델별 3회)에서 넷 모두 따라 모델 단위 예외로 열었다.
-#
-# **선택지도 같은 공급자를 막는다**(KNK-1416). 선택지는 지시문 배치 문제는 없지만, 이 회사는
+# **선택지에 Anthropic을 막는 이유**(KNK-1416). 이 회사는
 # JSON 강제에 스키마 전체를 요구하는데 통로에 그 칸이 없어 어댑터가 인자를 빼고 보낸다
 # (`anthropic_sdk`). 형식 준수가 프롬프트에만 기대게 되므로 별도 검토 전에는 열지 않는다.
 BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
-    "CHAT_MODEL": frozenset(
-        {PROVIDER_ANTHROPIC, PROVIDER_ALIBABA, PROVIDER_OPENROUTER, PROVIDER_ZAI, PROVIDER_MOONSHOT}
-    ),
     "CHAT_CHOICE_MODEL": frozenset({PROVIDER_ANTHROPIC}),
     "MODERATION_MODEL": frozenset({PROVIDER_DEEPSEEK, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
     "MODERATION_FALLBACK_MODEL": frozenset({PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
 }
-
-# 채팅 본문 금지 중 layer 프롬프트 때문인 것. general이면 풀린다(`blocked_providers`).
-_LAYER_ONLY_CHAT_BLOCKS = frozenset(
-    {PROVIDER_ANTHROPIC, PROVIDER_ALIBABA, PROVIDER_OPENROUTER, PROVIDER_ZAI, PROVIDER_MOONSHOT}
-)
-
 
 # 조각 흘리기(스트리밍)로 부르는 용도. 이 env로 고른 모델은 담당 어댑터가 스트리밍을 할 수
 # 있어야 한다 — 못 하면 서버 기동에서 막는다(`llm.validate_startup`).
@@ -793,25 +758,9 @@ _LAYER_ONLY_CHAT_BLOCKS = frozenset(
 STREAMING_ENVS = frozenset({"CHAT_MODEL"})
 
 
-def layer_chat_allows(env_name: str, resolved: ResolvedModel) -> bool:
-    """layer 채팅 본문 금지의 모델 단위 예외 — 끝 지시문을 버리지 않고 받는 모델이면 쓸 수 있다."""
-    return (
-        env_name == "CHAT_MODEL"
-        and resolved.provider in _LAYER_ONLY_CHAT_BLOCKS
-        and resolved.supports_mid_conversation_system
-    )
-
-
 def blocked_providers(env_name: str) -> frozenset[str]:
-    """이 자리(env)에 지금 설정으로 쓸 수 없는 공급자.
-
-    채팅 본문의 금지는 지시문이 대화 뒤에 붙는 layer 프롬프트 때문이라, general이면 전부
-    뺀다(위 `BLOCKED_PROVIDERS` 주석). 나머지 자리는 표 그대로다.
-    """
-    blocked = BLOCKED_PROVIDERS.get(env_name, frozenset())
-    if env_name == "CHAT_MODEL" and settings.chat_prompt == "general":
-        return blocked - _LAYER_ONLY_CHAT_BLOCKS
-    return blocked
+    """이 자리(env)에 쓸 수 없는 공급자를 반환한다."""
+    return BLOCKED_PROVIDERS.get(env_name, frozenset())
 
 
 @dataclass(frozen=True)
@@ -948,7 +897,7 @@ def validate_selected_models() -> None:
             raise LlmConfigError(f"{env_name}: {exc}") from exc
         if (env_name == "JEV_MODEL") != (resolved.adapter == ADAPTER_TYPESAFE_API):
             raise LlmConfigError(f"{env_name}: 텍스트 생성 모델과 판정 전용 모델은 서로 바꿀 수 없습니다.")
-        if resolved.provider in blocked_providers(env_name) and not layer_chat_allows(env_name, resolved):
+        if resolved.provider in blocked_providers(env_name):
             raise LlmConfigError(
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데, 이 자리는 그 "
                 f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석)."
