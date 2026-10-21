@@ -1,6 +1,6 @@
 """채팅 턴 API(시점 B 런타임)의 입출력 계약.
 
-spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
+하네스 docs/domain/CHAT/AI/5-CONTRACT.md 기준. 단일 채팅 턴 API는 매 턴
 백엔드가 모든 재료를 실어 보내고 AI는 받은 것만으로 응답하는 **완전 stateless**
 구조다. AI는 턴 사이에 아무것도 보관하지 않으며, 세션 식별자도 두지 않는다.
 
