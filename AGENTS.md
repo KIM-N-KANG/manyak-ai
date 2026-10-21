@@ -4,21 +4,14 @@
 
 작업을 시작할 때 형제 하네스 레포지토리의 운영 규칙 `../knk-harness/AGENTS.md`를 먼저 확인합니다
 (Claude Code는 SessionStart 훅(`.claude/settings.json`)이 자동 로드하고, Codex는 직접 엽니다).
-제품 명세는 미리 읽지 않습니다. 작업에 필요한 문서만 아래 인덱스에서 골라 직접 열어 근거로 삼습니다.
+제품 명세를 미리 전부 읽지 않습니다. 문서 목록은 [하네스 운영 지침](../knk-harness/AGENTS.md)의
+Knowledge Base를, 도메인별 명세는 [docs/domain/](../knk-harness/docs/domain/)을 참고합니다.
 
-| 작업 범위 | 먼저 확인할 문서 |
-| --- | --- |
-| 도메인 용어·필드 이름 | `../knk-harness/docs/spec/0-glossary.md` |
-| 제품 배경·MVP 범위·사용자 요구 | `../knk-harness/docs/spec/1-background.md`, `../knk-harness/docs/spec/2-user-stories.md` |
-| 클라이언트 화면·호출 흐름·SSE 소비 방식 | `../knk-harness/docs/spec/3-1-client-spec.md`, `../knk-harness/docs/spec/3-2-web-spec.md` |
-| 백엔드 API·SSE·저장·오류 계약 | `../knk-harness/docs/spec/4-backend-server-spec.md` |
-| AI 요청·응답·실패 처리 계약 | `../knk-harness/docs/spec/5-ai-server-spec.md` |
-| AI 호출 구조·프롬프트·모델·관측 설정 | `../knk-harness/docs/design/3-ai-server-design.md` |
-| AI 설계 결정의 배경·대안·근거 | `../knk-harness/docs/adr/3-ai-server-adr.md` |
-| 이벤트·지표·AI 관측 | `../knk-harness/docs/spec/6-analytics.md` |
-| AI 서버 배포·환경 변수·운영 검수 | `../knk-harness/docs/design/4-deployment.md` |
-| 채팅 내부 설계·구현 규칙 | `spec/chat/`의 관련 문서 |
-| 스토리 내부 설계·구현 규칙 | `spec/story/`의 관련 문서 |
+- 작업에 맞는 도메인을 고르고, 해당 도메인과 세트의 `AGENTS.md`에서 안내하는 순서에 따라 필요한 명세를 읽습니다.
+- 해당 도메인 세트가 아직 없으면 하네스 운영 지침에서 안내하는 기존 Spec·Design·ADR을 참고합니다.
+- 도메인 명세와 과거 문서나 로컬 `spec/`가 충돌하면 도메인 명세를 우선합니다.
+- **스펙과 코드가 충돌하면 스펙이 우선입니다.** 코드를 스펙에 맞추며, 현재 코드에 맞추려고 스펙을 임의로 바꾸지 않습니다.
+- 사용자가 작업용 하네스 경로를 지정하면 위 참조도 해당 하네스 경로를 기준으로 읽습니다.
 
 `../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다. 두 가지 예외가 있습니다.
 
@@ -48,12 +41,8 @@
 ### 설계·아키텍처
 - 코드 스타일 규칙(프로젝트 레이아웃·네이밍·임포트 순서·응답 모델·에러 처리·금지 패턴)은
   `.agents/STYLEGUIDE.md`를 따릅니다. 코드를 쓸 때도 리뷰할 때도 같은 기준입니다.
-- 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 위 인덱스에서 제품 명세와 로컬 `spec/` 문서를 골라 먼저 확인합니다.
-  외부 계약(요청·응답·SSE)의 SSOT는 `docs/spec/5-ai-server-spec.md`, 현재 내부 구조·설정은 `docs/design/3-ai-server-design.md`, 설계 결정의 배경·대안·근거는 `docs/adr/3-ai-server-adr.md`입니다.
-- 채팅 프롬프트는 레이어 7종(CORE·SAFETY·STORY·CHARACTER·USER·MEMORY·CHOICES)으로
-  나뉘어 템플릿으로 존재합니다. 본문 레이어 6종은 `prompt/chat/layer/`에, CHOICES는 `prompt/chat/`에 있습니다.
-  레이어 없이 파일 하나로 쓴 범용 본문 프롬프트는 `prompt/chat/general/`에 따로 둡니다. 어떤 내용이 어느 레이어에 속하는지는
-  `spec/chat/1-PROMPT-LAYER.md`·`2-LAYER-PLACEMENT.md`가 정합니다 — 임의 배치 금지.
+- 제품 동작이나 설계를 바꾸는 작업은 위 참조 규칙에 따라 관련 도메인 명세를 먼저 확인합니다.
+  요구사항·외부 계약, 내부 구조·설정, 설계 결정의 이유는 각각을 담당하는 명세를 참고하고 이 파일에 중복해서 적지 않습니다.
 
 ### 작업 워크플로
 - 작업 주기는 스킬로 표준화돼 있습니다: `create-branch` → `create-commit` → `create-pr` → `request-codex-review`(PR에 Codex 리뷰를 받고 지적을 판단·반영).
@@ -78,8 +67,7 @@
 ### 프롬프트·명세 변경
 - `prompt/` 파일 수정은 반드시 `prompt-authoring` 스킬의 설계 원칙을 적용합니다.
 - `prompt/`·`spec/` 파일은 frontmatter의 `version`·`updated`로 버전을 관리합니다. 고치면 커밋 전에 `version`(+1)·`updated`(오늘 날짜)를
-  직접 올립니다(자동 갱신 장치 없음 — 브랜치당 파일별 1회면 충분). `prompt/` frontmatter의 배치 메타(`layer`·`priority`·`placement`·`slots`)는
-  의미를 모르면 `spec/chat/2-LAYER-PLACEMENT.md`를 먼저 봅니다.
+  직접 올립니다(자동 갱신 장치 없음 — 브랜치당 파일별 1회면 충분).
 - 파일은 LF 줄바꿈으로 저장합니다(CRLF면 frontmatter 파싱이 깨질 수 있음).
 - 프롬프트 규칙처럼 실제 LLM 출력으로만 검증되는 변경은 유닛 테스트 통과로 "검증됨"을 주장하지 않습니다.
   실측(라이브 호출) 결과가 있으면 그것을, 없으면 "실측 미실시"를 보고에 명시합니다.
