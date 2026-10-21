@@ -113,7 +113,10 @@ async def _event_stream(
         messages = assemble(req)
         image_observation = ChildImageObservation() if req.image_slots else None
 
-        events = stream_chat_turn(messages, character_images=req.character_images)
+        events = stream_chat_turn(
+            messages, character_images=req.character_images,
+            user_id=req.user_id, model_tier=req.model_tier,
+        )
         if req.image_slots:
             events = stream_with_child_image(
                 events, req,

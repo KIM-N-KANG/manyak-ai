@@ -164,7 +164,8 @@ async def test_chat_stream_error_keeps_ai_tags_after_logging_dedup(install_llm_s
     assert len(envelopes) == 1
     tags = envelopes[0]["tags"]
     assert tags["feature"] == "chat_response"
-    assert tags["provider"] == "deepseek"
+    assert tags["provider"] == "openai"
+    assert tags["model"] == "gpt-6-luna"
     assert tags["error_code"] == "provider_unavailable"
 
 

@@ -95,15 +95,15 @@ def mock_events(monkeypatch):
     """엔드포인트가 쓰는 stream_chat_turn을 가짜 이벤트 시퀀스로 바꾼다(본문 LLM 회피)."""
 
     def _set(events: list[dict]) -> None:
-        async def _fake(messages, *, character_images):
+        async def _fake(messages, *, character_images, user_id, model_tier):
             for e in events:
                 yield e
 
         monkeypatch.setattr(
             chat_module,
             "stream_chat_turn",
-            lambda messages, *, character_images: _fake(
-                messages, character_images=character_images
+            lambda messages, *, character_images, user_id, model_tier: _fake(
+                messages, character_images=character_images, user_id=user_id, model_tier=model_tier
             ),
         )
 
@@ -164,7 +164,7 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
 async def test_chat_turn_passes_protagonist_name_to_body_prompt(client, monkeypatch) -> None:
     captured = []
 
-    async def fake_stream(messages, *, character_images):
+    async def fake_stream(messages, *, character_images, user_id, model_tier):
         captured.extend(messages)
         yield {"event": "completed", "ai_output": "장면", "model": "test", "provider": "test"}
 
@@ -408,7 +408,7 @@ async def test_concurrent_chat_turn_streams_keep_connection_metadata_isolated(
     monkeypatch.setattr(
         chat_module,
         "stream_chat_turn",
-        lambda messages, *, character_images: _events(messages),
+        lambda messages, *, character_images, user_id, model_tier: _events(messages),
     )
 
     async def _post(label: str, chat_id: str, turn_number: int):
@@ -517,7 +517,7 @@ async def test_chat_turn_pings_while_waiting_for_the_body(
     monkeypatch.setattr(
         chat_module,
         "stream_chat_turn",
-        lambda messages, *, character_images: _slow_body(messages),
+        lambda messages, *, character_images, user_id, model_tier: _slow_body(messages),
     )
 
     body = (await client.post("/api/v1/chat/turns", json=_payload())).text
@@ -880,7 +880,7 @@ async def test_invalid_routing_fields_return_422_before_generation(client, monke
 async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) -> None:
     captured = []
 
-    async def fake_stream(messages, *, character_images):
+    async def fake_stream(messages, *, character_images, user_id, model_tier):
         captured.append(messages)
         yield {"event": "error", "code": "test", "message": "test"}
 
@@ -893,3 +893,37 @@ async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) 
     assert len(captured) == 4
     assert captured[0]
     assert all(messages == captured[0] for messages in captured[1:])
+
+
+@pytest.mark.parametrize("regenerated", ["false", "true"])
+async def test_api_routes_each_turn_using_current_member_and_tier(client, monkeypatch, regenerated) -> None:
+    from src.services import chat_llm
+    from src.services.llm.base import StreamCompleted, TokenUsage
+
+    calls = []
+
+    async def fake_llm_stream(req):
+        calls.append((req.model, req.reasoning_effort, req.messages))
+        yield StreamCompleted(model=req.model, provider=chat_llm.llm.provider_of(req.model), usage=TokenUsage())
+
+    monkeypatch.setattr(chat_llm.llm, "stream", fake_llm_stream)
+    even = "3f2504e0-4f89-41d3-9a0c-0305e82c330a"
+    odd = "3f2504e0-4f89-41d3-9a0c-0305e82c330b"
+    for member, tier, model, effort, provider in [
+        (None, "ADVANCED", "gpt-6-luna", "low", "openai"),
+        (even, "ADVANCED", "gpt-6.1-sol", "low", "openai"),
+        (even, "BASIC", "gpt-6-luna", "low", "openai"),
+        (even, "ADVANCED", "gpt-6.1-sol", "low", "openai"),
+        (odd, "ADVANCED", "gemini-3.8-flash", "medium", "google"),
+        (odd, "BASIC", "gpt-6-luna", "low", "openai"),
+    ]:
+        response = await client.post(
+            "/api/v1/chat/turns", json={**_payload(), "user_id": member, "model_tier": tier},
+            headers={"X-Manyak-Is-Regenerated": regenerated},
+        )
+        assert response.status_code == 200
+        meta = _data_of(response.text, "completed")["meta"]
+        assert (meta["model"], meta["provider"]) == (model, provider)
+        assert calls[-1][:2] == (model, effort)
+    assert len(calls) == 6
+    assert all(call[2] == calls[0][2] for call in calls)
