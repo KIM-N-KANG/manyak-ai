@@ -420,6 +420,7 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
                                 chunk = await anext(chunks)
                             except StopAsyncIteration:
                                 break
+                        generation.mark_first_chunk()
                         # usage 수집
                         chunk_usage = getattr(chunk, "usage_metadata", None)
                         if chunk_usage is not None:

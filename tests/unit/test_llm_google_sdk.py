@@ -6,6 +6,7 @@
 import asyncio
 import json
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -13,6 +14,7 @@ import httpx
 import pytest
 from google.genai import errors, types
 
+from src.core import langfuse as lf
 from src.services.llm import google_sdk
 from src.services.llm.base import (
     ADAPTER_GOOGLE_SDK,
@@ -608,6 +610,9 @@ class _RecordingStreamGeneration:
         self.started = started
         self.ends: list[tuple[str, dict]] = []
 
+    def mark_first_chunk(self) -> None:
+        return None
+
     def finish(self, **fields) -> None:
         self.ends.append(("finish", fields))
 
@@ -707,6 +712,51 @@ async def test_stream_records_failure_midway(monkeypatch) -> None:
         _ = [ev async for ev in google_sdk.stream(_req(), _RESOLVED)]
 
     assert [kind for kind, _ in made[0].ends] == ["fail"]
+
+
+@pytest.mark.parametrize("ending", ["finish", "fail", "cancel"])
+@pytest.mark.parametrize("has_chunks", [True, False])
+async def test_stream_records_ttft_from_first_provider_chunk(monkeypatch, ending, has_chunks) -> None:
+    updates = []
+    span = SimpleNamespace(update=lambda **kw: updates.append(kw), end=lambda: None)
+    monkeypatch.setattr(google_sdk, "start_stream_generation", lambda *a, **kw: lf._StreamGeneration(span))
+    first = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    timestamps = []
+
+    def now(tz):
+        timestamps.append(tz)
+        return first
+
+    monkeypatch.setattr(lf, "datetime", SimpleNamespace(now=now))
+
+    async def chunks():
+        if has_chunks:
+            # 빈 텍스트인 첫 조각도 OpenAI 자동 계측과 같은 기준으로 센다.
+            yield SimpleNamespace(text="", usage_metadata=None, candidates=[])
+            assert timestamps == [timezone.utc]
+            yield SimpleNamespace(text="body", usage_metadata=None, candidates=[])
+        if ending == "fail":
+            raise _api_error(429, "rate limited")
+        if ending == "cancel":
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(google_sdk, "_client", lambda _: SimpleNamespace(aio=SimpleNamespace(
+        models=SimpleNamespace(generate_content_stream=AsyncMock(return_value=chunks())),
+    )))
+    if ending == "finish":
+        events = [event async for event in google_sdk.stream(_req(), _RESOLVED)]
+        assert [event.text for event in events if isinstance(event, TextDelta)] == (["body"] if has_chunks else [])
+    else:
+        with pytest.raises(LlmRateLimited if ending == "fail" else asyncio.CancelledError):
+            _ = [event async for event in google_sdk.stream(_req(), _RESOLVED)]
+
+    assert len(updates) == 1
+    if has_chunks:
+        assert updates[0]["completion_start_time"] == first
+        assert timestamps == [timezone.utc]
+    else:
+        assert "completion_start_time" not in updates[0]
+        assert timestamps == []
 
 
 @pytest.mark.parametrize("ending", ["completed", "closed", "error", "cancelled"])

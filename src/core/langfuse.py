@@ -43,6 +43,7 @@ import logging
 import sys
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timezone
 
 from src.core.config import settings
 from src.core.request_context import get_correlation_ids
@@ -487,6 +488,13 @@ class _StreamGeneration:
     def __init__(self, span: object | None = None) -> None:
         self._span = span
         self._ended = False
+        self._completion_start_time: datetime | None = None
+
+    def mark_first_chunk(self) -> None:
+        """첫 공급자 조각 수신 시각. OpenAI 자동 계측처럼 빈 텍스트 조각도 포함한다."""
+        if self._span is None or self._ended or self._completion_start_time is not None:
+            return
+        self._completion_start_time = datetime.now(timezone.utc)
 
     def finish(
         self, *, output: object | None = None, usage_details: dict[str, int] | None = None
@@ -513,6 +521,8 @@ class _StreamGeneration:
             return
         self._ended = True
         values = {k: v for k, v in fields.items() if v is not None}
+        if self._completion_start_time is not None:
+            values["completion_start_time"] = self._completion_start_time
         try:
             if values:
                 self._span.update(**values)
