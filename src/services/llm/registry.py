@@ -207,7 +207,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
             ),
         ),
     ),
-    # 채팅 기본 모델(KNK-1411). 등록부 기본 강도는 none이고 본문 라우팅은 low를 지정한다.
+    # 채팅 라이트 모델(KNK-1411). 등록부 기본 강도는 none이고 본문 라우팅은 low를 지정한다.
     # temperature는 none일 때만 받지만, 추론 단계를 올리면 400이 나므로 받지 않는 것으로 적는다.
     "gpt-6-luna": ResolvedModel(
         model="gpt-6-luna",
@@ -757,9 +757,9 @@ BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
 # 등록부는 이미 env(=용도)와 모델을 잇는 자리라(`selected_models`) 여기가 제자리다.
 # 환경 변수가 아닌 코드 내 라우팅 대상. 호출과 기동 검사가 같은 모델·강도를 사용한다.
 ROUTING_TARGETS: dict[str, tuple[str, str]] = {
-    "CHAT_BASIC": ("gpt-6-luna", "low"),
-    "CHAT_ADVANCED_EVEN": ("gpt-6.1-sol", "low"),
-    "CHAT_ADVANCED_ODD": ("gemini-3.8-flash", "medium"),
+    "CHAT_LITE": ("gpt-6-luna", "low"),
+    "CHAT_AURORA_EVEN": ("gpt-6.1-sol", "low"),
+    "CHAT_AURORA_ODD": ("gemini-3.8-flash", "medium"),
 }
 STREAMING_SLOTS = frozenset(ROUTING_TARGETS)
 

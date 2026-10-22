@@ -751,7 +751,7 @@ async def test_stream_cancellation_is_not_reported_as_error(monkeypatch, install
 
 # ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
 # 가짜가 kwargs를 버리면 model·stream·thinking 설정 회귀를 못 잡는다. 넘긴 인자를
-# 통째로 붙잡아, 본문 경로가 스트리밍·usage 동봉·기본 등급 low로 호출하는지 고정한다.
+# 통째로 붙잡아, 본문 경로가 스트리밍·usage 동봉·라이트 등급 low로 호출하는지 고정한다.
 async def test_stream_call_contract(install_llm_sdk) -> None:
     captured: dict = {}
 
@@ -794,7 +794,7 @@ async def test_chat_reasoning_effort_reaches_the_request(install_llm_sdk, monkey
 
 
 # ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674) ────────────
-# 고급 짝수 그룹의 성공·실패 기록이 선택한 Sol 모델과 공급자를 따르는지 확인한다.
+# 오로라 짝수 그룹의 성공·실패 기록이 선택한 Sol 모델과 공급자를 따르는지 확인한다.
 async def test_provider_follows_the_selected_model(install_llm_sdk) -> None:
 
     async def _create(**kwargs):
@@ -802,7 +802,7 @@ async def test_provider_follows_the_selected_model(install_llm_sdk) -> None:
 
     install_llm_sdk(_create)
 
-    events = [e async for e in stream_chat_turn([], user_id=UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), model_tier="ADVANCED")]
+    events = [e async for e in stream_chat_turn([], user_id=UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), model_tier="AURORA")]
     completed = next(e for e in events if e["event"] == "completed")
 
     assert completed["provider"] == "openai"
@@ -823,7 +823,7 @@ async def test_failure_capture_provider_follows_the_selected_model(
 
     install_llm_sdk(_create)
 
-    events = [e async for e in stream_chat_turn([], user_id=UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), model_tier="ADVANCED")]
+    events = [e async for e in stream_chat_turn([], user_id=UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), model_tier="AURORA")]
 
     assert any(e["event"] == "error" for e in events)
     assert calls[0]["provider"] == "openai"
@@ -861,10 +861,10 @@ async def test_provider_is_resolved_before_the_llm_call(monkeypatch, install_llm
 @pytest.mark.parametrize(
     ("user_id", "tier", "model", "provider", "effort"),
     [
-        (None, "BASIC", "gpt-6-luna", "openai", "low"),
-        (None, "ADVANCED", "gpt-6-luna", "openai", "low"),
-        ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "ADVANCED", "gpt-6.1-sol", "openai", "low"),
-        ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "ADVANCED", "gemini-3.8-flash", "google", "medium"),
+        (None, "LITE", "gpt-6-luna", "openai", "low"),
+        (None, "AURORA", "gpt-6-luna", "openai", "low"),
+        ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "AURORA", "gpt-6.1-sol", "openai", "low"),
+        ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "AURORA", "gemini-3.8-flash", "google", "medium"),
     ],
 )
 async def test_planned_chat_models_stream_through_provider_sdk(
@@ -926,12 +926,12 @@ async def test_planned_chat_models_stream_through_provider_sdk(
 
 
 @pytest.mark.parametrize("last_digit", "0123456789abcdefABCDEF")
-def test_advanced_assignment_is_stable_for_all_uuid_endings(last_digit: str) -> None:
+def test_aurora_assignment_is_stable_for_all_uuid_endings(last_digit: str) -> None:
     member = UUID(f"3f2504e0-4f89-41d3-9a0c-0305e82c330{last_digit}")
     expected = ("gpt-6.1-sol", "low") if int(last_digit, 16) % 2 == 0 else ("gemini-3.8-flash", "medium")
-    assert chat_llm.select_chat_model(member, "ADVANCED") == expected
-    assert chat_llm.select_chat_model(member, "BASIC") == ("gpt-6-luna", "low")
-    assert chat_llm.select_chat_model(member, "ADVANCED") == expected
+    assert chat_llm.select_chat_model(member, "AURORA") == expected
+    assert chat_llm.select_chat_model(member, "LITE") == ("gpt-6-luna", "low")
+    assert chat_llm.select_chat_model(member, "AURORA") == expected
 
 
 async def test_concurrent_routes_do_not_change_shared_settings_or_registry(monkeypatch) -> None:
@@ -965,9 +965,9 @@ async def test_concurrent_routes_do_not_change_shared_settings_or_registry(monke
         )]
 
     results = await asyncio.wait_for(asyncio.gather(
-        run("guest", None, "ADVANCED"),
-        run("even", UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), "ADVANCED"),
-        run("odd", UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330b"), "ADVANCED"),
+        run("guest", None, "AURORA"),
+        run("even", UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), "AURORA"),
+        run("odd", UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330b"), "AURORA"),
     ), timeout=2)
     assert captured == {
         "guest": ("gpt-6-luna", "low"),

@@ -1361,7 +1361,7 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
     그물(스트리밍 능력)이 한 번도 실행되지 않는데, 통과하는 모습은 똑같아 눈치채기 어렵다.
     """
     monkeypatch.setattr(registry, "BLOCKED_PROVIDERS", {})
-    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", ("anthropic-test-model", "high"))
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", ("anthropic-test-model", "high"))
     monkeypatch.setattr(anthropic_sdk, "SUPPORTS_STREAMING", False)
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", replace(_THINKING, supported_reasoning_efforts=frozenset({"high"})))
     monkeypatch.setattr(
@@ -1378,7 +1378,7 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
         llm.validate_startup()
 
     message = str(exc_info.value)
-    assert "CHAT_BASIC" in message
+    assert "CHAT_LITE" in message
     assert "스트리밍" in message
 
 
@@ -1482,7 +1482,7 @@ def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:
 # ── 단일 본문 프롬프트의 공급자 허용 ──────────
 def test_startup_allows_this_provider_in_the_chat_slot(monkeypatch) -> None:
     """단일 본문은 중간 system 지원 여부에 따른 차단 없이 기동한다."""
-    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", ("anthropic-test-model", "high"))
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", ("anthropic-test-model", "high"))
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", replace(_THINKING, supported_reasoning_efforts=frozenset({"high"})))
     monkeypatch.setattr(
         registry,
