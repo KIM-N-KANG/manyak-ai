@@ -17,7 +17,9 @@ google-genai SDK로 Gemini API를 부른다. 하는 일은 OpenAI·Anthropic 어
 import asyncio
 import hashlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from contextvars import ContextVar
 
 import httpx
 from google import genai
@@ -56,6 +58,42 @@ SUPPORTS_STREAMING = True
 _OBSERVATION_NAME = "Gemini-generation"
 
 
+# SDK 내부 제너레이터의 종료 전파와 무관하게 이 요청의 HTTP 응답만 정리한다.
+_response_cleanup: ContextVar[AsyncExitStack | None] = ContextVar("gemini_response_cleanup", default=None)
+
+
+async def _track_stream_response(response: httpx.Response) -> None:
+    cleanup = _response_cleanup.get()
+    if cleanup is not None:
+        cleanup.push_async_callback(response.aclose)
+
+
+@contextmanager
+def _tracking_stream_responses(cleanup: AsyncExitStack) -> Iterator[None]:
+    # 토큰을 내보내기 전에 복원해야 다음 읽기·종료가 다른 Task에서 와도 안전하다.
+    token = _response_cleanup.set(cleanup)
+    try:
+        yield
+    finally:
+        _response_cleanup.reset(token)
+
+
+@asynccontextmanager
+async def _stream_cleanup() -> AsyncIterator[AsyncExitStack]:
+    cleanup = AsyncExitStack()
+    try:
+        yield cleanup
+    except BaseException:
+        try:
+            await cleanup.aclose()
+        except (Exception, asyncio.CancelledError):
+            # 공급자 오류·취소를 보존하며, 예외 원문은 로그에 남기지 않는다.
+            logger.warning("Gemini stream cleanup failed while handling an earlier exit")
+        raise
+    else:
+        await cleanup.aclose()
+
+
 def _fingerprint(api_key: str) -> str:
     """캐시 이름표용 키 지문(openai_sdk와 같은 이유)."""
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
@@ -71,7 +109,11 @@ def _client(provider: str) -> genai.Client:
     key = (provider, creds.base_url, _fingerprint(creds.api_key))
     client = _clients.get(key)
     if client is None:
-        client = genai.Client(api_key=creds.api_key)
+        http_client = httpx.AsyncClient(event_hooks={"response": [_track_stream_response]})
+        client = genai.Client(
+            api_key=creds.api_key,
+            http_options=types.HttpOptions(httpx_async_client=http_client),
+        )
         _clients[key] = client
     return client
 
@@ -363,34 +405,45 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
         )
         try:
             try:
-                async for chunk in await client.aio.models.generate_content_stream(
-                    model=resolved.model,
-                    contents=contents,
-                    config=config,
-                ):
-                    # usage 수집
-                    chunk_usage = getattr(chunk, "usage_metadata", None)
-                    if chunk_usage is not None:
-                        usage = _usage_of(chunk)
-                        usage_chunk = chunk
-                    # model version 수집
-                    model_version = getattr(chunk, "model_version", None)
-                    if model_version:
-                        model = model_version
-                    # finish_reason 수집
-                    candidates = getattr(chunk, "candidates", None)
-                    if candidates:
-                        reason = getattr(candidates[0], "finish_reason", None)
-                        if reason is not None:
-                            finish_reason = reason.name.lower() if hasattr(reason, "name") else str(reason)
-                    # 텍스트 조각 흘리기
-                    try:
-                        text = chunk.text
-                    except Exception:
-                        text = None
-                    if isinstance(text, str) and text:
-                        texts.append(text)
-                        yield TextDelta(text)
+                async with _stream_cleanup() as cleanup:
+                    with _tracking_stream_responses(cleanup):
+                        chunks = await client.aio.models.generate_content_stream(
+                            model=resolved.model,
+                            contents=contents,
+                            config=config,
+                        )
+                    # 상위 제너레이터 종료·취소 시 SDK 스트림도 즉시 정리한다.
+                    cleanup.push_async_callback(chunks.aclose)
+                    while True:
+                        with _tracking_stream_responses(cleanup):
+                            try:
+                                chunk = await anext(chunks)
+                            except StopAsyncIteration:
+                                break
+                        generation.mark_first_chunk()
+                        # usage 수집
+                        chunk_usage = getattr(chunk, "usage_metadata", None)
+                        if chunk_usage is not None:
+                            usage = _usage_of(chunk)
+                            usage_chunk = chunk
+                        # model version 수집
+                        model_version = getattr(chunk, "model_version", None)
+                        if model_version:
+                            model = model_version
+                        # finish_reason 수집
+                        candidates = getattr(chunk, "candidates", None)
+                        if candidates:
+                            reason = getattr(candidates[0], "finish_reason", None)
+                            if reason is not None:
+                                finish_reason = reason.name.lower() if hasattr(reason, "name") else str(reason)
+                        # 텍스트 조각 흘리기
+                        try:
+                            text = chunk.text
+                        except Exception:
+                            text = None
+                        if isinstance(text, str) and text:
+                            texts.append(text)
+                            yield TextDelta(text)
             except errors.APIError as exc:
                 raise _translate(exc, resolved) from exc
             except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:

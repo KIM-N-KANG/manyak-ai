@@ -28,7 +28,6 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
-from src.core.config import settings
 from src.core.langfuse import observe_request
 from src.core.request_context import ConnectionMetadata, select_connection_metadata
 from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
@@ -48,7 +47,7 @@ from src.schemas.chat_turn import (
 from src.schemas.response_meta import ChatResponseMeta, StoryResponseMeta
 from src.services import llm
 from src.services.chat_assembler import assemble, body_prompt_versions
-from src.services.chat_llm import stream_chat_turn
+from src.services.chat_llm import select_chat_model, stream_chat_turn
 from src.services.chat_selected_images import stream_with_selected_images
 from src.services.chat_child_image import ChildImageObservation, stream_with_child_image
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
@@ -97,6 +96,8 @@ async def _event_stream(
     # 분석 차원 부착(KNK-640): 본문 프롬프트 버전을 싣는다. 채팅 턴은 재호출이 없어 retry_count=0.
     # 관측과 completed meta가 같은 단일 채팅 템플릿 버전을 쓰도록 한 번만 구한다.
     prompt_versions = body_prompt_versions()
+    selected_model, _ = select_chat_model(req.user_id, req.model_tier)
+    selected_provider = llm.provider_of(selected_model)
     # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
     with observe_request(
         "채팅 턴",
@@ -104,6 +105,10 @@ async def _event_stream(
         input_data=req.model_dump(mode="json", exclude={"image_slots"}),
         metadata={
             **connection_metadata,
+            "user_id": str(req.user_id) if req.user_id is not None else None,
+            "model_tier": req.model_tier,
+            "model": selected_model,
+            "provider": selected_provider,
             "prompt_versions": prompt_versions,
             "retry_count": 0,
         },
@@ -113,7 +118,10 @@ async def _event_stream(
         messages = assemble(req)
         image_observation = ChildImageObservation() if req.image_slots else None
 
-        events = stream_chat_turn(messages, character_images=req.character_images)
+        events = stream_chat_turn(
+            messages, character_images=req.character_images,
+            user_id=req.user_id, model_tier=req.model_tier,
+        )
         if req.image_slots:
             events = stream_with_child_image(
                 events, req,
@@ -141,7 +149,7 @@ async def _event_stream(
                         # retry_count는 0 고정 — 본문은 재호출이 없고, 선택지 재호출 횟수는
                         # /chat/choices 응답 meta로 이동했다(NEXT_ACTIONS 버전 키도 함께 이동).
                         meta = ChatResponseMeta(
-                            model=ev.get("model") or settings.chat_model,
+                            model=ev.get("model") or selected_model,
                             prompt_versions=prompt_versions,
                             # 본문 호출이 실제로 나간 공급자(KNK-674).
                             #
@@ -156,12 +164,13 @@ async def _event_stream(
                             provider=(
                                 ev["provider"]
                                 if "provider" in ev
-                                else llm.provider_of(settings.chat_model)
+                                else selected_provider
                             ),
                             input_token_count=ev.get("input_tokens"),
                             output_token_count=ev.get("output_tokens"),
                             retry_count=0,
                         )
+                        trace.set_metadata(model=meta.model, provider=meta.provider)
                         payload = CompletedData(
                             ai_output=ev["ai_output"],
                             # 하위호환 빈 배열 — 백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3).

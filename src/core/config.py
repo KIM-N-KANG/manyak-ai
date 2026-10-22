@@ -59,15 +59,9 @@ class Settings(BaseSettings):
     typesafe_api_key: str = Field(default="", repr=False)
     typesafe_api_url: str = "https://api.typesafe.ai"
     jev_model: str = "jev-1.13.0"
-    # 모델은 용도별 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
-    # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
+    # 스토리와 선택지는 환경 변수로 고르고, 채팅 본문은 registry.ROUTING_TARGETS로 라우팅한다.
     story_compile_model: str = "gpt-5.6-terra"  # 스토리 컴파일 전용
     storylines_model: str = "deepseek-flash"  # 스토리라인 생성 전용(fast, KNK-215)
-    chat_model: str = "deepseek-flash"  # 채팅 본문 전용(fast, KNK-215)
-    # 채팅 본문의 추론 강도(none·low·medium·high 등). 비우면 등록부에 적힌 그 모델의 기본값을 쓴다 —
-    # env가 없으면 운영 동작은 그대로다. 모델마다 받는 값이 달라, 고른 모델이 받지 않는 값이면
-    # 서버 기동에서 막는다(`registry.validate_selected_models`). 모델 비교 실험용이다.
-    chat_reasoning_effort: str = ""
     # 선택지는 본문과 따로 고른다(KNK-1416). 본문 모델을 바꿔도 별도 API인 선택지가 딸려가지
     # 않게 하려는 것이다. 운영 env가 없으면 이 기본값이 쓰이므로 분리 전 운영과 같은 모델로 둔다.
     chat_choice_model: str = "deepseek-flash"  # 선택지 전용

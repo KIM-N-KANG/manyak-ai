@@ -1,6 +1,6 @@
 """채팅 본문 LLM 통로(ChatProvider) — 스트리밍 호출 (시점 B).
 
-`assemble()`가 만든 messages를 DeepSeek(OpenAI 호환) `stream=True`로 호출하고,
+`assemble()`가 만든 messages를 요청별로 선택한 모델에 스트리밍으로 전달하고,
 토큰을 실시간으로 흘린다. 본문은 상황 묘사 + 인물 대사만 만든다 — **다음 행동 선택지는
 이 호출이 만들지 않으며**, 본문 스트림이 끝난 뒤 별도 호출(`chat_choices`)이 전담한다
 (그래서 `[다음 행동]` 마커 파싱·버퍼링이 사라졌다).
@@ -17,8 +17,9 @@ import re
 import time
 from collections.abc import AsyncIterator, Iterable
 from contextlib import aclosing
+from typing import Literal
+from uuid import UUID
 
-from src.core.config import settings
 from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
 from src.schemas.chat_turn import (
     EVENT_CHARACTER_IMAGE,
@@ -40,13 +41,6 @@ logger = logging.getLogger(__name__)
 # 이 호출의 제한 시간(초). 첫 토큰까지의 상한이고, 스트리밍이라 통상 빠르게 시작된다.
 # **호출마다 반드시 넘긴다** — 비우면 상한이 SDK 기본값(10분)으로 늘어난다.
 _TIMEOUT_SECONDS = 90.0
-
-# 본문 출력 상한(토큰, KNK-1624). 평소 본문(1500~2200자, 많아야 4천여 토큰)에는 닿지 않는
-# 안전 상한이다. Anthropic은 이 값이 요청 필수라 없으면 매 턴 400이고, 추론을 켜는 모델은
-# 추론 토큰도 이 한도에 함께 세므로 넉넉하게 둔다. 공급자와 무관하게 같은 값을 보낸다 —
-# 호출부가 공급자를 알면 모델을 바꿀 때마다 이 파일을 고쳐야 한다(KNK-667 원칙).
-# 등록된 모델의 최대 출력(65,536 이상)보다 작아야 어댑터 검사에 걸리지 않는다.
-_MAX_TOKENS = 16_384
 
 # 인물 이름 상한. 클라이언트·백엔드가 30자로 막는다(spec/3-1-client-spec.md §3-1-4).
 _SPEAKER_NAME_MAX_CHARS = 30
@@ -354,8 +348,18 @@ class _SpeakerLabelStreamParser:
         return [{"event": EVENT_TOKEN, "text": text}]
 
 
+def select_chat_model(user_id: UUID | None, model_tier: Literal["BASIC", "ADVANCED"]) -> tuple[str, str]:
+    """게스트는 기본 모델, 고급 회원은 UUID 마지막 16진수 자리의 홀짝으로 배정한다."""
+    if user_id is None or model_tier == "BASIC":
+        return llm.routing_target("CHAT_BASIC")
+    if user_id.int % 2 == 0:
+        return llm.routing_target("CHAT_ADVANCED_EVEN")
+    return llm.routing_target("CHAT_ADVANCED_ODD")
+
+
 async def stream_chat_turn(
-    messages: list[dict], *, character_images: list[CharacterImageMapping] | None = None
+    messages: list[dict], *, character_images: list[CharacterImageMapping] | None = None,
+    user_id: UUID | None = None, model_tier: Literal["BASIC", "ADVANCED"] = "BASIC",
 ) -> AsyncIterator[dict]:
     """messages를 LLM에 스트리밍 호출하고 token·character_image→completed(또는 error)를 낸다.
 
@@ -372,7 +376,8 @@ async def stream_chat_turn(
     label_parser = _SpeakerLabelStreamParser(character_images or [])
     # 이 호출이 어느 공급자로 갈지는 부르기 전에 정해진다 — 스트림이 오류로 끝나면 종료
     # 이벤트가 아예 없어서, 결과에서 읽는 방식으로는 실패 태그를 채울 수 없다(KNK-674).
-    provider = llm.provider_of(settings.chat_model)
+    selected_model, reasoning_effort = select_chat_model(user_id, model_tier)
+    provider = llm.provider_of(selected_model)
     start = time.monotonic()
 
     try:
@@ -387,12 +392,10 @@ async def stream_chat_turn(
         async with aclosing(
             llm.stream(
                 LlmRequest(
-                    model=settings.chat_model,
+                    model=selected_model,
                     messages=messages,
-                    max_tokens=_MAX_TOKENS,
                     timeout=_TIMEOUT_SECONDS,
-                    # 비어 있으면 None — 등록부의 그 모델 기본 강도를 쓴다.
-                    reasoning_effort=settings.chat_reasoning_effort.strip() or None,
+                    reasoning_effort=reasoning_effort,
                 )
             )
         ) as events:
@@ -421,7 +424,7 @@ async def stream_chat_turn(
             "event": EVENT_COMPLETED,
             "ai_output": ai_output,
             "character_images": completed_images,
-            "model": model,
+            "model": model or selected_model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "provider": provider,
@@ -439,7 +442,7 @@ async def stream_chat_turn(
             e,
             feature=FEATURE_CHAT_RESPONSE,
             provider=provider,
-            model=settings.chat_model,
+            model=selected_model,
             prompt_versions=body_prompt_versions(),
             retry_count=0,  # 본문은 재호출 없음
             latency_ms=int((time.monotonic() - start) * 1000),

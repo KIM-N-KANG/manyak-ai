@@ -6,8 +6,11 @@
 """
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import langfuse as langfuse_pkg
+import pytest
 
 import src.core.langfuse as lf
 from src.core.langfuse import (
@@ -563,6 +566,7 @@ def test_stream_generation_noop_when_disabled(monkeypatch) -> None:
     )
 
     handle = lf.start_stream_generation("g", model="m")
+    handle.mark_first_chunk()
     handle.finish(output="x")
     handle.fail(RuntimeError("x"))
     handle.cancel()
@@ -637,3 +641,36 @@ def test_stream_generation_start_failure_falls_back_to_noop(monkeypatch) -> None
     monkeypatch.setattr(langfuse_pkg, "get_client", lambda: _Broken(), raising=False)
 
     lf.start_stream_generation("g", model="m").finish(output="x")  # 예외가 나면 실패다
+
+
+@pytest.mark.parametrize("ending", ["finish", "fail", "cancel"])
+def test_stream_ttft_keeps_first_timestamp_on_every_exit(monkeypatch, ending: str) -> None:
+    first = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    calls = []
+
+    def now(tz):
+        calls.append(tz)
+        return first
+
+    monkeypatch.setattr(lf, "datetime", SimpleNamespace(now=now))
+    span = _FakeStreamSpan()
+    handle = lf._StreamGeneration(span)
+    handle.mark_first_chunk()
+    handle.mark_first_chunk()
+    if ending == "fail":
+        handle.fail(ValueError("failure"))
+    else:
+        getattr(handle, ending)()
+    handle.mark_first_chunk()
+
+    assert calls == [timezone.utc]
+    assert span.updates[0]["completion_start_time"] == first
+    assert span.end_calls == 1
+
+
+def test_stream_ttft_update_failure_does_not_prevent_close() -> None:
+    span = _FakeStreamSpan(update_error=RuntimeError("sdk"))
+    handle = lf._StreamGeneration(span)
+    handle.mark_first_chunk()
+    handle.finish(output="body")
+    assert span.end_calls == 1

@@ -61,7 +61,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
             verified_on=date(2026, 9, 28),
         ),),
     ),
-    # 스토리라인·채팅 본문·선택지(STORYLINES_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL)의
+    # 스토리라인·선택지(STORYLINES_MODEL·CHAT_CHOICE_MODEL)의
     # 기본값. 비추론 호출 — 창작 태스크에서 추론 모드가
     # 출력 외국어 오염·평면화를 일으켜 비추론이 더 안정적이었다(KNK-208 벤치).
     #
@@ -207,7 +207,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
             ),
         ),
     ),
-    # 채팅 후보(CHAT_MODEL, KNK-1411). gpt-5.6-luna와 같이 비추론(none)으로 부른다. 공식 문서상
+    # 채팅 기본 모델(KNK-1411). 등록부 기본 강도는 none이고 본문 라우팅은 low를 지정한다.
     # temperature는 none일 때만 받지만, 추론 단계를 올리면 400이 나므로 받지 않는 것으로 적는다.
     "gpt-6-luna": ResolvedModel(
         model="gpt-6-luna",
@@ -395,7 +395,7 @@ _REGISTRY: dict[str, ResolvedModel] = {
     ),
     # ── 채팅 grid search 후보(2026-10-16 추가) ─────────────────────────────────────
     # 기본 추론 강도는 none~high 중 **이 모델이 받는 가장 낮은 값**으로 둔다(none이 되면 none, 아니면
-    # low). 비교 실험은 CHAT_REASONING_EFFORT로 강도를 따로 고르므로, 기본값은 고르지 않았을 때
+    # low). 본문 라우팅은 호출에서 강도를 따로 지정하므로, 기본값은 고르지 않았을 때
     # 비용·지연이 가장 적은 쪽이 안전하다.
     # Haiku 5.5는 추론을 끌 수 있다(effort high 이하일 때만 — 끌 때는 effort를 보내지 않아 기본
     # medium으로 간다). 4.6 이후 모델 중 유일하게 프롬프트 길이별 요금이 있다(10만 토큰 초과 시 5배).
@@ -749,13 +749,19 @@ BLOCKED_PROVIDERS: dict[str, frozenset[str]] = {
     "MODERATION_FALLBACK_MODEL": frozenset({PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_GOOGLE}),
 }
 
-# 조각 흘리기(스트리밍)로 부르는 용도. 이 env로 고른 모델은 담당 어댑터가 스트리밍을 할 수
+# 조각 흘리기(스트리밍)로 부르는 용도. 이 자리에 고른 모델은 담당 어댑터가 스트리밍을 할 수
 # 있어야 한다 — 못 하면 서버 기동에서 막는다(`llm.validate_startup`).
 #
 # **용도 이름이 여기에만 있는 것이 핵심이다.** 통로도 어댑터도 "채팅"을 몰라야 한다 — 용도에
 # 맞춰 아래층을 깎으면 모델·공급자를 바꿀 때마다 그 층을 다시 고쳐야 한다(KNK-667 원칙).
 # 등록부는 이미 env(=용도)와 모델을 잇는 자리라(`selected_models`) 여기가 제자리다.
-STREAMING_ENVS = frozenset({"CHAT_MODEL"})
+# 환경 변수가 아닌 코드 내 라우팅 대상. 호출과 기동 검사가 같은 모델·강도를 사용한다.
+ROUTING_TARGETS: dict[str, tuple[str, str]] = {
+    "CHAT_BASIC": ("gpt-6-luna", "low"),
+    "CHAT_ADVANCED_EVEN": ("gpt-6.1-sol", "low"),
+    "CHAT_ADVANCED_ODD": ("gemini-3.8-flash", "medium"),
+}
+STREAMING_SLOTS = frozenset(ROUTING_TARGETS)
 
 
 def blocked_providers(env_name: str) -> frozenset[str]:
@@ -857,15 +863,15 @@ def credentials(provider: str) -> ProviderCredentials:
 
 
 def selected_models() -> tuple[tuple[str, str], ...]:
-    """용도별로 선택된 모델을 (env 이름, 모델 이름) 쌍으로 돌려준다.
+    """용도별로 선택된 모델을 (설정 또는 라우팅 자리 이름, 모델 이름) 쌍으로 돌려준다.
 
-    env 이름을 함께 들고 다니는 이유가 둘이다. 기동 실패 메시지가 "무엇을 고쳐야 하는지"를
-    가리켜야 하고, 용도별 제약(`BLOCKED_PROVIDERS`·`STREAMING_ENVS`)의 판정 단위가 이 env다.
+    자리 이름을 함께 들고 다니는 이유가 둘이다. 기동 실패 메시지가 "무엇을 고쳐야 하는지"를
+    가리켜야 하고, 용도별 제약(`BLOCKED_PROVIDERS`·`STREAMING_SLOTS`)의 판정 단위가 이 자리다.
     """
     return (
         ("STORYLINES_MODEL", settings.storylines_model),
         ("STORY_COMPILE_MODEL", settings.story_compile_model),
-        ("CHAT_MODEL", settings.chat_model),
+        *((slot, model) for slot, (model, _) in ROUTING_TARGETS.items()),
         ("CHAT_CHOICE_MODEL", settings.chat_choice_model),
         ("MODERATION_MODEL", settings.moderation_model),
         ("MODERATION_FALLBACK_MODEL", settings.moderation_fallback_model),
@@ -902,12 +908,12 @@ def validate_selected_models() -> None:
                 f"{env_name}={model}은 공급자 '{resolved.provider}'를 쓰는데, 이 자리는 그 "
                 f"공급자를 쓸 수 없습니다(사유는 registry.BLOCKED_PROVIDERS 주석)."
             )
-        effort = settings.chat_reasoning_effort.strip()
-        if env_name == "CHAT_MODEL" and effort and effort not in resolved.supported_reasoning_efforts:
+        effort = ROUTING_TARGETS[env_name][1] if env_name in ROUTING_TARGETS else None
+        if effort is not None and effort not in resolved.supported_reasoning_efforts:
             # 첫 채팅에서야 실패하지 않게 기동에서 막는다. 회사가 받지 않는 강도(예: 추론을 끌 수 없는
             # 모델의 none)는 비슷한 값으로 바꾸지 않는다 — 결과표에 다른 설정이 적히게 된다.
             raise LlmConfigError(
-                f"CHAT_REASONING_EFFORT={effort}를 CHAT_MODEL={model}이 받지 않습니다 — "
+                f"{env_name}={model}이 추론 강도 {effort}를 받지 않습니다 — "
                 f"받는 값: {sorted(resolved.supported_reasoning_efforts)}"
             )
         if env_name in {"MODERATION_MODEL", "MODERATION_FALLBACK_MODEL"}:

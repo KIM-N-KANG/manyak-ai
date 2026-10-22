@@ -229,3 +229,13 @@ async def test_chat_choices_trace_receives_connection_metadata(
         "prompt_versions": {"NEXT_ACTIONS": chat_module.NEXT_ACTIONS_VERSION},
     }
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
+
+
+def test_choices_contract_excludes_routing_fields() -> None:
+    payload = _payload()
+    original = ChatChoicesRequest.model_validate(payload).model_dump()
+    request = ChatChoicesRequest.model_validate({**payload, "user_id": "not-a-uuid", "model_tier": None})
+    assert request.model_dump() == original
+    properties = ChatChoicesRequest.model_json_schema()["properties"]
+    assert "user_id" not in properties
+    assert "model_tier" not in properties

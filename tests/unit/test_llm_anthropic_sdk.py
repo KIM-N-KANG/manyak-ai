@@ -12,6 +12,7 @@
 import ast
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1348,7 +1349,7 @@ def test_adapters_declare_whether_they_can_stream() -> None:
 
 
 def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch) -> None:
-    """조각 흘리기를 못 하는 어댑터를 CHAT_MODEL에 꽂으면 **기동에서** 막는다.
+    """조각 흘리기를 못 하는 어댑터를 채팅 라우팅 자리에 꽂으면 **기동에서** 막는다.
 
     막지 않으면 서버는 아무 오류 없이 뜨고, 사용자가 채팅을 눌러야 터진다. 그것도 조용히
     터진다 — 없는 `stream`이 던지는 것은 채팅이 잡는 예외 계열(LlmError)이 아니라 SSE 오류
@@ -1360,8 +1361,9 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
     그물(스트리밍 능력)이 한 번도 실행되지 않는데, 통과하는 모습은 똑같아 눈치채기 어렵다.
     """
     monkeypatch.setattr(registry, "BLOCKED_PROVIDERS", {})
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", ("anthropic-test-model", "high"))
     monkeypatch.setattr(anthropic_sdk, "SUPPORTS_STREAMING", False)
-    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", replace(_THINKING, supported_reasoning_efforts=frozenset({"high"})))
     monkeypatch.setattr(
         registry,
         "settings",
@@ -1369,7 +1371,6 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
             _env_file=None,
             deepseek_api_key="k",
             anthropic_api_key="ant",
-            chat_model="anthropic-test-model",
         ),
     )
 
@@ -1377,7 +1378,7 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
         llm.validate_startup()
 
     message = str(exc_info.value)
-    assert "CHAT_MODEL" in message
+    assert "CHAT_BASIC" in message
     assert "스트리밍" in message
 
 
@@ -1408,7 +1409,7 @@ def test_the_streaming_slot_is_known_only_to_the_registry() -> None:
 
     용도에 맞춰 아래층을 깎으면 모델·공급자를 바꿀 때마다 그 층을 다시 고쳐야 한다(KNK-667).
     """
-    assert registry.STREAMING_ENVS == frozenset({"CHAT_MODEL"})
+    assert registry.STREAMING_SLOTS == frozenset(registry.ROUTING_TARGETS)
 
     gateway_source = Path(llm.__file__).read_text(encoding="utf-8")
     adapter_source = Path(anthropic_sdk.__file__).read_text(encoding="utf-8")
@@ -1430,11 +1431,11 @@ def _blocked_settings(**overrides) -> Settings:
 def test_the_blocked_slot_is_known_only_to_the_registry() -> None:
     """용도별 공급자 제한은 등록부에만 있다.
 
-    `STREAMING_ENVS`와 같은 이유다 — 통로·어댑터에 용도 이름을 박으면 모델·공급자를 바꿀
+    `STREAMING_SLOTS`와 같은 이유다 — 통로·어댑터에 용도 이름을 박으면 모델·공급자를 바꿀
     때마다 그 층을 다시 고쳐야 한다(KNK-667). 어느 파일에도 "CHAT_MODEL"이 코드로 박히지
     않았는지는 위 `test_the_streaming_slot_is_known_only_to_the_registry`가 함께 지킨다.
     """
-    assert registry.blocked_providers("CHAT_MODEL") == frozenset()
+    assert all(not registry.blocked_providers(slot) for slot in registry.ROUTING_TARGETS)
     assert registry.BLOCKED_PROVIDERS["CHAT_CHOICE_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
 
 
@@ -1481,13 +1482,12 @@ def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:
 # ── 단일 본문 프롬프트의 공급자 허용 ──────────
 def test_startup_allows_this_provider_in_the_chat_slot(monkeypatch) -> None:
     """단일 본문은 중간 system 지원 여부에 따른 차단 없이 기동한다."""
-    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", ("anthropic-test-model", "high"))
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", replace(_THINKING, supported_reasoning_efforts=frozenset({"high"})))
     monkeypatch.setattr(
         registry,
         "settings",
-        _blocked_settings(
-            chat_model="anthropic-test-model",
-        ),
+        _blocked_settings(),
     )
 
     llm.validate_startup()  # 예외가 나면 실패다

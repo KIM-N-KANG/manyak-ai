@@ -3,7 +3,10 @@
 라이브 호출은 없다. SDK 호출을 monkeypatch로 대체하고 설정 조립·응답 해석·에러 변환을 검증한다.
 """
 
+import asyncio
+import json
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,6 +14,7 @@ import httpx
 import pytest
 from google.genai import errors, types
 
+from src.core import langfuse as lf
 from src.services.llm import google_sdk
 from src.services.llm.base import (
     ADAPTER_GOOGLE_SDK,
@@ -606,6 +610,9 @@ class _RecordingStreamGeneration:
         self.started = started
         self.ends: list[tuple[str, dict]] = []
 
+    def mark_first_chunk(self) -> None:
+        return None
+
     def finish(self, **fields) -> None:
         self.ends.append(("finish", fields))
 
@@ -705,3 +712,203 @@ async def test_stream_records_failure_midway(monkeypatch) -> None:
         _ = [ev async for ev in google_sdk.stream(_req(), _RESOLVED)]
 
     assert [kind for kind, _ in made[0].ends] == ["fail"]
+
+
+@pytest.mark.parametrize("ending", ["finish", "fail", "cancel"])
+@pytest.mark.parametrize("has_chunks", [True, False])
+async def test_stream_records_ttft_from_first_provider_chunk(monkeypatch, ending, has_chunks) -> None:
+    updates = []
+    span = SimpleNamespace(update=lambda **kw: updates.append(kw), end=lambda: None)
+    monkeypatch.setattr(google_sdk, "start_stream_generation", lambda *a, **kw: lf._StreamGeneration(span))
+    first = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    timestamps = []
+
+    def now(tz):
+        timestamps.append(tz)
+        return first
+
+    monkeypatch.setattr(lf, "datetime", SimpleNamespace(now=now))
+
+    async def chunks():
+        if has_chunks:
+            # 빈 텍스트인 첫 조각도 OpenAI 자동 계측과 같은 기준으로 센다.
+            yield SimpleNamespace(text="", usage_metadata=None, candidates=[])
+            assert timestamps == [timezone.utc]
+            yield SimpleNamespace(text="body", usage_metadata=None, candidates=[])
+        if ending == "fail":
+            raise _api_error(429, "rate limited")
+        if ending == "cancel":
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(google_sdk, "_client", lambda _: SimpleNamespace(aio=SimpleNamespace(
+        models=SimpleNamespace(generate_content_stream=AsyncMock(return_value=chunks())),
+    )))
+    if ending == "finish":
+        events = [event async for event in google_sdk.stream(_req(), _RESOLVED)]
+        assert [event.text for event in events if isinstance(event, TextDelta)] == (["body"] if has_chunks else [])
+    else:
+        with pytest.raises(LlmRateLimited if ending == "fail" else asyncio.CancelledError):
+            _ = [event async for event in google_sdk.stream(_req(), _RESOLVED)]
+
+    assert len(updates) == 1
+    if has_chunks:
+        assert updates[0]["completion_start_time"] == first
+        assert timestamps == [timezone.utc]
+    else:
+        assert "completion_start_time" not in updates[0]
+        assert timestamps == []
+
+
+@pytest.mark.parametrize("ending", ["completed", "closed", "error", "cancelled"])
+@pytest.mark.parametrize("cleanup_failure", [None, "sdk", "http", "both"])
+async def test_stream_closes_sdk_stream_on_every_exit(monkeypatch, ending: str, cleanup_failure: str | None) -> None:
+    """상위 스트림 종료가 SDK 스트림의 명시적 정리까지 이어져야 한다."""
+    waiting = asyncio.Event()
+
+    class SdkStream:
+        def __init__(self) -> None:
+            self.reads = 0
+            self.close_count = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            self.reads += 1
+            if self.reads == 1:
+                return SimpleNamespace(text="본문", usage_metadata=None, model_version=None, candidates=[])
+            if ending == "error":
+                raise _api_error(429, "rate limited")
+            if ending == "cancelled":
+                waiting.set()
+                await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            self.close_count += 1
+            if cleanup_failure in {"sdk", "both"}:
+                raise OSError("SDK cleanup failed")
+
+    http_close = AsyncMock(side_effect=OSError("HTTP cleanup failed") if cleanup_failure in {"http", "both"} else None)
+    sdk_stream = SdkStream()
+
+    async def generate(**kwargs):
+        await google_sdk._track_stream_response(SimpleNamespace(aclose=http_close))
+        return sdk_stream
+    monkeypatch.setattr(
+        google_sdk, "_client",
+        lambda _: SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(
+            generate_content_stream=generate,
+        ))),
+    )
+    made = _record_stream_generation(monkeypatch)
+    stream = google_sdk.stream(_req(), _RESOLVED)
+    assert await anext(stream) == TextDelta("본문")
+    try:
+        if ending == "completed":
+            if cleanup_failure:
+                with pytest.raises(LlmUnavailable):
+                    _ = [event async for event in stream]
+            else:
+                events = [event async for event in stream]
+                assert len(events) == 1 and isinstance(events[0], StreamCompleted)
+        elif ending == "closed":
+            await stream.aclose()
+        elif ending == "error":
+            with pytest.raises(LlmRateLimited):
+                await anext(stream)
+        else:
+            task = asyncio.create_task(anext(stream))
+            await asyncio.wait_for(waiting.wait(), timeout=2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert sdk_stream.close_count == 1
+        http_close.assert_awaited_once()
+        expected = {"completed": "finish", "closed": "cancel", "error": "fail", "cancelled": "cancel"}
+        expected_end = "fail" if ending == "completed" and cleanup_failure else expected[ending]
+        assert [kind for kind, _ in made[0].ends] == [expected_end]
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.parametrize("ending", ["completed", "closed", "cancelled", "concurrent"])
+async def test_real_google_sdk_closes_http_response(monkeypatch, ending: str) -> None:
+    """SDK의 생성·파싱·스트림 계층은 그대로 두고 HTTP 전송만 대체한다."""
+    waiting = asyncio.Event()
+    responses: list[httpx.Response] = []
+
+    class ResponseBody(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def __aiter__(self):
+            chunk = {"candidates": [{"content": {"role": "model", "parts": [{"text": "본문"}]}}]}
+            yield ("data: " + json.dumps(chunk) + "\n\n").encode()
+            if ending == "cancelled":
+                waiting.set()
+                await asyncio.Event().wait()
+            yield b'data: {"candidates":[{"finishReason":"STOP"}]}\n\n'
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    bodies: list[ResponseBody] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = ResponseBody()
+        bodies.append(body)
+        response = httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=body)
+        responses.append(response)
+        return response
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        google_sdk.httpx, "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    monkeypatch.setattr(google_sdk.registry, "credentials", lambda _: ProviderCredentials(
+        api_key="test-key", base_url=None, api_key_env="GEMINI_API_KEY", base_url_env="GEMINI_API_URL",
+    ))
+    sdk_client = google_sdk._client(PROVIDER_GOOGLE)
+    stream = google_sdk.stream(_req(), _RESOLVED)
+    task = None
+    peer = None
+    try:
+        assert await anext(stream) == TextDelta("본문")
+        assert len(responses) == 1
+        assert not responses[0].is_closed
+        if ending == "completed":
+            remaining = [event async for event in stream]
+            assert isinstance(remaining[-1], StreamCompleted)
+        elif ending == "closed":
+            await stream.aclose()
+        elif ending == "concurrent":
+            peer = google_sdk.stream(_req(), _RESOLVED)
+            assert await asyncio.create_task(anext(peer)) == TextDelta("본문")
+            assert len(responses) == 2
+            await stream.aclose()
+            assert not responses[1].is_closed
+            remaining = [event async for event in peer]
+            assert isinstance(remaining[-1], StreamCompleted)
+            assert responses[1].is_closed and bodies[1].closed
+        else:
+            task = asyncio.create_task(anext(stream))
+            await asyncio.wait_for(waiting.wait(), timeout=2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        # 테스트의 뒷정리가 연결을 닫기 전에 검사한다.
+        assert responses[0].is_closed, "SDK HTTP response remains open after stream exit"
+        assert bodies[0].closed, "HTTP response body was not closed"
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await stream.aclose()
+        if peer is not None:
+            await peer.aclose()
+        for response in responses:
+            await response.aclose()
+        await sdk_client.aio.aclose()
+        sdk_client.close()

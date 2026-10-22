@@ -95,15 +95,15 @@ def mock_events(monkeypatch):
     """엔드포인트가 쓰는 stream_chat_turn을 가짜 이벤트 시퀀스로 바꾼다(본문 LLM 회피)."""
 
     def _set(events: list[dict]) -> None:
-        async def _fake(messages, *, character_images):
+        async def _fake(messages, *, character_images, user_id, model_tier):
             for e in events:
                 yield e
 
         monkeypatch.setattr(
             chat_module,
             "stream_chat_turn",
-            lambda messages, *, character_images: _fake(
-                messages, character_images=character_images
+            lambda messages, *, character_images, user_id, model_tier: _fake(
+                messages, character_images=character_images, user_id=user_id, model_tier=model_tier
             ),
         )
 
@@ -164,7 +164,7 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
 async def test_chat_turn_passes_protagonist_name_to_body_prompt(client, monkeypatch) -> None:
     captured = []
 
-    async def fake_stream(messages, *, character_images):
+    async def fake_stream(messages, *, character_images, user_id, model_tier):
         captured.extend(messages)
         yield {"event": "completed", "ai_output": "장면", "model": "test", "provider": "test"}
 
@@ -351,6 +351,10 @@ async def test_chat_turn_trace_receives_connection_metadata(
         "turn_number": 7,
         "is_regenerated": True,
         "user_source": "edited_choice",
+        "user_id": None,
+        "model_tier": "BASIC",
+        "model": "gpt-6-luna",
+        "provider": "openai",
         "prompt_versions": {"CHAT": 1},
         "retry_count": 0,
     }
@@ -408,7 +412,7 @@ async def test_concurrent_chat_turn_streams_keep_connection_metadata_isolated(
     monkeypatch.setattr(
         chat_module,
         "stream_chat_turn",
-        lambda messages, *, character_images: _events(messages),
+        lambda messages, *, character_images, user_id, model_tier: _events(messages),
     )
 
     async def _post(label: str, chat_id: str, turn_number: int):
@@ -449,27 +453,25 @@ async def test_concurrent_chat_turn_streams_keep_connection_metadata_isolated(
     }
 
 
+@pytest.mark.parametrize("member,tier,model,provider", [
+    (None, "ADVANCED", "gpt-6-luna", "openai"),
+    ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "BASIC", "gpt-6-luna", "openai"),
+    ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "ADVANCED", "gpt-6.1-sol", "openai"),
+    ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "ADVANCED", "gemini-3.8-flash", "google"),
+])
+@pytest.mark.parametrize("returned_model", [None, "provider-version-name"])
 async def test_chat_turn_survives_completed_without_provider(
-    client, mock_events, other_provider_model
+    client, mock_events, member, tier, model, provider, returned_model,
 ) -> None:
-    """완료 이벤트에 provider가 없어도 턴이 조용히 사라지지 않는다(KNK-674 리뷰 M2).
-
-    이 자리에서 예외가 나면 이미 200으로 열린 SSE라 상태를 못 바꾸고, error 이벤트도
-    completed도 없이 끊긴다 — 사용자 화면엔 글이 떴는데 백엔드는 그 턴을 저장하지 못한다.
-    지금 키가 빠지는 경로는 없지만, 빠졌을 때의 모양이 나빠 폴백을 둔다.
-
-    **DeepSeek이 아닌 모델로 확인한다.** 정답이 "deepseek"이면 폴백이 등록부를 조회한
-    것인지 그냥 상수를 적어둔 것인지 구분되지 않는다(KNK-674 2차 리뷰에서 상수 변이가
-    살아남았다).
-    """
-    other_provider_model(chat_module)
-    mock_events([{"event": "completed", "ai_output": "장면", "model": "not-deepseek-model"}])
-
-    resp = await client.post("/api/v1/chat/turns", json=_payload())
-
+    """완료 정보 누락 시 요청별 호출 대상으로 보완하고, 공급자 버전명은 보존한다."""
+    mock_events([{"event": "completed", "ai_output": "장면", "model": returned_model}])
+    resp = await client.post(
+        "/api/v1/chat/turns", json={**_payload(), "user_id": member, "model_tier": tier},
+    )
     assert resp.status_code == 200
-    meta = _data_of(resp.text, "completed")["meta"]  # completed가 실제로 나온다
-    assert meta["provider"] == "not-deepseek"  # 설정 모델을 등록부로 풀어 채운다
+    meta = _data_of(resp.text, "completed")["meta"]
+    assert meta["model"] == (returned_model or model)
+    assert meta["provider"] == provider
 
 
 async def test_chat_turn_does_not_paper_over_an_empty_provider(client, mock_events) -> None:
@@ -517,7 +519,7 @@ async def test_chat_turn_pings_while_waiting_for_the_body(
     monkeypatch.setattr(
         chat_module,
         "stream_chat_turn",
-        lambda messages, *, character_images: _slow_body(messages),
+        lambda messages, *, character_images, user_id, model_tier: _slow_body(messages),
     )
 
     body = (await client.post("/api/v1/chat/turns", json=_payload())).text
@@ -860,3 +862,141 @@ async def test_chat_prompt_records_same_version_in_response_and_trace(
     expected = {"CHAT": 1}
     assert _data_of(resp.text, "completed")["meta"]["promptVersions"] == expected
     assert captured["metadata"]["prompt_versions"] == expected
+
+
+@pytest.mark.parametrize("routing", [
+    {"user_id": "not-a-uuid"}, {"user_id": ""}, {"user_id": 123},
+    {"model_tier": None}, {"model_tier": "basic"}, {"model_tier": "PREMIUM"},
+    {"model_tier": ""}, {"model_tier": 1},
+])
+async def test_invalid_routing_fields_return_422_before_generation(client, monkeypatch, routing) -> None:
+    def unexpected_generation(*args, **kwargs):
+        pytest.fail("Invalid routing input must not reach generation")
+
+    monkeypatch.setattr(chat_module, "stream_chat_turn", unexpected_generation)
+    response = await client.post("/api/v1/chat/turns", json={**_payload(), **routing})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == next(iter(routing))
+
+
+async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) -> None:
+    captured = []
+
+    async def fake_stream(messages, *, character_images, user_id, model_tier):
+        captured.append(messages)
+        yield {"event": "error", "code": "test", "message": "test"}
+
+    monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
+    for routing in [{}, {"user_id": None, "model_tier": "ADVANCED"},
+                    {"user_id": "3f2504e0-4f89-41d3-9a0c-0305e82c330a", "model_tier": "BASIC"},
+                    {"user_id": "3f2504e0-4f89-41d3-9a0c-0305e82c330b", "model_tier": "ADVANCED"}]:
+        response = await client.post("/api/v1/chat/turns", json={**_payload(), **routing})
+        assert response.status_code == 200
+    assert len(captured) == 4
+    assert captured[0]
+    assert all(messages == captured[0] for messages in captured[1:])
+
+
+@pytest.mark.parametrize("regenerated", ["false", "true"])
+async def test_api_routes_each_turn_using_current_member_and_tier(client, monkeypatch, regenerated) -> None:
+    from src.services import chat_llm
+    from src.services.llm.base import StreamCompleted, TokenUsage
+
+    calls = []
+
+    async def fake_llm_stream(req):
+        calls.append((req.model, req.reasoning_effort, req.messages))
+        yield StreamCompleted(model=req.model, provider=chat_llm.llm.provider_of(req.model), usage=TokenUsage())
+
+    monkeypatch.setattr(chat_llm.llm, "stream", fake_llm_stream)
+    even = "3f2504e0-4f89-41d3-9a0c-0305e82c330a"
+    odd = "3f2504e0-4f89-41d3-9a0c-0305e82c330b"
+    for member, tier, model, effort, provider in [
+        (None, "ADVANCED", "gpt-6-luna", "low", "openai"),
+        (even, "ADVANCED", "gpt-6.1-sol", "low", "openai"),
+        (even, "BASIC", "gpt-6-luna", "low", "openai"),
+        (even, "ADVANCED", "gpt-6.1-sol", "low", "openai"),
+        (odd, "ADVANCED", "gemini-3.8-flash", "medium", "google"),
+        (odd, "BASIC", "gpt-6-luna", "low", "openai"),
+    ]:
+        response = await client.post(
+            "/api/v1/chat/turns", json={**_payload(), "user_id": member, "model_tier": tier},
+            headers={"X-Manyak-Is-Regenerated": regenerated},
+        )
+        assert response.status_code == 200
+        meta = _data_of(response.text, "completed")["meta"]
+        assert (meta["model"], meta["provider"]) == (model, provider)
+        assert calls[-1][:2] == (model, effort)
+    assert len(calls) == 6
+    assert all(call[2] == calls[0][2] for call in calls)
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_routed_calls_link_member_model_and_regeneration(client, monkeypatch, failed) -> None:
+    """동시 요청의 회원·호출 모델·재생성을 연결하고 실패 기록도 요청별로 보존한다."""
+    from contextlib import contextmanager
+
+    from src.services import chat_llm
+    from src.services.llm.base import LlmUnavailable, StreamCompleted, TokenUsage
+
+    records = []
+    calls = []
+    failures = []
+    ready = asyncio.Event()
+
+    @contextmanager
+    def observe(_name, **kwargs):
+        record = dict(kwargs["metadata"])
+        records.append(record)
+
+        class Trace:
+            def set_metadata(self, **values):
+                record.update(values)
+
+        yield Trace()
+
+    async def stream(req):
+        calls.append(req)
+        if len(calls) == 3:
+            ready.set()
+        await asyncio.wait_for(ready.wait(), timeout=2)
+        if failed:
+            raise LlmUnavailable("test failure", provider=chat_llm.llm.provider_of(req.model), model=req.model)
+        yield StreamCompleted(
+            model=req.model + "-version", provider=chat_llm.llm.provider_of(req.model), usage=TokenUsage(),
+        )
+
+    monkeypatch.setattr(chat_module, "observe_request", observe)
+    monkeypatch.setattr(chat_llm.llm, "stream", stream)
+    monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda exc, **kw: failures.append(kw))
+    cases = [
+        (None, "BASIC", False, "gpt-6-luna", "openai"),
+        ("3F2504E0-4F89-41D3-9A0C-0305E82C330A", "ADVANCED", False, "gpt-6.1-sol", "openai"),
+        ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "ADVANCED", True, "gemini-3.8-flash", "google"),
+    ]
+    responses = await asyncio.gather(*[
+        client.post(
+            "/api/v1/chat/turns",
+            json={**_payload(), "user_id": member, "model_tier": tier},
+            headers={"X-Manyak-Is-Regenerated": str(regenerated).lower()},
+        ) for member, tier, regenerated, _, _ in cases
+    ])
+    assert len(records) == len(calls) == 3
+    by_member = {record["user_id"]: record for record in records}
+    for response, (member, tier, regenerated, model, provider) in zip(responses, cases):
+        assert response.status_code == 200
+        record = by_member[member.lower() if member else None]
+        assert record["model_tier"] == tier
+        assert record["is_regenerated"] is regenerated
+        assert record["provider"] == provider
+        assert record["model"] == (model if failed else model + "-version")
+        if failed:
+            assert _data_of(response.text, "error")["code"] == "LLM_ERROR"
+            assert "event: completed" not in response.text
+        else:
+            meta = _data_of(response.text, "completed")["meta"]
+            assert (meta["model"], meta["provider"]) == (record["model"], provider)
+    assert all(call.messages == calls[0].messages for call in calls)
+    assert {(item["model"], item["provider"]) for item in failures} == (
+        {(model, provider) for _, _, _, model, provider in cases} if failed else set()
+    )
