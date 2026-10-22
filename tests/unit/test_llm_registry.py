@@ -512,7 +512,7 @@ def test_chat_does_not_require_mid_conversation_system_support(monkeypatch) -> N
         use_thinking=False,
     )
     monkeypatch.setitem(registry._REGISTRY, "glm-unverified", unverified)
-    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", ("glm-unverified", "none"))
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", ("glm-unverified", "none"))
     monkeypatch.setattr(
         registry,
         "settings",
@@ -526,7 +526,7 @@ def test_chat_does_not_require_mid_conversation_system_support(monkeypatch) -> N
 def test_open_models_pass_startup_for_chat_body(monkeypatch, model: str) -> None:
     """단일 프롬프트는 공급자에 따른 레이어 제한 없이 기동한다."""
     keys = {"OPENROUTER_API_KEY": "k", "ZAI_API_KEY": "k", "MOONSHOT_API_KEY": "k"}
-    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", (model, registry.resolve(model).reasoning_effort))
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", (model, registry.resolve(model).reasoning_effort))
     monkeypatch.setattr(
         registry,
         "settings",
@@ -654,9 +654,9 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
     assert registry.selected_models() == (
         ("STORYLINES_MODEL", "deepseek-flash"),
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
-        ("CHAT_BASIC", "gpt-6-luna"),
-        ("CHAT_ADVANCED_EVEN", "gpt-6.1-sol"),
-        ("CHAT_ADVANCED_ODD", "gemini-3.8-flash"),
+        ("CHAT_LITE", "gpt-6-luna"),
+        ("CHAT_AURORA_EVEN", "gpt-6.1-sol"),
+        ("CHAT_AURORA_ODD", "gemini-3.8-flash"),
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
         ("MODERATION_MODEL", "gpt-6-luna"),
         ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
@@ -667,7 +667,7 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
 def test_chat_routes_leave_choice_model_independent(monkeypatch) -> None:
     monkeypatch.setattr(registry, "settings", _settings(chat_choice_model="gpt-5.6-luna"))
     selected = dict(registry.selected_models())
-    assert selected["CHAT_BASIC"] == "gpt-6-luna"
+    assert selected["CHAT_LITE"] == "gpt-6-luna"
     assert selected["CHAT_CHOICE_MODEL"] == "gpt-5.6-luna"
     llm.validate_startup()
 
@@ -908,7 +908,7 @@ def test_grid_search_model_prices() -> None:
 )
 def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effort: str) -> None:
     """채팅 모델이 받지 않는 강도는 첫 채팅이 아니라 서버 기동에서 막는다."""
-    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", (model, effort))
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", (model, effort))
     keys = {"ANTHROPIC_API_KEY": "k", "MOONSHOT_API_KEY": "k", "GEMINI_API_KEY": "k"}
     monkeypatch.setattr(
         registry,
@@ -921,7 +921,7 @@ def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effo
     with pytest.raises(LlmConfigError) as exc_info:
         registry.validate_selected_models()
 
-    assert "CHAT_BASIC" in str(exc_info.value)
+    assert "CHAT_LITE" in str(exc_info.value)
     assert "추론 강도" in str(exc_info.value)
 
 
@@ -930,7 +930,7 @@ def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effo
     [("claude-haiku-5-5", "none"), ("claude-sonnet-5-5", "high"), ("qwen3.8-flash", "medium"), ("gpt-6.1-sol", "low")],
 )
 def test_chat_reasoning_effort_accepted_at_startup(monkeypatch, model: str, effort: str) -> None:
-    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_BASIC", (model, effort))
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", (model, effort))
     keys = {"ANTHROPIC_API_KEY": "k", "OPENROUTER_API_KEY": "k"}
     monkeypatch.setattr(
         registry,
@@ -944,9 +944,9 @@ def test_chat_reasoning_effort_accepted_at_startup(monkeypatch, model: str, effo
 
 
 @pytest.mark.parametrize("slot,model,provider,effort", [
-    ("CHAT_BASIC", "gpt-6-luna", PROVIDER_OPENAI, "low"),
-    ("CHAT_ADVANCED_EVEN", "gpt-6.1-sol", PROVIDER_OPENAI, "low"),
-    ("CHAT_ADVANCED_ODD", "gemini-3.8-flash", PROVIDER_GOOGLE, "medium"),
+    ("CHAT_LITE", "gpt-6-luna", PROVIDER_OPENAI, "low"),
+    ("CHAT_AURORA_EVEN", "gpt-6.1-sol", PROVIDER_OPENAI, "low"),
+    ("CHAT_AURORA_ODD", "gemini-3.8-flash", PROVIDER_GOOGLE, "medium"),
 ])
 def test_chat_routes_pass_startup(monkeypatch, slot, model, provider, effort) -> None:
     monkeypatch.setattr(registry, "settings", _settings())
