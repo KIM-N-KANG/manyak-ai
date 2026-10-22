@@ -38,6 +38,10 @@ docker_args=(
 )
 if [ "$LIVE" -eq 1 ]; then
     docker_args+=(-e RUN_LIVE_TESTS=1)
+    # 검수 데이터셋 테스트는 이미지 장수만큼 호출해 따로 켠다(KNK-1770). qa.sh가 모더레이션 변경 시 켠다.
+    if [ "${RUN_MODERATION_DATASET:-}" = "1" ]; then
+        docker_args+=(-e RUN_MODERATION_DATASET=1)
+    fi
 else
     # 일반 테스트는 실제 공급자 키를 쓰지 않는다. 기본 모델이 DeepSeek↔GPT로 바뀌어도
     # 기동 검사와 라우팅 테스트가 같은 더미 키로 결정적으로 실행된다.

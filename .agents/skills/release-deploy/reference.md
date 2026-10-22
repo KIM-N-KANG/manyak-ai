@@ -144,6 +144,7 @@ curl http://localhost:8000/api/v1/health
 > 예전 런북에는 `aws secretsmanager … | python -c "print(...)"`를 실행한 뒤 "출력을 화면에 남기지 말라"고 적혀 있었다. **그 명령은 실행하는 순간 이미 키를 터미널에 뿌린다**(대화 기록·스크롤백에 남는다). 쓰지 말 것.
 
 - 통합 테스트: `qa.sh`가 부르는 `scripts/test.sh --live tests/integration`. 따로 돌릴 일이 있으면 이 형태를 쓴다.
+- 검수 데이터셋 테스트(KNK-1770): 운영(main) 대비 모더레이션 프롬프트·코드·`config.py`의 `moderation_` 설정이 바뀐 릴리스에서만 `qa.sh`가 켠다. 이미지 장수만큼 검수 호출이 늘어난다. 이미지는 공개 레포에 올리지 않고 `evaluation/moderation/datasets/images/{approve,reject}/`에 로컬로 두며, 켜졌는데 데이터셋이 없으면 테스트가 실패한다. 따로 돌릴 때는 `RUN_MODERATION_DATASET=1 scripts/test.sh --live tests/integration/test_moderation_dataset_live.py`.
 - 또는 서버를 띄우고 직접 호출: `POST /story/storylines` → 이야기 3편·추천 9개 / `POST /story/compile` → 스토리 명세 / `POST /chat/turns`(SSE) → 본문 스트림 / `POST /chat/choices` → 선택지 3개.
 - prod 키를 로컬에 쓰는 것이라 소량 비용이 든다. QA가 끝나면 `.env`의 키를 정리한다.
 
