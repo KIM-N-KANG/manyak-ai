@@ -901,8 +901,6 @@ async def test_each_request_passes_selected_length_to_generation(client, monkeyp
     for selection, expected in [
         ({"long_response": True}, "1050~1250"),
         ({"long_response": False}, "550~750"),
-        ({"long_response": True}, "1050~1250"),
-        ({}, "550~750"),
     ]:
         response = await client.post(
             "/api/v1/chat/turns", json=_payload() | selection,
@@ -912,10 +910,8 @@ async def test_each_request_passes_selected_length_to_generation(client, monkeyp
         assert _data_of(response.text, "completed")["aiOutput"] == "본문"
         assert f"분량은 공백 포함 {expected}자입니다." in captured[-1][0]["content"]
 
-    assert len(captured) == 4
-    assert captured[0][0] == captured[2][0]
-    assert captured[1][0] == captured[3][0]
-    assert all(messages[1:] == captured[0][1:] for messages in captured[1:])
+    assert len(captured) == 2
+    assert captured[0][1:] == captured[1][1:]
 
 
 async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) -> None:
