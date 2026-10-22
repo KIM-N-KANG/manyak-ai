@@ -152,7 +152,7 @@ async def test_chat_turn_sse_token_and_completed(client, mock_events) -> None:
     meta = completed["meta"]
     assert meta["provider"] == "not-deepseek"  # 이벤트에 실린 값이 그대로 meta로
     assert meta["retryCount"] == 0  # 본문은 재호출 없음 — 0 고정
-    assert meta["promptVersions"] == {"CHAT": 2}
+    assert meta["promptVersions"] == {"CHAT": 3}
     assert "NEXT_ACTIONS" not in meta["promptVersions"]  # 선택지 버전 키는 /chat/choices로 이동
     assert meta["model"]  # 이벤트에 model 없으면 설정값으로 폴백
     # mock 이벤트에 토큰이 없어 null
@@ -355,7 +355,7 @@ async def test_chat_turn_trace_receives_connection_metadata(
         "model_tier": "LITE",
         "model": "gpt-6-luna",
         "provider": "openai",
-        "prompt_versions": {"CHAT": 2},
+        "prompt_versions": {"CHAT": 3},
         "retry_count": 0,
     }
     assert "tags" not in captured  # 어떤 경로로든 태그가 실리면 실패
@@ -859,7 +859,7 @@ async def test_chat_prompt_records_same_version_in_response_and_trace(
 
     resp = await client.post("/api/v1/chat/turns", json=_payload())
 
-    expected = {"CHAT": 2}
+    expected = {"CHAT": 3}
     assert _data_of(resp.text, "completed")["meta"]["promptVersions"] == expected
     assert captured["metadata"]["prompt_versions"] == expected
 
@@ -887,6 +887,35 @@ async def test_null_long_response_returns_422_before_generation(client, monkeypa
     response = await client.post("/api/v1/chat/turns", json={**_payload(), "long_response": None})
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"] == ["body", "long_response"]
+
+
+@pytest.mark.parametrize("regenerated", ["false", "true"])
+async def test_each_request_passes_selected_length_to_generation(client, monkeypatch, regenerated) -> None:
+    captured = []
+
+    async def fake_stream(messages, *, character_images, user_id, model_tier):
+        captured.append(messages)
+        yield {"event": "completed", "ai_output": "본문", "model": "m", "provider": "p"}
+
+    monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
+    for selection, expected in [
+        ({"long_response": True}, "1050~1250"),
+        ({"long_response": False}, "550~750"),
+        ({"long_response": True}, "1050~1250"),
+        ({}, "550~750"),
+    ]:
+        response = await client.post(
+            "/api/v1/chat/turns", json=_payload() | selection,
+            headers={"X-Manyak-Is-Regenerated": regenerated},
+        )
+        assert response.status_code == 200
+        assert _data_of(response.text, "completed")["aiOutput"] == "본문"
+        assert f"분량은 공백 포함 {expected}자입니다." in captured[-1][0]["content"]
+
+    assert len(captured) == 4
+    assert captured[0][0] == captured[2][0]
+    assert captured[1][0] == captured[3][0]
+    assert all(messages[1:] == captured[0][1:] for messages in captured[1:])
 
 
 async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) -> None:

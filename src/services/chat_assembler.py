@@ -82,6 +82,7 @@ _SLOT_KEYS = (
     "{{main_events}}",
     "{{endings}}",
     "{{protagonist_name}}",
+    "{{response_length}}",
 )
 
 
@@ -104,6 +105,7 @@ def _slot_map(req: ChatTurnRequest) -> dict[str, str]:
         "{{main_events}}": format_main_events(req.main_events),
         "{{endings}}": _format_endings(req.endings),
         "{{protagonist_name}}": ss.protagonist_name,
+        "{{response_length}}": "1050~1250" if req.long_response else "550~750",
     }
 
 
