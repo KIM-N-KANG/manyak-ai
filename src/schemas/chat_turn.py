@@ -223,6 +223,7 @@ class ChatTurnRequest(ChatCommonRequest):
 
     user_id: UUID | None = None
     model_tier: Literal["LITE", "AURORA"] = "LITE"
+    long_response: bool = Field(default=False, description="이번 본문의 긴 응답 여부. false는 짧은 응답.")
 
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────

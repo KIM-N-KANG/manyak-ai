@@ -295,6 +295,24 @@ def test_completed_choices_defaults_to_empty_and_rejects_items() -> None:
         CompletedData(ai_output="본문", choices=["가"])
 
 
+def test_long_response_defaults_to_false() -> None:
+    req = ChatTurnRequest.model_validate(_BASE_PAYLOAD)
+    assert req.long_response is False
+
+
+@pytest.mark.parametrize("long_response", [False, True])
+def test_long_response_preserves_selected_value(long_response: bool) -> None:
+    req = ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "long_response": long_response})
+    assert req.long_response is long_response
+    assert req.model_dump()["long_response"] is long_response
+
+
+def test_long_response_rejects_null() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        ChatTurnRequest.model_validate({**_BASE_PAYLOAD, "long_response": None})
+    assert exc_info.value.errors()[0]["loc"] == ("long_response",)
+
+
 def test_routing_defaults_preserve_legacy_payload() -> None:
     req = ChatTurnRequest.model_validate(_BASE_PAYLOAD)
     assert req.user_id is None

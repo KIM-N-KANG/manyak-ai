@@ -879,6 +879,16 @@ async def test_invalid_routing_fields_return_422_before_generation(client, monke
     assert response.json()["detail"][0]["loc"][-1] == next(iter(routing))
 
 
+async def test_null_long_response_returns_422_before_generation(client, monkeypatch) -> None:
+    def unexpected_generation(*args, **kwargs):
+        pytest.fail("Null long_response must not reach generation")
+
+    monkeypatch.setattr(chat_module, "stream_chat_turn", unexpected_generation)
+    response = await client.post("/api/v1/chat/turns", json={**_payload(), "long_response": None})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "long_response"]
+
+
 async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) -> None:
     captured = []
 
