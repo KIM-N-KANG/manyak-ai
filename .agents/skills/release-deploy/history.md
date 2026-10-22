@@ -19,6 +19,19 @@
 
 ---
 
+## v0.5.0 — 2026-10-22 배포 완료
+
+- 범위: KNK-1739(채팅 모델 라우팅·고급 모델 A/B, #181), KNK-1762(등급 이름 LITE·AURORA, #182), KNK-1730(채팅 레이어 제거·단일 프롬프트, #180), KNK-1699(게시물 검수에 주인공 이름·인물 소개, #179), KNK-1673(평가 환경 교체, #178), KNK-1626(판정 로직 제거, #177), KNK-1617(범용 채팅 프롬프트·CHAT_PROMPT, #163), KNK-1778(버전 0.5.0, release 직접 커밋 `4e3e343`).
+  - 외부 계약 변경 있음, 하위호환. 채팅 요청에 `model_tier`(LITE/AURORA, 미전달은 LITE)·`user_id`(미전달은 None) 추가, completed에서 판정 3필드 제거. 구 서버(v0.8.0)와 공존 가능해 **AI 먼저 배포**, 이어서 서버 v0.9.0(KNK-1777)과 웹 모델 선택 UI.
+  - 판정 제거는 팀 합의(도달 여부 판정만 제거, `main_events`·`endings`는 프롬프트 재료로 유지). 구 서버는 null 판정에 목표 사건을 해제하고 엔딩 도달을 기록하지 않는다(합의된 결과).
+  - 채팅 본문 모델이 코드 고정 라우팅(LITE gpt-6-luna low, AURORA 짝수 gpt-6.1-sol low, 홀수 gemini-3.8-flash medium)이라 운영 SSM `CHAT_MODEL`은 무시된다. 기동 검사가 세 공급자 키를 모두 요구하므로 **배포 전 운영 `GEMINI_API_KEY` 값 존재를 확인**했다.
+  - `model_tier`는 Literal 검증이라 서버 DB에 새 모델 코드를 추가하면 422. 모델 추가는 AI 동반 배포.
+- PR #183 → main `1f272e7`(Merge Commit). Deploy to ECS (prod) 성공(run 39776772682). 태그 `v0.5.0` → `1f272e7`.
+- 운영 검증: `manyak-prod-ai` 배포 COMPLETED(`manyak-prod-ai:3`), 태스크 2개·`ai` 컨테이너 HEALTHY, digest가 ECR `1f272e7`(=`latest`)와 일치(`sha256:c0943456…`). `prod-health.sh`는 EC2 경로라 사용하지 않음.
+- QA: `qa.sh` 종료코드 0. 유닛 1716 passed·8 skipped, 라이브 통합 10 passed(166초).
+- 배포 전 3관점 리뷰: 계약·런타임 차단 결함 없음. 비차단: 고급 모델 실패 시 LITE 폴백 없음, Gemini 안전 차단 시 빈 본문 completed 가능, 추론 강도 none→low로 지연·비용 증가.
+- 역반영 PR #184(Merge Commit, dev `7ca5fa0`).
+
 ## v0.4.8 — 2026-10-15 배포 완료
 
 - 범위: KNK-1635(스토리 소개문 `meta.one_line_intro`·`meta.description` '~습니다' 어체 수정, #173), v0.4.7 역반영·이력(#171·#172), KNK-1646(버전 0.4.8, release 직접 커밋 `922b110`).
