@@ -264,7 +264,7 @@ def test_body_prompt_versions_returns_a_copy() -> None:
     versions = chat_assembler.body_prompt_versions()
     versions["EXTRA"] = 99
 
-    assert chat_assembler.body_prompt_versions() == {"CHAT": 1}
+    assert chat_assembler.body_prompt_versions() == {"CHAT": 2}
 
 
 def test_ending_candidates_and_summary_are_only_in_current_user_message() -> None:
@@ -299,7 +299,7 @@ def test_system_does_not_change_when_ending_candidates_change() -> None:
 
 
 def test_body_prompt_version_matches_contract() -> None:
-    assert chat_assembler.body_prompt_versions() == {"CHAT": 1}
+    assert chat_assembler.body_prompt_versions() == {"CHAT": 2}
 
 
 def test_empty_summary_is_rendered_in_current_user_message() -> None:
