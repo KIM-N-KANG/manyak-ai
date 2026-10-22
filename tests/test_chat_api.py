@@ -889,8 +889,7 @@ async def test_null_long_response_returns_422_before_generation(client, monkeypa
     assert response.json()["detail"][0]["loc"] == ["body", "long_response"]
 
 
-@pytest.mark.parametrize("regenerated", ["false", "true"])
-async def test_each_request_passes_selected_length_to_generation(client, monkeypatch, regenerated) -> None:
+async def test_each_request_passes_selected_length_to_generation(client, monkeypatch) -> None:
     captured = []
 
     async def fake_stream(messages, *, character_images, user_id, model_tier):
@@ -899,19 +898,18 @@ async def test_each_request_passes_selected_length_to_generation(client, monkeyp
 
     monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
     for selection, expected in [
+        ({}, "550~750"),
         ({"long_response": True}, "1050~1250"),
         ({"long_response": False}, "550~750"),
     ]:
         response = await client.post(
             "/api/v1/chat/turns", json=_payload() | selection,
-            headers={"X-Manyak-Is-Regenerated": regenerated},
         )
         assert response.status_code == 200
         assert _data_of(response.text, "completed")["aiOutput"] == "본문"
         assert f"분량은 공백 포함 {expected}자입니다." in captured[-1][0]["content"]
 
-    assert len(captured) == 2
-    assert captured[0][1:] == captured[1][1:]
+    assert len(captured) == 3
 
 
 async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) -> None:

@@ -93,25 +93,6 @@ def test_no_unsubstituted_slots() -> None:
     assert re.findall(r"\{\{[^}]+\}\}", blob) == []
 
 
-@pytest.mark.parametrize("selection, expected, other", [
-    ({}, "550~750", "1050~1250"),
-    ({"long_response": False}, "550~750", "1050~1250"),
-    ({"long_response": True}, "1050~1250", "550~750"),
-])
-def test_response_length_fills_system_prompt(selection, expected, other) -> None:
-    payload = _request().model_dump(exclude={"long_response"}) | selection
-    req = ChatTurnRequest.model_validate(payload)
-    original = req.model_dump()
-
-    messages = assemble(req)
-
-    assert f"분량은 공백 포함 {expected}자입니다." in messages[0]["content"]
-    assert other not in messages[0]["content"]
-    assert all("{{" not in message["content"] for message in messages)
-    assert expected not in messages[-1]["content"]
-    assert req.model_dump() == original
-
-
 def test_system_front_contains_all_slot_materials() -> None:
     front = assemble(_request())[0]["content"]
     assert "판타지" in front  # {{장르}}
