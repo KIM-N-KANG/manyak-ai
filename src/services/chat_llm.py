@@ -348,9 +348,9 @@ class _SpeakerLabelStreamParser:
         return [{"event": EVENT_TOKEN, "text": text}]
 
 
-def select_chat_model(user_id: UUID | None, model_tier: Literal["BASIC", "ADVANCED"]) -> tuple[str, str]:
-    """게스트는 기본 모델, 고급 회원은 UUID 마지막 16진수 자리의 홀짝으로 배정한다."""
-    if user_id is None or model_tier == "BASIC":
+def select_chat_model(user_id: UUID | None, model_tier: Literal["LITE", "AURORA"]) -> tuple[str, str]:
+    """게스트와 라이트 등급은 라이트 모델, 오로라 회원은 UUID 마지막 16진수 자리의 홀짝으로 배정한다."""
+    if user_id is None or model_tier == "LITE":
         return llm.routing_target("CHAT_BASIC")
     if user_id.int % 2 == 0:
         return llm.routing_target("CHAT_ADVANCED_EVEN")
@@ -359,7 +359,7 @@ def select_chat_model(user_id: UUID | None, model_tier: Literal["BASIC", "ADVANC
 
 async def stream_chat_turn(
     messages: list[dict], *, character_images: list[CharacterImageMapping] | None = None,
-    user_id: UUID | None = None, model_tier: Literal["BASIC", "ADVANCED"] = "BASIC",
+    user_id: UUID | None = None, model_tier: Literal["LITE", "AURORA"] = "LITE",
 ) -> AsyncIterator[dict]:
     """messages를 LLM에 스트리밍 호출하고 token·character_image→completed(또는 error)를 낸다.
 

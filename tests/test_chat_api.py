@@ -352,7 +352,7 @@ async def test_chat_turn_trace_receives_connection_metadata(
         "is_regenerated": True,
         "user_source": "edited_choice",
         "user_id": None,
-        "model_tier": "BASIC",
+        "model_tier": "LITE",
         "model": "gpt-6-luna",
         "provider": "openai",
         "prompt_versions": {"CHAT": 1},
@@ -454,10 +454,10 @@ async def test_concurrent_chat_turn_streams_keep_connection_metadata_isolated(
 
 
 @pytest.mark.parametrize("member,tier,model,provider", [
-    (None, "ADVANCED", "gpt-6-luna", "openai"),
-    ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "BASIC", "gpt-6-luna", "openai"),
-    ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "ADVANCED", "gpt-6.1-sol", "openai"),
-    ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "ADVANCED", "gemini-3.8-flash", "google"),
+    (None, "AURORA", "gpt-6-luna", "openai"),
+    ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "LITE", "gpt-6-luna", "openai"),
+    ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "AURORA", "gpt-6.1-sol", "openai"),
+    ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "AURORA", "gemini-3.8-flash", "google"),
 ])
 @pytest.mark.parametrize("returned_model", [None, "provider-version-name"])
 async def test_chat_turn_survives_completed_without_provider(
@@ -866,7 +866,7 @@ async def test_chat_prompt_records_same_version_in_response_and_trace(
 
 @pytest.mark.parametrize("routing", [
     {"user_id": "not-a-uuid"}, {"user_id": ""}, {"user_id": 123},
-    {"model_tier": None}, {"model_tier": "basic"}, {"model_tier": "PREMIUM"},
+    {"model_tier": None}, {"model_tier": "lite"}, {"model_tier": "BASIC"}, {"model_tier": "ADVANCED"},
     {"model_tier": ""}, {"model_tier": 1},
 ])
 async def test_invalid_routing_fields_return_422_before_generation(client, monkeypatch, routing) -> None:
@@ -887,9 +887,9 @@ async def test_routing_fields_do_not_change_model_messages(client, monkeypatch) 
         yield {"event": "error", "code": "test", "message": "test"}
 
     monkeypatch.setattr(chat_module, "stream_chat_turn", fake_stream)
-    for routing in [{}, {"user_id": None, "model_tier": "ADVANCED"},
-                    {"user_id": "3f2504e0-4f89-41d3-9a0c-0305e82c330a", "model_tier": "BASIC"},
-                    {"user_id": "3f2504e0-4f89-41d3-9a0c-0305e82c330b", "model_tier": "ADVANCED"}]:
+    for routing in [{}, {"user_id": None, "model_tier": "AURORA"},
+                    {"user_id": "3f2504e0-4f89-41d3-9a0c-0305e82c330a", "model_tier": "LITE"},
+                    {"user_id": "3f2504e0-4f89-41d3-9a0c-0305e82c330b", "model_tier": "AURORA"}]:
         response = await client.post("/api/v1/chat/turns", json={**_payload(), **routing})
         assert response.status_code == 200
     assert len(captured) == 4
@@ -912,12 +912,12 @@ async def test_api_routes_each_turn_using_current_member_and_tier(client, monkey
     even = "3f2504e0-4f89-41d3-9a0c-0305e82c330a"
     odd = "3f2504e0-4f89-41d3-9a0c-0305e82c330b"
     for member, tier, model, effort, provider in [
-        (None, "ADVANCED", "gpt-6-luna", "low", "openai"),
-        (even, "ADVANCED", "gpt-6.1-sol", "low", "openai"),
-        (even, "BASIC", "gpt-6-luna", "low", "openai"),
-        (even, "ADVANCED", "gpt-6.1-sol", "low", "openai"),
-        (odd, "ADVANCED", "gemini-3.8-flash", "medium", "google"),
-        (odd, "BASIC", "gpt-6-luna", "low", "openai"),
+        (None, "AURORA", "gpt-6-luna", "low", "openai"),
+        (even, "AURORA", "gpt-6.1-sol", "low", "openai"),
+        (even, "LITE", "gpt-6-luna", "low", "openai"),
+        (even, "AURORA", "gpt-6.1-sol", "low", "openai"),
+        (odd, "AURORA", "gemini-3.8-flash", "medium", "google"),
+        (odd, "LITE", "gpt-6-luna", "low", "openai"),
     ]:
         response = await client.post(
             "/api/v1/chat/turns", json={**_payload(), "user_id": member, "model_tier": tier},
@@ -970,9 +970,9 @@ async def test_routed_calls_link_member_model_and_regeneration(client, monkeypat
     monkeypatch.setattr(chat_llm.llm, "stream", stream)
     monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda exc, **kw: failures.append(kw))
     cases = [
-        (None, "BASIC", False, "gpt-6-luna", "openai"),
-        ("3F2504E0-4F89-41D3-9A0C-0305E82C330A", "ADVANCED", False, "gpt-6.1-sol", "openai"),
-        ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "ADVANCED", True, "gemini-3.8-flash", "google"),
+        (None, "LITE", False, "gpt-6-luna", "openai"),
+        ("3F2504E0-4F89-41D3-9A0C-0305E82C330A", "AURORA", False, "gpt-6.1-sol", "openai"),
+        ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "AURORA", True, "gemini-3.8-flash", "google"),
     ]
     responses = await asyncio.gather(*[
         client.post(

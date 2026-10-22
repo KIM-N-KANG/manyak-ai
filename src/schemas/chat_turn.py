@@ -222,7 +222,7 @@ class ChatTurnRequest(ChatCommonRequest):
     """채팅 턴 입력. 회원 UUID와 등급은 라우팅에만 쓰고 프롬프트에서 제외한다."""
 
     user_id: UUID | None = None
-    model_tier: Literal["BASIC", "ADVANCED"] = "BASIC"
+    model_tier: Literal["LITE", "AURORA"] = "LITE"
 
 
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────
