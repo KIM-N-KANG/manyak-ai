@@ -12,6 +12,7 @@
 import ast
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -279,6 +280,46 @@ async def test_claude_sonnet_5_disables_thinking_without_effort(monkeypatch) -> 
     assert resolved.reasoning_effort is None
     assert messages.captured["thinking"] == {"type": "disabled"}
     assert "output_config" not in messages.captured
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "thinking", "output_config"),
+    [
+        # Haiku 5.5는 disabled를 받는다. none은 effort 값이 아니라 끄기라 effort를 보내지 않는다.
+        ("claude-haiku-5-5", "none", {"type": "disabled"}, None),
+        ("claude-sonnet-5-5", "medium", {"type": "adaptive"}, {"effort": "medium"}),
+        ("claude-opus-5-5", "high", {"type": "adaptive"}, {"effort": "high"}),
+    ],
+)
+async def test_claude_5_5_effort_syntax(monkeypatch, model, effort, thinking, output_config) -> None:
+    """요청별 강도(none~high)를 5.5 세대 문법으로 옮긴다.
+
+    고치기 전에는 none이 `output_config.effort="none"`으로 나가(이 회사에 없는 값) 400이 났다.
+    """
+    messages = _FakeMessages(result=_response(model=model))
+    _install(monkeypatch, messages)
+
+    await llm.complete(_req(model=model, reasoning_effort=effort))
+
+    assert messages.captured["thinking"] == thinking
+    assert messages.captured.get("output_config") == output_config
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5-5"])
+async def test_claude_5_5_without_none_defaults_to_low(monkeypatch, model: str) -> None:
+    """Opus 5.5(끌 수 없음)와 Sonnet 5.5(끄기를 믿기 어려워 열지 않음)는 기본값이 low다.
+
+    none 요청은 호출 전에 막는다 — Sonnet 5.5에 disabled를 보내면 400이다.
+    """
+    messages = _FakeMessages(result=_response(model=model))
+    _install(monkeypatch, messages)
+
+    await llm.complete(_req(model=model))
+
+    assert messages.captured["thinking"] == {"type": "adaptive"}
+    assert messages.captured["output_config"] == {"effort": "low"}
+    with pytest.raises(LlmConfigError):
+        await llm.complete(_req(model=model, reasoning_effort="none"))
 
 
 async def test_configured_effort_is_sent_only_when_present(monkeypatch) -> None:
@@ -1308,7 +1349,7 @@ def test_adapters_declare_whether_they_can_stream() -> None:
 
 
 def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch) -> None:
-    """조각 흘리기를 못 하는 어댑터를 CHAT_MODEL에 꽂으면 **기동에서** 막는다.
+    """조각 흘리기를 못 하는 어댑터를 채팅 라우팅 자리에 꽂으면 **기동에서** 막는다.
 
     막지 않으면 서버는 아무 오류 없이 뜨고, 사용자가 채팅을 눌러야 터진다. 그것도 조용히
     터진다 — 없는 `stream`이 던지는 것은 채팅이 잡는 예외 계열(LlmError)이 아니라 SSE 오류
@@ -1320,8 +1361,9 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
     그물(스트리밍 능력)이 한 번도 실행되지 않는데, 통과하는 모습은 똑같아 눈치채기 어렵다.
     """
     monkeypatch.setattr(registry, "BLOCKED_PROVIDERS", {})
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", ("anthropic-test-model", "high"))
     monkeypatch.setattr(anthropic_sdk, "SUPPORTS_STREAMING", False)
-    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", replace(_THINKING, supported_reasoning_efforts=frozenset({"high"})))
     monkeypatch.setattr(
         registry,
         "settings",
@@ -1329,7 +1371,6 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
             _env_file=None,
             deepseek_api_key="k",
             anthropic_api_key="ant",
-            chat_model="anthropic-test-model",
         ),
     )
 
@@ -1337,7 +1378,7 @@ def test_startup_rejects_a_non_streaming_adapter_in_a_streaming_slot(monkeypatch
         llm.validate_startup()
 
     message = str(exc_info.value)
-    assert "CHAT_MODEL" in message
+    assert "CHAT_LITE" in message
     assert "스트리밍" in message
 
 
@@ -1368,7 +1409,7 @@ def test_the_streaming_slot_is_known_only_to_the_registry() -> None:
 
     용도에 맞춰 아래층을 깎으면 모델·공급자를 바꿀 때마다 그 층을 다시 고쳐야 한다(KNK-667).
     """
-    assert registry.STREAMING_ENVS == frozenset({"CHAT_MODEL"})
+    assert registry.STREAMING_SLOTS == frozenset(registry.ROUTING_TARGETS)
 
     gateway_source = Path(llm.__file__).read_text(encoding="utf-8")
     adapter_source = Path(anthropic_sdk.__file__).read_text(encoding="utf-8")
@@ -1377,56 +1418,94 @@ def test_the_streaming_slot_is_known_only_to_the_registry() -> None:
     assert "CHAT_MODEL" not in _code_of(adapter_source)
 
 
-# ── 채팅 자리에 이 공급자를 못 꽂게 한다 (KNK-675) ──────────────────────────
+# ── 본문 허용과 선택지 공급자 제한 ──────────────────────────
 def _blocked_settings(**overrides) -> Settings:
-    values = {"_env_file": None, "deepseek_api_key": "k", "anthropic_api_key": "ant"}
+    values = {
+        "_env_file": None,
+        "deepseek_api_key": "k",
+        "anthropic_api_key": "ant",
+    }
     return Settings(**(values | overrides))
 
 
 def test_the_blocked_slot_is_known_only_to_the_registry() -> None:
-    """"채팅에는 이 공급자를 쓸 수 없다"는 규칙은 등록부에만 있다.
+    """용도별 공급자 제한은 등록부에만 있다.
 
-    `STREAMING_ENVS`와 같은 이유다 — 통로·어댑터에 용도 이름을 박으면 모델·공급자를 바꿀
+    `STREAMING_SLOTS`와 같은 이유다 — 통로·어댑터에 용도 이름을 박으면 모델·공급자를 바꿀
     때마다 그 층을 다시 고쳐야 한다(KNK-667). 어느 파일에도 "CHAT_MODEL"이 코드로 박히지
     않았는지는 위 `test_the_streaming_slot_is_known_only_to_the_registry`가 함께 지킨다.
     """
-    assert registry.BLOCKED_PROVIDERS["CHAT_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
+    assert all(not registry.blocked_providers(slot) for slot in registry.ROUTING_TARGETS)
     assert registry.BLOCKED_PROVIDERS["CHAT_CHOICE_MODEL"] == frozenset({PROVIDER_ANTHROPIC})
 
 
-def test_startup_rejects_this_provider_in_the_chat_slot(monkeypatch) -> None:
-    """CHAT_MODEL에 이 공급자의 모델을 꽂으면 **기동에서** 막는다.
+async def test_mid_conversation_system_kept_in_place(monkeypatch) -> None:
+    """layer 배치(맨 앞 1 + 대화 + 끝 2)에서 끝의 지시문을 버리지 않고 그 자리에 보낸다.
 
-    막지 않으면 서버도 채팅도 정상으로 도는데 **안전 지시(PHI)만 빠진 채 호출된다** —
-    이 회사는 지시문 칸이 하나뿐이라 채팅이 뒤에 두는 Depth·PHI가 버려지기 때문이다
-    (`anthropic_sdk._split_system`). 오류가 나지 않아 경고 로그를 보지 않으면 모른다.
-
-    직전까지는 "이 어댑터는 스트리밍을 못 한다"는 이유로 걸렸는데, 조각 흘리기를 구현하면서
-    (KNK-696) 그 그물이 사라졌다. 이 테스트가 그 자리를 대신한다.
+    고치기 전에는 Claude로 보내면 끝의 현재 상태·안전 지시가 경고 로그만 남기고 사라졌다.
+    빈 지시문은 맨 앞과 같은 이유(빈 글 블록은 400)로 넣지 않는다.
     """
-    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
-    monkeypatch.setattr(registry, "settings", _blocked_settings(chat_model="anthropic-test-model"))
+    messages = _FakeMessages(result=_response(model="claude-haiku-5-5"))
+    _install(monkeypatch, messages)
+    layer_like = [
+        {"role": "system", "content": "앞"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "system", "content": "현재 상태"},
+        {"role": "system", "content": "   "},
+        {"role": "system", "content": "안전 지시"},
+    ]
 
-    with pytest.raises(LlmConfigError) as exc_info:
-        llm.validate_startup()
+    await anthropic_sdk.complete(_req(model="claude-haiku-5-5", messages=layer_like), registry.resolve("claude-haiku-5-5"))
 
-    message = str(exc_info.value)
-    assert "CHAT_MODEL" in message  # 배포가 실패한 상황이다 — 무엇을 되돌릴지 있어야 한다
-    assert PROVIDER_ANTHROPIC in message
+    assert messages.captured["system"][0]["text"] == "앞"
+    assert messages.captured["messages"] == [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "system", "content": "현재 상태"},
+        {"role": "system", "content": "안전 지시"},
+    ]
 
 
 def test_startup_allows_this_provider_in_other_slots(monkeypatch) -> None:
-    """같은 모델이라도 채팅이 아닌 자리면 통과한다.
-
-    **짝으로 확인해야 의미가 있다.** 윗 테스트만 보면 "이 공급자를 아예 못 쓰게 막는" 코드도
-    똑같이 통과한다 — 막은 것이 "이 공급자"가 아니라 "채팅 자리"임을 여기서 고정한다.
-    """
+    """스토리라인에서도 기존처럼 이 공급자를 사용할 수 있다."""
     monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
     monkeypatch.setattr(
         registry, "settings", _blocked_settings(storylines_model="anthropic-test-model")
     )
 
     llm.validate_startup()  # 예외가 나면 실패다
+
+
+# ── 단일 본문 프롬프트의 공급자 허용 ──────────
+def test_startup_allows_this_provider_in_the_chat_slot(monkeypatch) -> None:
+    """단일 본문은 중간 system 지원 여부에 따른 차단 없이 기동한다."""
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", ("anthropic-test-model", "high"))
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", replace(_THINKING, supported_reasoning_efforts=frozenset({"high"})))
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _blocked_settings(),
+    )
+
+    llm.validate_startup()  # 예외가 나면 실패다
+
+
+def test_single_chat_prompt_does_not_open_the_choice_slot(monkeypatch) -> None:
+    """본문 공급자 제한을 없애도 선택지의 JSON 강제 제한은 유지한다."""
+    monkeypatch.setitem(registry._REGISTRY, "anthropic-test-model", _THINKING)
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _blocked_settings(chat_choice_model="anthropic-test-model"),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+
+    assert "CHAT_CHOICE_MODEL" in str(exc_info.value)
 
 
 def test_blocked_slot_is_reported_before_a_missing_key(monkeypatch) -> None:
@@ -1439,7 +1518,7 @@ def test_blocked_slot_is_reported_before_a_missing_key(monkeypatch) -> None:
     monkeypatch.setattr(
         registry,
         "settings",
-        _blocked_settings(anthropic_api_key="", chat_model="anthropic-test-model"),
+        _blocked_settings(anthropic_api_key="", chat_choice_model="anthropic-test-model"),
     )
 
     with pytest.raises(LlmConfigError) as exc_info:
@@ -1577,3 +1656,176 @@ async def test_blank_key_is_a_config_error(monkeypatch, _isolated_client_cache, 
         anthropic_sdk._client(PROVIDER_ANTHROPIC)
 
     assert "ANTHROPIC_API_KEY" in str(exc_info.value)
+
+
+# ── Langfuse 직접 기록 (KNK-1627, ADR A13 ④) ─────────────────────────────────
+# 이 공급자는 자동 계측이 없어 어댑터가 손으로 기록한다. 바깥 자동 계측을 뺀 이유가 "사용자가 도중에
+# 끊으면 기록이 닫히지 않는다"였으므로, 정상·오류·취소 세 갈래가 각각 정확히 한 번 닫히는지 본다.
+class _RecordingStreamGeneration:
+    def __init__(self, started: dict) -> None:
+        self.started = started
+        self.ends: list[tuple[str, dict]] = []
+
+    def finish(self, **fields) -> None:
+        self.ends.append(("finish", fields))
+
+    def fail(self, exc, **fields) -> None:
+        self.ends.append(("fail", {"exc": exc, **fields}))
+
+    def cancel(self, **fields) -> None:
+        self.ends.append(("cancel", fields))
+
+
+def _record_stream_generation(monkeypatch) -> list[_RecordingStreamGeneration]:
+    made: list[_RecordingStreamGeneration] = []
+
+    def _start(name, **kwargs):
+        generation = _RecordingStreamGeneration({"name": name, **kwargs})
+        made.append(generation)
+        return generation
+
+    monkeypatch.setattr(anthropic_sdk, "start_stream_generation", _start)
+    return made
+
+
+_EXPECTED_USAGE_DETAILS = {
+    # 입력은 캐시를 뺀 일반 조각만 — 합계(170)를 넣으면 캐시 조각이 일반 단가로 한 번 더 계산된다.
+    "input": 100,
+    "cache_creation_input_tokens": 30,
+    "cache_read_input_tokens": 40,
+    "output": 20,
+}
+
+
+async def test_stream_records_one_finished_generation(monkeypatch) -> None:
+    """정상 종료면 관측을 한 번 열고, 출력 전체와 조각별 토큰을 싣고 한 번 닫는다."""
+    made = _record_stream_generation(monkeypatch)
+    events_in = [_start_event(), _text_event("안"), _text_event("녕"), _stop_event()]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert len(made) == 1
+    assert made[0].started["name"] == "Anthropic-generation"
+    assert made[0].started["model"] == "anthropic-test-model"
+    assert made[0].started["input_data"] == _req().messages
+    assert made[0].ends == [
+        ("finish", {"output": "안녕", "usage_details": _EXPECTED_USAGE_DETAILS})
+    ]
+
+
+async def test_stream_records_cancel_when_user_leaves(monkeypatch) -> None:
+    """사용자가 답변 도중 끊으면(제너레이터 닫힘) 오류가 아니라 취소로 닫고, 그때까지의 글을 싣는다.
+
+    바깥 자동 계측은 바로 이 경로에서 기록을 닫지 않아 그 턴이 기록에서 빠졌다(ADR A13).
+    """
+    made = _record_stream_generation(monkeypatch)
+    events_in = [_start_event(), _text_event("안"), _text_event("녕"), _stop_event()]
+    _install(monkeypatch, _FakeMessages(result=_stream_of(events_in)))
+
+    gen = anthropic_sdk.stream(_req(), _THINKING)
+    assert await gen.__anext__() == TextDelta("안")
+    await gen.aclose()
+
+    assert [kind for kind, _ in made[0].ends] == ["cancel"]
+    assert made[0].ends[0][1]["output"] == "안"
+    # 시작 신호에서 받은 입력 토큰은 남긴다 — 끊긴 턴도 입력 비용은 나갔다.
+    # 출력은 비운다 — 시작 신호의 임시값(1)을 실으면 쓴 분량이 1토큰으로 기록된다.
+    assert made[0].ends[0][1]["usage_details"] == {
+        "input": 100,
+        "cache_creation_input_tokens": 30,
+        "cache_read_input_tokens": 40,
+    }
+
+
+async def test_stream_records_cancel_on_task_cancellation(monkeypatch) -> None:
+    """작업 취소(CancelledError)도 오류가 아니라 취소로 닫고, 예외는 그대로 올린다."""
+    made = _record_stream_generation(monkeypatch)
+    _install(
+        monkeypatch,
+        _FakeMessages(result=_stream_of([_text_event("가")], error=asyncio.CancelledError())),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [kind for kind, _ in made[0].ends] == ["cancel"]
+
+
+async def test_stream_records_failure_midway(monkeypatch) -> None:
+    """도중에 공급자 오류가 나면 실패로 한 번 닫고, 호출부에는 중립 예외가 그대로 간다."""
+    made = _record_stream_generation(monkeypatch)
+    _install(
+        monkeypatch,
+        _FakeMessages(result=_stream_of([_text_event("가")], error=_anthropic_error("rate"))),
+    )
+
+    with pytest.raises(LlmRateLimited):
+        _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [kind for kind, _ in made[0].ends] == ["fail"]
+    assert isinstance(made[0].ends[0][1]["exc"], LlmRateLimited)
+
+
+async def test_stream_records_failure_at_request(monkeypatch) -> None:
+    """스트림을 열기도 전에 실패해도 관측은 열렸다가 실패로 닫힌다 — 실패 호출도 기록에 남는다."""
+    made = _record_stream_generation(monkeypatch)
+    _install(monkeypatch, _FakeMessages(error=_anthropic_error("timeout")))
+
+    with pytest.raises(LlmTimeout):
+        _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [kind for kind, _ in made[0].ends] == ["fail"]
+
+
+async def test_stream_records_failure_when_truncated(monkeypatch) -> None:
+    """종료 신호 없이 끊긴 응답은 잘린 답이라 실패로 닫는다(완성된 답으로 기록하지 않는다)."""
+    made = _record_stream_generation(monkeypatch)
+    _install(monkeypatch, _FakeMessages(result=_stream_of([_start_event(), _text_event("가")])))
+
+    with pytest.raises(LlmUnavailable):
+        _ = [ev async for ev in anthropic_sdk.stream(_req(), _THINKING)]
+
+    assert [kind for kind, _ in made[0].ends] == ["fail"]
+
+
+async def test_complete_records_generation(monkeypatch) -> None:
+    """단발 호출은 observe_generation 블록으로 남기고, 출력과 조각별 토큰을 싣는다."""
+    from contextlib import contextmanager
+
+    captured: dict = {}
+
+    class _Handle:
+        def finish(self, **fields) -> None:
+            captured["finish"] = fields
+
+    @contextmanager
+    def _observe(name, **kwargs):
+        captured["start"] = {"name": name, **kwargs}
+        yield _Handle()
+
+    monkeypatch.setattr(anthropic_sdk, "observe_generation", _observe)
+    _install(monkeypatch, _FakeMessages(result=_response()))
+
+    await anthropic_sdk.complete(_req(), _THINKING)
+
+    assert captured["start"]["name"] == "Anthropic-generation"
+    assert captured["start"]["model_parameters"]["max_tokens"] == 16
+    assert captured["finish"] == {"output": "본문", "usage_details": _EXPECTED_USAGE_DETAILS}
+
+
+def test_unfinished_usage_keeps_output_after_final_signal() -> None:
+    """마무리 신호를 받은 뒤 끝났으면 출력 값이 실제 값이라 그대로 싣는다."""
+    parts = {
+        "input_tokens": 1, "cache_creation_input_tokens": None,
+        "cache_read_input_tokens": None, "output_tokens": 9,
+    }
+    assert anthropic_sdk._unfinished_usage_details(parts, True) == {"input": 1, "output": 9}
+    assert anthropic_sdk._unfinished_usage_details(parts, False) == {"input": 1}
+
+
+def test_usage_details_skip_missing_parts() -> None:
+    """없는 칸은 싣지 않고, 전부 없으면 None이다(0으로 채우면 0원 기록이 된다)."""
+    empty = dict.fromkeys(anthropic_sdk._USAGE_FIELDS, None)
+    assert anthropic_sdk._usage_details(empty) is None
+    assert anthropic_sdk._usage_details(empty | {"output_tokens": 5}) == {"output": 5}

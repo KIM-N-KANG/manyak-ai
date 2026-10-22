@@ -9,6 +9,7 @@ from src.services.moderation.images import ImageSource
 
 # None은 텍스트, dict는 객체, 원소 하나의 list는 배열의 구조다.
 _FIELDS = {
+    "protagonistName": None,
     "title": None, "oneLineIntro": None, "description": None, "genres": [None],
     "storySettings": {
         "worldSetting": None, "characterSetting": None, "userRoleSetting": None, "ruleSetting": None,
@@ -19,7 +20,7 @@ _FIELDS = {
     }],
     "mainEvents": [{"name": None, "description": None, "keySentence": None}],
     "thumbnailUrl": None,
-    "characters": [{"name": None, "images": [{"imageName": None, "imageUrl": None}]}],
+    "characters": [{"name": None, "description": None, "images": [{"imageName": None, "imageUrl": None}]}],
 }
 
 

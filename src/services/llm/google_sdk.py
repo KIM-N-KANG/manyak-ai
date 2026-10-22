@@ -8,21 +8,25 @@ google-genai SDK로 Gemini API를 부른다. 하는 일은 OpenAI·Anthropic 어
 4. 단발 호출 1건을 Langfuse generation 관측으로 남긴다(KNK-1097). `langfuse.openai` 자동 계측은
    openai SDK만 덮어 google-genai 호출은 지나친다 — 이미지 어댑터(KNK-1240)처럼 여기서 손으로
    기록해야 Gemini 컴파일의 토큰·비용이 현재 트레이스(스토리 컴파일 등)에 모인다.
-   스트리밍(`stream`)은 아직 기록하지 않는다. `observe_generation`은 현재 컨텍스트에 관측을
-   붙이는 방식이라 yield를 넘나들면 중도 이탈이 ERROR로 남고 멈춘 사이 만든 관측의 부모가
-   틀어진다. Gemini는 지금 컴파일(단발)에만 쓰이므로, 채팅에 쓰게 될 때 스트림 전용 관측과 함께 붙인다.
+   스트리밍(`stream`)은 Anthropic 어댑터와 같은 스트림 전용 관측(`start_stream_generation`)으로
+   남긴다. `observe_generation`은 현재 컨텍스트에 관측을 붙이는 방식이라 yield를 넘나들면 중도
+   이탈이 ERROR로 남고 멈춘 사이 만든 관측의 부모가 틀어지기 때문이다. 정상·오류·취소 어느 쪽으로
+   끝나도 관측이 한 번 닫힌다.
 """
 
+import asyncio
 import hashlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from contextvars import ContextVar
 
 import httpx
 from google import genai
 from google.genai import errors, types
 
 from src.core.tracing import start_span
-from src.core.langfuse import observe_generation
+from src.core.langfuse import observe_generation, start_stream_generation
 from src.services.llm.base import (
     STRUCTURED_OUTPUT_JSON_OBJECT,
     LlmBadRequest,
@@ -54,6 +58,42 @@ SUPPORTS_STREAMING = True
 _OBSERVATION_NAME = "Gemini-generation"
 
 
+# SDK 내부 제너레이터의 종료 전파와 무관하게 이 요청의 HTTP 응답만 정리한다.
+_response_cleanup: ContextVar[AsyncExitStack | None] = ContextVar("gemini_response_cleanup", default=None)
+
+
+async def _track_stream_response(response: httpx.Response) -> None:
+    cleanup = _response_cleanup.get()
+    if cleanup is not None:
+        cleanup.push_async_callback(response.aclose)
+
+
+@contextmanager
+def _tracking_stream_responses(cleanup: AsyncExitStack) -> Iterator[None]:
+    # 토큰을 내보내기 전에 복원해야 다음 읽기·종료가 다른 Task에서 와도 안전하다.
+    token = _response_cleanup.set(cleanup)
+    try:
+        yield
+    finally:
+        _response_cleanup.reset(token)
+
+
+@asynccontextmanager
+async def _stream_cleanup() -> AsyncIterator[AsyncExitStack]:
+    cleanup = AsyncExitStack()
+    try:
+        yield cleanup
+    except BaseException:
+        try:
+            await cleanup.aclose()
+        except (Exception, asyncio.CancelledError):
+            # 공급자 오류·취소를 보존하며, 예외 원문은 로그에 남기지 않는다.
+            logger.warning("Gemini stream cleanup failed while handling an earlier exit")
+        raise
+    else:
+        await cleanup.aclose()
+
+
 def _fingerprint(api_key: str) -> str:
     """캐시 이름표용 키 지문(openai_sdk와 같은 이유)."""
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
@@ -69,7 +109,11 @@ def _client(provider: str) -> genai.Client:
     key = (provider, creds.base_url, _fingerprint(creds.api_key))
     client = _clients.get(key)
     if client is None:
-        client = genai.Client(api_key=creds.api_key)
+        http_client = httpx.AsyncClient(event_hooks={"response": [_track_stream_response]})
+        client = genai.Client(
+            api_key=creds.api_key,
+            http_options=types.HttpOptions(httpx_async_client=http_client),
+        )
         _clients[key] = client
     return client
 
@@ -95,9 +139,7 @@ def _build_config(req: LlmRequest, resolved: ResolvedModel) -> types.GenerateCon
 
     # system instruction — messages에서 system role을 분리한다.
     # Gemini의 system_instruction은 칸이 하나뿐이라 복수 system 메시지를 합친다.
-    # **채팅처럼 system을 앞뒤에 나눠 놓는 경우(앞 1 + 뒤 2) 뒤쪽 지시의 배치 효과가
-    # 사라진다** — Anthropic과 같은 문제다. 컴파일은 system이 앞 1개뿐이라 지금은 문제없지만,
-    # 채팅에서 이 어댑터를 쓰려면 BLOCKED_PROVIDERS에 넣거나 배치 문제를 먼저 풀어야 한다.
+    # 중간·끝의 system도 맨 앞 지시문으로 합쳐지므로 원래 위치는 보존되지 않는다.
     system_parts = []
     for msg in req.messages:
         if msg.get("role") == "system":
@@ -339,7 +381,11 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
 
 
 async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[StreamEvent]:
-    """스트리밍 호출. 조각을 TextDelta로 흘리고 마지막에 StreamCompleted를 낸다."""
+    """스트리밍 호출. 조각을 TextDelta로 흘리고 마지막에 StreamCompleted를 낸다.
+
+    Langfuse 관측은 호출 전에 열고, 끝난 방식(정상·오류·사용자 취소)에 맞춰 직접 닫는다 —
+    Anthropic 어댑터(KNK-1627)와 같은 방식이다.
+    """
     with start_span(
         "llm.stream", {"provider": resolved.provider, "model": resolved.model, "operation": "stream"},
     ):
@@ -348,38 +394,76 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
         contents = _build_contents(req)
         model = req.model
         usage = TokenUsage()
+        usage_chunk: object | None = None  # usage가 실린 마지막 조각 — 관측 토큰 칸을 여기서 만든다
         finish_reason: str | None = None
+        texts: list[str] = []  # 관측의 출력. 취소돼도 그때까지 흘린 글을 남긴다
+        generation = start_stream_generation(
+            _OBSERVATION_NAME,
+            model=resolved.model,
+            model_parameters=_model_parameters(req, resolved),
+            input_data=req.messages,
+        )
         try:
-            async for chunk in await client.aio.models.generate_content_stream(
-                model=resolved.model,
-                contents=contents,
-                config=config,
-            ):
-                # usage 수집
-                chunk_usage = getattr(chunk, "usage_metadata", None)
-                if chunk_usage is not None:
-                    usage = _usage_of(chunk)
-                # model version 수집
-                model_version = getattr(chunk, "model_version", None)
-                if model_version:
-                    model = model_version
-                # finish_reason 수집
-                candidates = getattr(chunk, "candidates", None)
-                if candidates:
-                    reason = getattr(candidates[0], "finish_reason", None)
-                    if reason is not None:
-                        finish_reason = reason.name.lower() if hasattr(reason, "name") else str(reason)
-                # 텍스트 조각 흘리기
-                try:
-                    text = chunk.text
-                except Exception:
-                    text = None
-                if isinstance(text, str) and text:
-                    yield TextDelta(text)
-        except errors.APIError as exc:
-            raise _translate(exc, resolved) from exc
-        except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
-            raise _translate(exc, resolved) from exc
+            try:
+                async with _stream_cleanup() as cleanup:
+                    with _tracking_stream_responses(cleanup):
+                        chunks = await client.aio.models.generate_content_stream(
+                            model=resolved.model,
+                            contents=contents,
+                            config=config,
+                        )
+                    # 상위 제너레이터 종료·취소 시 SDK 스트림도 즉시 정리한다.
+                    cleanup.push_async_callback(chunks.aclose)
+                    while True:
+                        with _tracking_stream_responses(cleanup):
+                            try:
+                                chunk = await anext(chunks)
+                            except StopAsyncIteration:
+                                break
+                        generation.mark_first_chunk()
+                        # usage 수집
+                        chunk_usage = getattr(chunk, "usage_metadata", None)
+                        if chunk_usage is not None:
+                            usage = _usage_of(chunk)
+                            usage_chunk = chunk
+                        # model version 수집
+                        model_version = getattr(chunk, "model_version", None)
+                        if model_version:
+                            model = model_version
+                        # finish_reason 수집
+                        candidates = getattr(chunk, "candidates", None)
+                        if candidates:
+                            reason = getattr(candidates[0], "finish_reason", None)
+                            if reason is not None:
+                                finish_reason = reason.name.lower() if hasattr(reason, "name") else str(reason)
+                        # 텍스트 조각 흘리기
+                        try:
+                            text = chunk.text
+                        except Exception:
+                            text = None
+                        if isinstance(text, str) and text:
+                            texts.append(text)
+                            yield TextDelta(text)
+            except errors.APIError as exc:
+                raise _translate(exc, resolved) from exc
+            except (httpx.TimeoutException, httpx.TransportError, ConnectionError, TimeoutError, OSError) as exc:
+                raise _translate(exc, resolved) from exc
+        except (GeneratorExit, asyncio.CancelledError):
+            # 사용자가 답변 도중 창을 닫았다. 오류가 아니라 취소로 닫고 그때까지의 글·토큰을 싣는다.
+            generation.cancel(
+                output="".join(texts),
+                usage_details=_usage_details(usage_chunk) if usage_chunk is not None else None,
+            )
+            raise
+        except BaseException as exc:
+            generation.fail(
+                exc, usage_details=_usage_details(usage_chunk) if usage_chunk is not None else None
+            )
+            raise
+        generation.finish(
+            output="".join(texts),
+            usage_details=_usage_details(usage_chunk) if usage_chunk is not None else None,
+        )
         yield StreamCompleted(
             model=model,
             provider=resolved.provider,

@@ -19,6 +19,17 @@
 
 ---
 
+## v0.4.8 — 2026-10-15 배포 완료
+
+- 범위: KNK-1635(스토리 소개문 `meta.one_line_intro`·`meta.description` '~습니다' 어체 수정, #173), v0.4.7 역반영·이력(#171·#172), KNK-1646(버전 0.4.8, release 직접 커밋 `922b110`).
+  - 프롬프트 문구만 변경. 외부 계약·env 변경 없음 → **AI 단독 배포·단독 롤백 가능**. 기존 스토리의 저장된 소개문은 그대로.
+  - v0.4.7은 규칙 대상을 prologue·start_situation으로만 잡아 상세 "주요 내용"(소개문)이 빠졌다. 화면에 그대로 나가는 컴파일 필드는 한 번에 같이 본다.
+- PR #174 → main `63348b9`(Merge Commit). Deploy to ECS (prod) 성공. 태그 `v0.4.8` → `63348b9`.
+- 운영 검증: `manyak-prod-ai` 배포 COMPLETED, 태스크 2개·`ai` 컨테이너 HEALTHY, digest가 ECR `63348b9`(=`latest`)와 일치(`sha256:7116f888…`). `prod-health.sh`는 EC2 경로라 사용하지 않음.
+- QA: `qa.sh` 종료코드 0. 유닛 1538 passed·8 skipped, 라이브 통합 10 passed. 운영과 같은 모델 실측: `gemini-3.7-flash`(응답 3.8-flash) 소개문 '~습니다'·'~요' v12 7문장 → v13 0문장.
+- 배포 전 리뷰 차단 결함 없음. Codex PR 리뷰는 #173도 사용량 한도로 미실시.
+- 역반영 PR #175(Merge Commit, dev `05da8be`).
+
 ## v0.4.7 — 2026-10-14 배포 완료
 
 - 범위: KNK-1635(도입부 prologue·채팅 지문 '~습니다' 어체 수정, #168·#169), KNK-1638(버전 0.4.7, release 직접 커밋 `c283bf2`).

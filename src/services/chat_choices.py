@@ -28,9 +28,9 @@ from src.core.sentry import (
     FEATURE_CHOICE_GENERATION,
     capture_ai_exception,
 )
-from src.schemas.chat_turn import ChatTurnRequest
+from src.schemas.chat_turn import ChatCommonRequest
 from src.services import llm
-from src.services.chat_assembler import format_main_events, format_target_main_event
+from src.services.chat_assembler import format_main_events
 from src.services.chat_image_markers import strip_character_image_syntax
 from src.services.llm.base import LlmError, LlmRequest
 from src.services.prompt_meta import read_version
@@ -118,7 +118,7 @@ def _strip_code_fence(text: str) -> str:
     return stripped
 
 
-def _format_history(req: ChatTurnRequest) -> str:
+def _format_history(req: ChatCommonRequest) -> str:
     """History를 읽기 쉬운 텍스트로 만든다(역할은 한글 라벨). 비면 빈 문자열."""
     label = {"USER": "주인공", "ASSISTANT": "이야기"}
     lines = [
@@ -128,12 +128,11 @@ def _format_history(req: ChatTurnRequest) -> str:
     return "\n\n".join(lines)
 
 
-def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
+def _build_user(req: ChatCommonRequest, ai_output: str) -> str:
     """[USER] 블록의 자리표시자를 요청 재료 + 방금 생성된 본문으로 치환한다.
 
-    사건 재료 3종(KNK-485, §5-3-5 — 주요 사건·목표 사건·거쳐온 사건)은 선택지
-    3구성(목표 1 + 미향 1 + 맥락 1)의 재료다. 재료가 비면 "(없음)"으로 치환된다
-    (하위호환).
+    주요 사건(KNK-485)은 선택지 3구성(사건 진행 1 + 다른 사건 1 + 맥락 1)의 재료다.
+    재료가 비면 "(없음)"으로 치환된다(하위호환). 목표·완결 사건은 판정 제거(KNK-1626)로 뺐다.
     """
     ss = req.story_settings
     repl = {
@@ -147,11 +146,6 @@ def _build_user(req: ChatTurnRequest, ai_output: str) -> str:
         "{{user_input}}": req.user_input,
         "{{ai_output}}": strip_character_image_syntax(ai_output),
         "{{main_events}}": format_main_events(req.main_events),
-        "{{target_main_event}}": format_target_main_event(req.target_main_event),
-        "{{occurred_main_event_names}}": "\n".join(
-            f"- {n}" for n in req.occurred_main_event_names
-        )
-        or "(없음)",
         "{{protagonist_name}}": ss.protagonist_name,
     }
     text = _USER_TEMPLATE
@@ -207,7 +201,7 @@ async def _call(system: str, user: str) -> tuple[list, str, int | None, int | No
     return choices, result.model, result.usage.input_tokens, result.usage.output_tokens
 
 
-async def generate_choices(req: ChatTurnRequest, ai_output: str) -> ChoicesResult:
+async def generate_choices(req: ChatCommonRequest, ai_output: str) -> ChoicesResult:
     """방금 장면(ai_output)을 이어 다음 행동 선택지를 만든다 — **항상 정확히 3개 보장**.
 
     첫 호출 → (부족하면) 누적 재호출(최대 _MAX_REFILL회, 기존 제외·모자란 개수만) →

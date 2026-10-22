@@ -1,7 +1,7 @@
 """실시간 생성 OFF: 완성된 대화로 인물별 이미지를 골라 순서대로 전송한다."""
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import aclosing
 
 from src.schemas.chat_turn import EVENT_ERROR, EVENT_TOKEN, ChatTurnRequest
@@ -17,14 +17,11 @@ _SELECTION_TIMEOUT_SECONDS = 10.0
 
 async def _prepare(
     events: AsyncIterator[dict], req: ChatTurnRequest,
-    on_body_completed: Callable[[str], None] | None,
 ) -> tuple[dict, list[dict]]:
     completed = await _collect(events)
     if completed["event"] == EVENT_ERROR:
         return completed, []
     text = strip_character_image_syntax(completed["ai_output"])
-    if on_body_completed is not None:
-        on_body_completed(text)
     result = await select_images(
         character_images=req.character_images, history=req.history,
         user_input=req.user_input, ai_output=text, timeout=_SELECTION_TIMEOUT_SECONDS,
@@ -44,11 +41,10 @@ async def _prepare(
 
 
 async def stream_with_selected_images(
-    events: AsyncIterator[dict], req: ChatTurnRequest, *,
-    on_body_completed: Callable[[str], None] | None = None,
+    events: AsyncIterator[dict], req: ChatTurnRequest,
 ) -> AsyncIterator[dict]:
     """본문·Jev를 기다리는 동안 ping, 이후 이미지와 5글자/60ms 대사를 보낸다."""
-    preparing = asyncio.create_task(_prepare(events, req, on_body_completed))
+    preparing = asyncio.create_task(_prepare(events, req))
     async with aclosing(_pings_until_done(preparing)) as waiting:
         async for ping in waiting:
             yield ping

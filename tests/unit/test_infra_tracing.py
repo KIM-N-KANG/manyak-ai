@@ -243,7 +243,8 @@ async def test_adapter_stream_has_one_span_until_consumption_ends(monkeypatch, a
             self.closed = True
 
     stream = FakeStream()
-    create = AsyncMock(return_value=stream)
+    # Google SDK는 aclose를 지원하는 비동기 제너레이터를 반환한다.
+    create = AsyncMock(return_value=stream.__aiter__() if adapter_name == "google_sdk" else stream)
     client = NS(chat=NS(completions=NS(create=create)), messages=NS(create=create),
                 aio=NS(models=NS(generate_content_stream=create)))
     monkeypatch.setattr(adapter, "_client", lambda _: client)

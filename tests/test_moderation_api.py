@@ -224,6 +224,27 @@ async def test_content_rejection_is_200_without_fallback(client, dependencies):
     dependencies[1].assert_awaited_once()
 
 
+async def test_protagonist_name_and_character_description_are_moderated(client, dependencies):
+    # KNK-1700: 두 필드가 요청 스키마에 없어 모델 입력과 위반 위치에서 버려지던 버그를 고정한다.
+    post = deepcopy(POST)
+    post["protagonistName"] = "주인공이름"
+    post["characters"][0]["description"] = "인물소개"
+    dependencies[1].return_value = output("REJECTED", [
+        {"path": "protagonistName", "rule": "DRUGS", "reason": "마약 사용을 권장합니다."},
+        {"path": "characters[0].description", "rule": "DRUGS", "reason": "마약 사용을 권장합니다."},
+    ])
+    response = await client.post(URL, json=post)
+    assert response.status_code == 200
+    text = dependencies[1].call_args.args[0].messages[1]["content"][0]["text"]
+    sent = json.loads(text.split("<moderation_post>")[1].split("</moderation_post>")[0])
+    assert sent["protagonistName"] == "주인공이름"
+    assert sent["characters"][0]["description"] == "인물소개"
+    issues = response.json()["issues"]
+    assert [(i["path"], i["type"]) for i in issues] == [
+        ("protagonistName", "TEXT"), ("characters[0].description", "TEXT"),
+    ]
+
+
 async def test_provider_failure_falls_back_and_both_failures_are_200(client, dependencies):
     failure = LlmUnavailable("unavailable", provider="openai", model="test")
     dependencies[1].side_effect = [failure, output()]

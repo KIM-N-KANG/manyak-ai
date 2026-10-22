@@ -25,6 +25,12 @@ PROVIDER_OPENAI = "openai"
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_GOOGLE = "google"
 PROVIDER_TYPESAFE = "typesafe"
+# 오픈소스 계열 공급자(KNK-1628). 셋 다 OpenAI 호환 주소를 내줘 OpenAI SDK 어댑터를 같이 쓴다.
+PROVIDER_ALIBABA = "alibaba"
+PROVIDER_ZAI = "zai"
+PROVIDER_MOONSHOT = "moonshot"
+# 여러 회사 모델을 한 키로 중계하는 OpenAI 호환 서비스. 지금은 Qwen을 이쪽으로 부른다.
+PROVIDER_OPENROUTER = "openrouter"
 
 # 구조화 출력 능력. 요청 문법은 어댑터가 만들고, 등록부에는 모델이 받아들이는 방식만 적는다.
 STRUCTURED_OUTPUT_JSON_OBJECT = "json_object"
@@ -144,6 +150,9 @@ class ResolvedModel:
     # 이미지 조각(`image_part`)을 입력으로 받는지. 기본 False — 새 모델은 문서로 확인한 뒤에만
     # True로 적는다. 못 받는 모델에 이미지를 보내면 통로가 호출 전에 막는다(`llm.complete`).
     supports_image_input: bool = False
+    # 대화 중간·끝의 system 메시지를 제자리에 전달할 수 있는지. 공급자 어댑터가 사용한다.
+    # 기본 False — 공식 문서나 실측으로 확인한 뒤에만 켠다.
+    supports_mid_conversation_system: bool = False
     # 기능 정보도 가격처럼 언제 어느 공식 문서로 확인했는지 남긴다. 고정 스냅샷이 따로 없으면
     # snapshot_model은 None이다. Claude 4.6+의 dateless ID는 그 자체가 고정 스냅샷이다.
     capabilities_verified_on: date | None = None
@@ -167,7 +176,7 @@ class LlmRequest:
     """통로에 넣는 단발 호출 요청.
 
     messages를 그대로 받는다(system 포함). 호출부마다 system의 개수·위치가 달라
-    (스토리라인·컴파일·선택지·판정은 앞 1개, 채팅 본문은 앞 1 + 뒤 2) `system`을 따로 받는
+    (스토리라인·컴파일·선택지는 앞 1개, 채팅 본문은 앞 1 + 뒤 2) `system`을 따로 받는
     형태로는 채팅을 표현할 수 없다. 회사 형식으로 옮기는 일은 어댑터가 맡는다.
     """
 
@@ -175,7 +184,7 @@ class LlmRequest:
     messages: list[Message]
     max_tokens: int | None = None
     # 이 호출 하나의 제한 시간(초). **None은 무제한이 아니라 "SDK 기본값"이다** — OpenAI SDK
-    # 기본은 읽기 600초(10분)다. 지금 60초(선택지·판정)·90초(채팅·스토리)에 끊기는 호출을
+    # 기본은 읽기 600초(10분)다. 지금 60초(선택지)·90초(채팅·스토리)에 끊기는 호출을
     # 통로로 옮길 때 이 값을 반드시 같이 적어야 한다. 비워두면 상한이 조용히 10분으로 늘어난다.
     timeout: float | None = None
     temperature: float | None = None
@@ -298,7 +307,7 @@ class LlmAdapter(Protocol):
     # 어댑터가 채팅에 꽂혀도 기동이 통과하고, 첫 사용자 요청에서야 터진다(KNK-676 리뷰 P2).
     #
     # **"어느 용도가 스트리밍인지"는 어댑터가 모른다.** 그 판정은 등록부가 한다
-    # (`registry.STREAMING_ENVS`) — 어댑터는 자기가 할 수 있는지만 밝힌다.
+    # (`registry.STREAMING_SLOTS`) — 어댑터는 자기가 할 수 있는지만 밝힌다.
     SUPPORTS_STREAMING: bool
 
     def check_supported(self, resolved: ResolvedModel) -> None:
@@ -360,7 +369,7 @@ class LlmUnavailable(LlmError):
 
     어댑터가 이 예외로 접는 대상은 둘이다 — **SDK 예외 중 위 셋에 안 걸리는 것**과, **SDK 밖으로
     새는 전송·파싱 오류**(스트림 도중의 연결 끊김·깨진 SSE 줄). 번역되지 않은 전송 오류가
-    호출부까지 올라가면 실패를 흡수해야 하는 경로(선택지 폴백·판정 null)가 흡수에 실패해
+    호출부까지 올라가면 실패를 흡수해야 하는 경로(선택지 폴백)가 흡수에 실패해
     턴이 500으로 깨진다.
 
     반대로 **우리 코드의 결함(오타·형 실수)은 접지 않는다.** 공급자 장애로 위장되면 관측이

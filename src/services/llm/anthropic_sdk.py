@@ -10,13 +10,20 @@
 OpenAI 계열과 다른 곳이 넷이다.
 
 1. **system을 messages 밖으로 뺀다.** 이 회사는 지시문 칸이 요청 최상위에 따로 있다.
-   칸이 하나뿐이라 맨 앞 것만 옮길 수 있다 — 나머지는 버린다(`_split_system` 참조).
+   칸이 하나뿐이라 맨 앞 것만 옮긴다. 나머지는 대화 중간 지시문을 받는 모델이면 그 자리에
+   그대로 두고, 아니면 버린다(`_split_system` 참조).
 2. **입력 토큰이 세 조각으로 온다.** 일반·캐시 생성·캐시 읽기를 더해야 전체 입력이 된다.
 3. **본문이 블록 목록으로 온다.** 글 블록만 골라 이어 붙인다(추론 블록 등은 버린다).
 4. **스트리밍에서 토큰이 두 이벤트에 나뉘어 온다.** 입력은 시작 신호에, 최종 출력은 끝
    신호에 실린다 — 한쪽만 읽으면 절반이 빈다(`_absorb_usage`·`stream` 참조).
+
+Langfuse 기록도 이 파일이 직접 한다(KNK-1627). `langfuse.openai` 자동 계측은 openai SDK만 덮고,
+바깥 자동 계측(`opentelemetry-instrumentation-anthropic`)은 사용자가 도중에 끊으면 기록을 닫지
+않아 뺐다(ADR A13). 단발 호출은 `observe_generation` 블록으로, 스트리밍은 정상·오류·취소마다
+직접 닫는 `start_stream_generation`으로 남긴다.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -32,6 +39,7 @@ from anthropic import (
     RateLimitError,
 )
 
+from src.core.langfuse import observe_generation, start_stream_generation
 from src.core.tracing import start_span
 from src.services.llm.base import (
     LlmBadRequest,
@@ -68,15 +76,12 @@ _MAX_RETRIES = 2
 
 # 이 어댑터는 조각 흘리기를 한다(`stream`, KNK-696). 기동 검사가 읽는다 — `base.LlmAdapter` 참조.
 #
-# **이 값을 True로 바꾸면서 기동 검사의 그물 한 겹이 사라졌다.** 직전까지는 이 어댑터를
-# 쓰는 모델을 CHAT_MODEL에 꽂으면 "스트리밍을 못 한다"는 이유로 기동에서 막혔는데, 이제
-# 그 이유로는 통과한다. 그래서 `_split_system`이 경고하는 위험(뒤쪽 system인 Depth·PHI가
-# 버려진다)이 처음으로 실제로 닿을 수 있는 경로가 됐다.
-#
-# 막는 자리는 **여기가 아니라 등록부다**(`registry.BLOCKED_PROVIDERS`). 어댑터는 자기가 무엇을
-# 할 수 있는지만 밝히고, 어느 자리에 쓰면 안 되는지는 모른다 — 여기에 "채팅"을 적으면 모델·
-# 공급자를 바꿀 때마다 이 파일을 함께 고쳐야 한다(KNK-667 원칙).
+# 어댑터는 지원 기능만 밝히고 용도별 허용 여부는 등록부에서 정한다.
 SUPPORTS_STREAMING = True
+
+# Langfuse 관측 이름. 자동 계측이 붙이는 "OpenAI-generation", Gemini 어댑터의 "Gemini-generation"과
+# 나란히 공급자를 드러낸다.
+_OBSERVATION_NAME = "Anthropic-generation"
 
 
 def _fingerprint(api_key: str) -> str:
@@ -114,7 +119,9 @@ def _client(provider: str) -> AsyncAnthropic:
     return client
 
 
-def _split_system(messages: list[Message], model: str) -> tuple[list[dict] | None, list[Message]]:
+def _split_system(
+    messages: list[Message], resolved: ResolvedModel
+) -> tuple[list[dict] | None, list[Message]]:
     """대화 목록에서 맨 앞 지시문(system)을 떼어 별도 칸으로 올린다.
 
     OpenAI 계열은 지시문도 대화 한 줄로 목록 안에 들어가지만, 이 회사는 요청 최상위에
@@ -124,19 +131,17 @@ def _split_system(messages: list[Message], model: str) -> tuple[list[dict] | Non
     (버린다 / user로 낮춘다 / 오류를 낸다) 중 버리는 쪽을 골랐다 — user로 낮추면 지시가
     사용자 발화와 같은 층위가 되고, 오류를 내면 채팅이 이 공급자로 아예 못 간다.
 
-    **감수하는 위험**: 여기 걸리는 것은 채팅 본문뿐이다. 채팅은 지시문을 앞에 1개, 뒤에 2개
-    (Depth·PHI) 놓는데, 뒤의 둘 중 PHI는 안전 가드레일이다. 즉 `CHAT_MODEL`을 이 어댑터를
-    쓰는 모델로 돌리면 **서버도 채팅도 정상으로 동작하는데 안전 지시만 빠진 채 호출된다.**
-    오류가 나지 않으므로 아래 경고 로그를 보지 않으면 알아채기 어렵다. 그래서 그 조합 자체를
-    등록부가 기동에서 막는다(`registry.BLOCKED_PROVIDERS`). 조용히 버리지 않는 이 경고는
-    막히지 않는 다른 자리(스토리·판정 등)에서 배치가 어긋났을 때를 위한 그물이다.
+    지원하지 않는 모델에서는 중간·끝 지시문이 빠질 수 있으므로 경고 로그를 남긴다.
+    호출부는 지시문 위치가 보존돼야 하는 요청에 맞는 모델을 선택해야 한다.
 
     **다만 "옮길 자리가 없다"는 것은 요청 최상위 칸에 대해서만 맞다.** 이 회사는 대화 목록
     안에 지시문 줄을 끼워 넣는 방법을 따로 지원한다 — 첫 줄이면 안 되고, 사용자 발화 뒤에
-    와야 하며, 마지막이거나 뒤에 assistant 턴이 와야 한다. 채팅의 배치(앞 1 + 발화들 + 뒤 2)는
-    이 조건에 들어맞으므로 **버리지 않고 실을 수 있는 길이 있다.** 단 모델마다 지원 여부가
-    갈려(지원하지 않는 모델은 400) 여기서 일괄로 쓸 수 없다. 채팅을 이 공급자로 여는 티켓이
-    쓸 모델을 정한 뒤 이 길을 먼저 검토한다(KNK-675 리뷰).
+    와야 하며, 마지막이거나 뒤에 assistant 턴이 와야 한다. 모델마다 지원 여부가 달라
+    지원하지 않는 모델에는 이 방법을 사용하지 않는다.
+
+    **그 길을 지원하는 모델이면 버리지 않고 그 자리에 둔다**(`supports_mid_conversation_system`).
+    Claude 5.5 세대가 공식 지원한다(beta 헤더 불필요). 위치 조건은 회사가 검사하고 어기면 400이라
+    여기서 다시 검사하지 않는다.
 
     캐시 표시(`cache_control`)는 **마지막 블록에만** 붙인다 — 그 지점까지를 캐시 대상으로
     잡는다는 뜻이라, 앞 블록에 붙이면 뒤가 캐시에서 빠진다. 조건 없이 붙이는 이유는 이
@@ -153,7 +158,12 @@ def _split_system(messages: list[Message], model: str) -> tuple[list[dict] | Non
             continue
         # 아직 다른 역할이 하나도 안 나왔으면 "맨 앞"이다.
         if rest:
-            dropped += 1
+            if not resolved.supports_mid_conversation_system:
+                dropped += 1
+                continue
+            # 빈 지시문은 맨 앞과 같은 이유로 넣지 않는다(빈 글 블록은 400).
+            if (message.get("content") or "").strip():
+                rest.append({"role": "system", "content": message["content"]})
             continue
         # **내용이 빈 지시문은 넣지 않는다.** 이 공급자는 빈 글 블록을 거부하는데, 캐시 표시가
         # 붙으면 특히 그렇다. 그러면 "지시문이 비었다"는 사소한 입력이 400이 되고, 같은 입력을
@@ -166,9 +176,8 @@ def _split_system(messages: list[Message], model: str) -> tuple[list[dict] | Non
     if dropped:
         logger.warning(
             "모델 %s: 맨 앞이 아닌 자리의 system 지시 %d개를 버렸다 — 이 공급자는 지시문 칸이 "
-            "하나뿐이라 옮길 자리가 없다. 채팅 본문이 뒤에 두는 Depth·PHI(안전 가드레일)가 "
-            "여기 해당한다(KNK-676에서 감수한 위험).",
-            model,
+            "하나뿐이고 이 모델은 대화 중간 system 지시를 지원하지 않는다.",
+            resolved.model,
             dropped,
         )
     if not leading:
@@ -224,7 +233,7 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         raise LlmConfigError(
             f"모델 '{resolved.model}'의 어댑터는 이미지 조각을 아직 옮기지 못합니다."
         )
-    system, messages = _split_system(req.messages, resolved.model)
+    system, messages = _split_system(req.messages, resolved)
     kwargs: dict[str, object] = {
         "model": resolved.model,
         "messages": messages,
@@ -236,7 +245,9 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         "max_tokens": req.max_tokens if req.max_tokens is not None else NOT_GIVEN,
         "thinking": _thinking_of(resolved),
     }
-    if resolved.reasoning_effort is not None:
+    # none은 "추론 끔"이라는 뜻이고 이 회사의 effort 값이 아니다 — 위 thinking으로 표현하고 effort는
+    # 보내지 않는다(보내면 400). 끈 상태의 effort는 high 이하여야 하는데, 생략하면 기본값이라 안전하다.
+    if resolved.reasoning_effort not in (None, "none"):
         kwargs["output_config"] = {"effort": resolved.reasoning_effort}
     if system is not None:
         kwargs["system"] = system
@@ -266,8 +277,8 @@ def _build_kwargs(req: LlmRequest, resolved: ResolvedModel) -> dict[str, object]
         #
         # 그래서 temperature와 같은 규칙으로 인자를 뺀다. 뺀다고 거짓이 되는 것은 없다 —
         # 프롬프트 템플릿 자체가 "JSON만 출력하라"고 지시하고 있고, 지키지 않았을 때의 대처도
-        # 이미 호출부에 있다(스토리라인 재호출 KNK-312, 선택지 폴백, 판정 null).
-        # 제대로 지원하려면 요청에 스키마 칸을 신설하고 호출부 세 곳이 각자 채워야 한다 —
+        # 이미 호출부에 있다(스토리라인 재호출 KNK-312, 선택지 폴백).
+        # 제대로 지원하려면 요청에 스키마 칸을 신설하고 호출부 두 곳이 각자 채워야 한다 —
         # 계약 변경이라 별도 티켓이다.
         logger.warning(
             "모델 %s: json_mode를 인자로 옮기지 못해 뺐다 — 이 공급자는 JSON 강제에 스키마를 "
@@ -363,6 +374,59 @@ def _absorb_usage(parts: dict[str, int | None], payload: object) -> None:
             parts[name] = value
 
 
+def _usage_details(parts: dict[str, int | None]) -> dict[str, int] | None:
+    """누적한 토큰 네 칸을 Langfuse usage_details로 옮긴다(KNK-1627).
+
+    키는 Langfuse 관리 단가(claude-sonnet-5 등)가 값을 매긴 이름에 맞춘다 — 이름이 어긋나면 그
+    토큰은 0원으로 계산되고, 같은 토큰을 두 이름으로 보내면 두 번 계산된다. 그래서:
+
+    - `input`은 **캐시를 뺀 일반 입력**(`input_tokens`)만이다. 이 회사는 입력을 세 조각으로 주고
+      조각마다 단가가 달라(캐시 쓰기 1.25배, 캐시 읽기 0.1배), 합계를 `input`에 넣으면 캐시
+      조각이 일반 단가로 한 번 더 계산된다. 내부 지표용 `TokenUsage`가 셋을 합치는 것과 다르다.
+    - 캐시 두 조각은 각자 이름(`cache_creation_input_tokens`·`cache_read_input_tokens`)으로 싣는다.
+
+    값이 하나도 없으면 None을 돌려준다.
+    """
+    mapping = {
+        "input": parts["input_tokens"],
+        "cache_creation_input_tokens": parts["cache_creation_input_tokens"],
+        "cache_read_input_tokens": parts["cache_read_input_tokens"],
+        "output": parts["output_tokens"],
+    }
+    details = {key: value for key, value in mapping.items() if value is not None}
+    return details or None
+
+
+def _unfinished_usage_details(
+    parts: dict[str, int | None], told_it_finished: bool
+) -> dict[str, int] | None:
+    """도중에 끝난 스트림의 usage_details. 마무리 신호를 못 받았으면 출력 칸을 비운다.
+
+    출력 토큰은 마무리 신호(`message_delta`)에서만 실제 값이 오고, 시작 신호의 값은 임시값(보통 1)
+    이다. 끊긴 턴에 그 1을 실으면 실제로 쓴 분량과 상관없이 "거의 안 썼다"로 기록돼 비용이 적게
+    잡힌다. 틀린 숫자보다 빈칸이 낫다 — 입력 조각은 시작 신호의 값이 실제 값이라 그대로 싣는다.
+    """
+    if told_it_finished:
+        return _usage_details(parts)
+    return _usage_details(parts | {"output_tokens": None})
+
+
+def _model_parameters(
+    req: LlmRequest, resolved: ResolvedModel
+) -> dict[str, str | int | float | bool | None]:
+    """관측에 실을 모델 인자. `_build_kwargs`가 실제로 보내는 값만 요약한다."""
+    params: dict[str, str | int | float | bool | None] = {
+        "thinking": _thinking_of(resolved)["type"],
+    }
+    if req.max_tokens is not None:
+        params["max_tokens"] = req.max_tokens
+    if resolved.reasoning_effort not in (None, "none"):
+        params["effort"] = resolved.reasoning_effort
+    if req.temperature is not None and resolved.supports_temperature:
+        params["temperature"] = req.temperature
+    return params
+
+
 def _finish_reason_of(payload: object) -> str | None:
     """응답 종료 이유. `_text_of`와 같은 규칙 — 못 꺼내면 None이고 예외는 없다.
 
@@ -386,7 +450,7 @@ def _translate(exc: AnthropicError, resolved: ResolvedModel) -> LlmError:
     error_code와 사용자 문구까지 바뀐다.
 
     마지막은 catch-all이다 — 번역되지 않은 SDK 예외가 호출부까지 올라가면 실패를 흡수해야
-    하는 경로(선택지 폴백·판정 null)가 흡수에 실패해 턴이 500으로 깨진다. 인증·권한·404·
+    하는 경로(선택지 폴백)가 흡수에 실패해 턴이 500으로 깨진다. 인증·권한·404·
     422·5xx는 4xx 여부와 무관하게 여기로 묶인다(openai_sdk와 같은 경계).
     """
     context = {"provider": resolved.provider, "model": resolved.model}
@@ -410,7 +474,7 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
             # 안에서 max_tokens를 산술에 쓴다
 
     비워두면 "값 없음" 표식이 그 계산에 들어가 `TypeError`가 난다. 그 예외는 SDK 예외가
-    아니라 번역되지 않고, 실패를 흡수해야 하는 경로(선택지 폴백·판정 null)를 관통해 턴이
+    아니라 번역되지 않고, 실패를 흡수해야 하는 경로(선택지 폴백)를 관통해 턴이
     500으로 깨진다. 조건에 `not stream`이 있어 **스트리밍에는 해당하지 않는다** — 그래서
     가드를 `_build_kwargs`가 아니라 여기 둔다(KNK-696이 그 표식을 그대로 쓸 수 있게).
 
@@ -432,12 +496,22 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
                 f"없습니다 — 이 공급자는 이 값으로 응답 대기 시간을 계산하므로 비워둘 수 없습니다."
             )
         client = _client(resolved.provider)
-        try:
-            response = await client.messages.create(**_build_kwargs(req, resolved))
-        except AnthropicError as exc:
-            raise _translate(exc, resolved) from exc
+        kwargs = _build_kwargs(req, resolved)
+        # 관측 블록 안에서 나가는 예외(공급자 실패)는 관측에 ERROR로 남고 그대로 전파된다.
+        with observe_generation(
+            _OBSERVATION_NAME,
+            model=resolved.model,
+            model_parameters=_model_parameters(req, resolved),
+            input_data=req.messages,
+        ) as generation:
+            try:
+                response = await client.messages.create(**kwargs)
+            except AnthropicError as exc:
+                raise _translate(exc, resolved) from exc
+            text = _text_of(response)
+            generation.finish(output=text, usage_details=_usage_details(_usage_parts(response)))
         return LlmResult(
-            text=_text_of(response),
+            text=text,
             # 응답이 돌려준 실제 모델명. 비어 오면 요청에 쓴 이름으로 채운다 — 빈 값을 올리면
             # 응답 meta 조립에서 터진다.
             model=getattr(response, "model", None) or req.model,
@@ -472,16 +546,12 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
 
     다만 "없어도 된다"는 뜻은 아니다. **max_tokens는 이 회사 요청의 필수 항목이라, 빠진 채로
     나가면 거부당한다(400).** 이 SDK가 스트리밍 오버로드에서도 필수로 선언하는 것과 같은
-    이유다(0.120.0 서명 확인). 채팅은 이 값을 아예 싣지 않으므로
-    (`chat_llm.stream_chat_turn`), 채팅을 이 공급자로 돌리면 **턴마다 400이다** — 추정이 아니라
-    계약이다. 게다가 이 회사의 최신 모델은 추론이 기본으로 켜져 있고 이 한도가 추론과 본문을
-    합쳐서 자르므로, 값을 넣을 때도 지금 다른 경로의 값을 그대로 가져다 쓰면 본문이 잘린다.
+    이유다(0.120.0 서명 확인). 채팅은 이 값을 싣는다(`chat_llm._MAX_TOKENS`, KNK-1624). 이 회사의
+    최신 모델은 추론을 켜면 이 한도가 추론과 본문을 합쳐서 자르므로, 그 값을 넉넉하게 잡았다.
 
     그래도 여기서 막지 않는 이유는, 막으면 LlmConfigError가 되어 채팅이 잡는 예외 계열을
     벗어나 SSE 오류 이벤트도 없이 끊기기 때문이다. 공급자가 400을 주면 LlmBadRequest로 접혀
-    오류 이벤트가 정상으로 나간다. 지금은 등록부가 이 조합을 기동에서 막으므로
-    (`registry.BLOCKED_PROVIDERS`) 닿을 길이 없다 — 채팅을 여는 티켓이 max_tokens를 싣는 것이
-    그 티켓의 필수 작업이다(system 배치 문제와 함께).
+    오류 이벤트가 정상으로 나간다.
 
     사용자 연결 취소(`CancelledError`)는 여기서 잡지 않는다 — BaseException이라 아래
     except들에 걸리지 않고, 취소는 오류가 아니라 그냥 스트림이 끊기는 것이다.
@@ -493,87 +563,109 @@ async def stream(req: LlmRequest, resolved: ResolvedModel) -> AsyncIterator[Stre
         kwargs = _build_kwargs(req, resolved)
         kwargs["stream"] = True
 
-        try:
-            events = await client.messages.create(**kwargs)
-        except AnthropicError as exc:
-            raise _translate(exc, resolved) from exc
-
         model = req.model
         parts: dict[str, int | None] = dict.fromkeys(_USAGE_FIELDS, None)
         finish_reason: str | None = None
         told_it_finished = False  # 마무리 신호(`message_delta`)를 받았는지 — 아래 잘림 판정에 쓴다
+        texts: list[str] = []  # Langfuse 관측의 출력. 취소돼도 그때까지 흘린 글을 남긴다
+        # 관측은 호출 전에 연다 — 요청 단계에서 실패해도 그 실패가 기록에 남아야 한다.
+        # 어떻게 끝나든 아래 세 갈래 중 하나가 반드시 닫는다(KNK-1627, ADR A13).
+        generation = start_stream_generation(
+            _OBSERVATION_NAME,
+            model=resolved.model,
+            model_parameters=_model_parameters(req, resolved),
+            input_data=req.messages,
+        )
         try:
-            async for event in events:
-                kind = getattr(event, "type", None)
-                if kind == "message_start":
-                    # 모델 이름과 입력 토큰은 이 신호에만 온다.
-                    message = getattr(event, "message", None)
-                    model = getattr(message, "model", None) or model
-                    _absorb_usage(parts, message)
-                elif kind == "message_delta":
-                    told_it_finished = True
-                    _absorb_usage(parts, event)
-                    # 종료 이유는 이벤트가 아니라 그 안의 delta에 있다.
-                    reason = getattr(getattr(event, "delta", None), "stop_reason", None)
-                    if isinstance(reason, str) and reason:
-                        finish_reason = reason
-                elif kind == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if getattr(delta, "type", None) != "text_delta":
-                        continue  # 추론·서명 조각. 사용자에게 보낼 글이 아니다
-                    # 글자인지 확인하고 쓴다 — `_text_of`와 같은 규칙이다. 이상한 값을 그대로
-                    # 흘리면 사용자 화면에 그 표기가 뜨거나, 이어 붙이는 쪽에서 터진다.
-                    text = getattr(delta, "text", None)
-                    if isinstance(text, str) and text:
-                        yield TextDelta(text)
-            if not told_it_finished:
-                # **끝났다는 말을 못 듣고 스트림이 닫혔다 — 정상 종료가 아니다.**
-                # 이 회사는 답을 마무리할 때 반드시 `message_delta`를 보낸다. 그것 없이 연결이
-                # 조용히 닫히는 경우가 있는데(중간 프록시가 본문을 자르면서 정상 종료로 닫는 경우),
-                # SDK는 예외를 내지 않는다. 그대로 두면 **잘린 본문이 완성된 답으로 저장되고**
-                # 출력 토큰도 시작 시점 값(보통 1)으로 굳는다 — 오류가 없으니 아무도 모른다
-                # (KNK-696 리뷰 P1, 실제 SDK + 가짜 전송으로 재현 확인).
-                #
-                # 판정 기준을 **신호가 왔는지**로 두고 종료 이유 값으로 두지 않는다. 값이 이상하게
-                # 온 것("끝났다고는 하는데 알아볼 수 없는 말")과 아예 못 들은 것은 다른 상황이다.
-                # 앞은 meta를 비우고 넘기면 되지만, 뒤는 답이 잘렸다는 뜻이라 넘기면 안 된다.
-                raise LlmUnavailable(
-                    "응답이 끝나기 전에 스트림이 닫혔습니다(종료 신호 없음).",
-                    provider=resolved.provider,
-                    model=resolved.model,
-                )
-        except AnthropicError as exc:
-            # 일부를 이미 흘려보낸 뒤여도 중립 예외로 바꿔 던진다 — 호출부가 SSE error 이벤트로 옮긴다.
-            # 스트림 도중의 `error` 신호도 여기 걸린다(SDK가 그 신호를 자기 예외로 바꿔 올린다).
-            raise _translate(exc, resolved) from exc
-        except httpx.TimeoutException as exc:
-            # 스트림이 열린 뒤의 읽기 타임아웃. SDK는 요청 단계의 타임아웃만 APITimeoutError로 접고
-            # 반복 중의 것은 그대로 올려보낸다 — 아래 분기에 맡기면 같은 시간 초과가 발생 시점에 따라
-            # provider_timeout / provider_unavailable로 갈린다.
-            raise LlmTimeout(
-                f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
-            ) from exc
-        except (httpx.HTTPError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-            # SDK 밖으로 새는 **전송·파싱 오류만** 접는다. 이 SDK의 스트림 반복도 try/finally로만
-            # 감싸져(except 없음) 연결 끊김(httpx)·깨진 SSE 줄(json)이 번역 없이 통과한다.
-            #
-            # `UnicodeDecodeError`가 따로 필요하다 — 이 SDK는 SSE 원문 바이트를 자기가 UTF-8로
-            # 푸는데, 중간에 바이트가 깨지면 이 예외가 그대로 새어 나온다. 위 둘 중 어느 계열도
-            # 아니라 번역되지 않고, 채팅은 오류 이벤트도 못 내고 끊긴다(KNK-696 리뷰 P1, 재현 확인).
-            #
-            # 모든 예외를 잡지 않는 이유: 우리 코드의 결함(오타·형 실수)까지 접으면 그것이
-            # "공급자 장애"로 기록돼 원인 추적이 헛돈다(STYLEGUIDE §4).
-            raise LlmUnavailable(
-                f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
-            ) from exc
-        finally:
-            # 스트림을 명시적으로 닫아 커넥션을 바로 반납한다. SDK도 자체 finally에서 닫지만 그것은
-            # 내부 제너레이터가 정리될 때(GC 시점) 실행돼, 사용자가 채팅 도중 창을 닫으면 반납이
-            # 늦어진다 — 흔한 경로라 여기서 결정적으로 닫는다.
             try:
-                await events.close()
-            except Exception:  # 정리 실패가 원래 오류·취소를 덮으면 안 된다 — 삼키되 로그로 남긴다.
-                logger.warning("스트림 정리에 실패했다 — 원래 결과를 그대로 둔다", exc_info=True)
+                events = await client.messages.create(**kwargs)
+            except AnthropicError as exc:
+                raise _translate(exc, resolved) from exc
+
+            try:
+                async for event in events:
+                    kind = getattr(event, "type", None)
+                    if kind == "message_start":
+                        # 모델 이름과 입력 토큰은 이 신호에만 온다.
+                        message = getattr(event, "message", None)
+                        model = getattr(message, "model", None) or model
+                        _absorb_usage(parts, message)
+                    elif kind == "message_delta":
+                        told_it_finished = True
+                        _absorb_usage(parts, event)
+                        # 종료 이유는 이벤트가 아니라 그 안의 delta에 있다.
+                        reason = getattr(getattr(event, "delta", None), "stop_reason", None)
+                        if isinstance(reason, str) and reason:
+                            finish_reason = reason
+                    elif kind == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if getattr(delta, "type", None) != "text_delta":
+                            continue  # 추론·서명 조각. 사용자에게 보낼 글이 아니다
+                        # 글자인지 확인하고 쓴다 — `_text_of`와 같은 규칙이다. 이상한 값을 그대로
+                        # 흘리면 사용자 화면에 그 표기가 뜨거나, 이어 붙이는 쪽에서 터진다.
+                        text = getattr(delta, "text", None)
+                        if isinstance(text, str) and text:
+                            texts.append(text)
+                            yield TextDelta(text)
+                if not told_it_finished:
+                    # **끝났다는 말을 못 듣고 스트림이 닫혔다 — 정상 종료가 아니다.**
+                    # 이 회사는 답을 마무리할 때 반드시 `message_delta`를 보낸다. 그것 없이 연결이
+                    # 조용히 닫히는 경우가 있는데(중간 프록시가 본문을 자르면서 정상 종료로 닫는 경우),
+                    # SDK는 예외를 내지 않는다. 그대로 두면 **잘린 본문이 완성된 답으로 저장되고**
+                    # 출력 토큰도 시작 시점 값(보통 1)으로 굳는다 — 오류가 없으니 아무도 모른다
+                    # (KNK-696 리뷰 P1, 실제 SDK + 가짜 전송으로 재현 확인).
+                    #
+                    # 판정 기준을 **신호가 왔는지**로 두고 종료 이유 값으로 두지 않는다. 값이 이상하게
+                    # 온 것("끝났다고는 하는데 알아볼 수 없는 말")과 아예 못 들은 것은 다른 상황이다.
+                    # 앞은 meta를 비우고 넘기면 되지만, 뒤는 답이 잘렸다는 뜻이라 넘기면 안 된다.
+                    raise LlmUnavailable(
+                        "응답이 끝나기 전에 스트림이 닫혔습니다(종료 신호 없음).",
+                        provider=resolved.provider,
+                        model=resolved.model,
+                    )
+            except AnthropicError as exc:
+                # 일부를 이미 흘려보낸 뒤여도 중립 예외로 바꿔 던진다 — 호출부가 SSE error 이벤트로 옮긴다.
+                # 스트림 도중의 `error` 신호도 여기 걸린다(SDK가 그 신호를 자기 예외로 바꿔 올린다).
+                raise _translate(exc, resolved) from exc
+            except httpx.TimeoutException as exc:
+                # 스트림이 열린 뒤의 읽기 타임아웃. SDK는 요청 단계의 타임아웃만 APITimeoutError로 접고
+                # 반복 중의 것은 그대로 올려보낸다 — 아래 분기에 맡기면 같은 시간 초과가 발생 시점에 따라
+                # provider_timeout / provider_unavailable로 갈린다.
+                raise LlmTimeout(
+                    f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
+                ) from exc
+            except (httpx.HTTPError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                # SDK 밖으로 새는 **전송·파싱 오류만** 접는다. 이 SDK의 스트림 반복도 try/finally로만
+                # 감싸져(except 없음) 연결 끊김(httpx)·깨진 SSE 줄(json)이 번역 없이 통과한다.
+                #
+                # `UnicodeDecodeError`가 따로 필요하다 — 이 SDK는 SSE 원문 바이트를 자기가 UTF-8로
+                # 푸는데, 중간에 바이트가 깨지면 이 예외가 그대로 새어 나온다. 위 둘 중 어느 계열도
+                # 아니라 번역되지 않고, 채팅은 오류 이벤트도 못 내고 끊긴다(KNK-696 리뷰 P1, 재현 확인).
+                #
+                # 모든 예외를 잡지 않는 이유: 우리 코드의 결함(오타·형 실수)까지 접으면 그것이
+                # "공급자 장애"로 기록돼 원인 추적이 헛돈다(STYLEGUIDE §4).
+                raise LlmUnavailable(
+                    f"{type(exc).__name__}: {exc}", provider=resolved.provider, model=resolved.model
+                ) from exc
+            finally:
+                # 스트림을 명시적으로 닫아 커넥션을 바로 반납한다. SDK도 자체 finally에서 닫지만 그것은
+                # 내부 제너레이터가 정리될 때(GC 시점) 실행돼, 사용자가 채팅 도중 창을 닫으면 반납이
+                # 늦어진다 — 흔한 경로라 여기서 결정적으로 닫는다.
+                try:
+                    await events.close()
+                except Exception:  # 정리 실패가 원래 오류·취소를 덮으면 안 된다 — 삼키되 로그로 남긴다.
+                    logger.warning("스트림 정리에 실패했다 — 원래 결과를 그대로 둔다", exc_info=True)
+        except (GeneratorExit, asyncio.CancelledError):
+            # 사용자가 답변 도중 창을 닫았다. 오류가 아니라 취소로 닫고 그때까지의 토큰을 싣는다.
+            # 바깥 자동 계측을 뺀 이유가 바로 이 경로에서 기록을 닫지 않아서였다(ADR A13).
+            generation.cancel(
+                output="".join(texts), usage_details=_unfinished_usage_details(parts, told_it_finished)
+            )
+            raise
+        except BaseException as exc:
+            generation.fail(exc, usage_details=_unfinished_usage_details(parts, told_it_finished))
+            raise
+        generation.finish(output="".join(texts), usage_details=_usage_details(parts))
         yield StreamCompleted(
             model=model,
             provider=resolved.provider,

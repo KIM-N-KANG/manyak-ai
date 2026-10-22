@@ -1,6 +1,6 @@
 """채팅 본문 LLM 통로(ChatProvider) — 스트리밍 호출 (시점 B).
 
-`assemble()`가 만든 messages를 DeepSeek(OpenAI 호환) `stream=True`로 호출하고,
+`assemble()`가 만든 messages를 요청별로 선택한 모델에 스트리밍으로 전달하고,
 토큰을 실시간으로 흘린다. 본문은 상황 묘사 + 인물 대사만 만든다 — **다음 행동 선택지는
 이 호출이 만들지 않으며**, 본문 스트림이 끝난 뒤 별도 호출(`chat_choices`)이 전담한다
 (그래서 `[다음 행동]` 마커 파싱·버퍼링이 사라졌다).
@@ -17,8 +17,9 @@ import re
 import time
 from collections.abc import AsyncIterator, Iterable
 from contextlib import aclosing
+from typing import Literal
+from uuid import UUID
 
-from src.core.config import settings
 from src.core.sentry import FEATURE_CHAT_RESPONSE, capture_ai_exception
 from src.schemas.chat_turn import (
     EVENT_CHARACTER_IMAGE,
@@ -28,7 +29,7 @@ from src.schemas.chat_turn import (
     CharacterImageMapping,
 )
 from src.services import llm
-from src.services.chat_assembler import LAYER_VERSIONS
+from src.services.chat_assembler import body_prompt_versions
 from src.services.llm.base import LlmError, LlmRequest, TextDelta
 
 logger = logging.getLogger(__name__)
@@ -347,8 +348,18 @@ class _SpeakerLabelStreamParser:
         return [{"event": EVENT_TOKEN, "text": text}]
 
 
+def select_chat_model(user_id: UUID | None, model_tier: Literal["LITE", "AURORA"]) -> tuple[str, str]:
+    """게스트와 라이트 등급은 라이트 모델, 오로라 회원은 UUID 마지막 16진수 자리의 홀짝으로 배정한다."""
+    if user_id is None or model_tier == "LITE":
+        return llm.routing_target("CHAT_LITE")
+    if user_id.int % 2 == 0:
+        return llm.routing_target("CHAT_AURORA_EVEN")
+    return llm.routing_target("CHAT_AURORA_ODD")
+
+
 async def stream_chat_turn(
-    messages: list[dict], *, character_images: list[CharacterImageMapping] | None = None
+    messages: list[dict], *, character_images: list[CharacterImageMapping] | None = None,
+    user_id: UUID | None = None, model_tier: Literal["LITE", "AURORA"] = "LITE",
 ) -> AsyncIterator[dict]:
     """messages를 LLM에 스트리밍 호출하고 token·character_image→completed(또는 error)를 낸다.
 
@@ -365,7 +376,8 @@ async def stream_chat_turn(
     label_parser = _SpeakerLabelStreamParser(character_images or [])
     # 이 호출이 어느 공급자로 갈지는 부르기 전에 정해진다 — 스트림이 오류로 끝나면 종료
     # 이벤트가 아예 없어서, 결과에서 읽는 방식으로는 실패 태그를 채울 수 없다(KNK-674).
-    provider = llm.provider_of(settings.chat_model)
+    selected_model, reasoning_effort = select_chat_model(user_id, model_tier)
+    provider = llm.provider_of(selected_model)
     start = time.monotonic()
 
     try:
@@ -380,9 +392,10 @@ async def stream_chat_turn(
         async with aclosing(
             llm.stream(
                 LlmRequest(
-                    model=settings.chat_model,
+                    model=selected_model,
                     messages=messages,
                     timeout=_TIMEOUT_SECONDS,
+                    reasoning_effort=reasoning_effort,
                 )
             )
         ) as events:
@@ -404,14 +417,14 @@ async def stream_chat_turn(
         ai_output, completed_images = _insert_storage_markers(
             normalized, character_images or []
         )
-        # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가 판정 호출 메타를 합산하고
+        # 로깅 메타 재료(model·토큰)를 함께 넘긴다 — 엔드포인트가
         # prompt_versions·provider를 더해 completed의 meta로 조립한다(KNK-243).
         # 선택지 몫 메타는 KNK-625로 /chat/choices 응답 meta에 분리됐다.
         yield {
             "event": EVENT_COMPLETED,
             "ai_output": ai_output,
             "character_images": completed_images,
-            "model": model,
+            "model": model or selected_model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "provider": provider,
@@ -429,8 +442,8 @@ async def stream_chat_turn(
             e,
             feature=FEATURE_CHAT_RESPONSE,
             provider=provider,
-            model=settings.chat_model,
-            prompt_versions=LAYER_VERSIONS,
+            model=selected_model,
+            prompt_versions=body_prompt_versions(),
             retry_count=0,  # 본문은 재호출 없음
             latency_ms=int((time.monotonic() - start) * 1000),
         )

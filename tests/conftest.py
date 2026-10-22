@@ -93,7 +93,7 @@ def other_provider_model(monkeypatch):
     우회 코드가 테스트 9곳에 그대로 복사돼 있어, `ResolvedModel`에 필드가 하나 늘면 9곳을
     함께 고쳐야 했다 — 여기 한 곳으로 모은다.
 
-    모듈을 넘기면 그 모듈이 보는 채팅 모델 설정(`chat_model`·`chat_choice_model`)을 모두
+    모듈을 넘기면 그 모듈이 보는 선택지 모델 설정(`chat_choice_model`)을
     이 모델로 바꾼다(KNK-1416 분리 후에도 한 번에 바꾸기 위함).
     스토리는 모델 이름을 인자로 직접 받으므로 등록만 하면 된다.
     """
@@ -110,8 +110,7 @@ def other_provider_model(monkeypatch):
             ),
         )
         if module is not None:
-            for field in ("chat_model", "chat_choice_model"):
-                monkeypatch.setattr(module.settings, field, OTHER_PROVIDER_MODEL)
+            monkeypatch.setattr(module.settings, "chat_choice_model", OTHER_PROVIDER_MODEL)
         return OTHER_PROVIDER_MODEL
 
     return _use

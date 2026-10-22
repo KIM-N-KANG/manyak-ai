@@ -84,13 +84,16 @@ def test_compiled_settings_flow_into_chat_slots() -> None:
 
 def test_compiled_events_and_endings_flow_into_chat_slots() -> None:
     res = _compiled()
-    system_front = assemble(_chat_request_from(res))[0]["content"]
+    messages = assemble(_chat_request_from(res))
+    system_front = messages[0]["content"]
+    user = messages[-1]["content"]
 
     # 주요 사건 통글: '- 이름: {name} / 설명: … / 키 문장: …' (STORY {{main_events}})
     assert "선왕의 마지막 밤" in system_front
     assert "키 문장:" in system_front
-    # 엔딩 통글: '- 이름: {name} / 달성 조건: … / 에필로그 가이드: …' (STORY {{endings}})
-    assert "질서를 바로 세우다" in system_front
-    assert "에필로그 가이드:" in system_front
+    # 엔딩 통글: '- 이름: {name} / 달성 조건: … / 에필로그 가이드: …' (사용자 메시지 {{endings}})
+    assert "질서를 바로 세우다" in user
+    assert "질서를 바로 세우다" not in system_front
+    assert "에필로그 가이드:" in user
     # 조립 결과에 미치환 슬롯이 남지 않는다(이음매 전체 결정성).
-    assert "{{" not in system_front
+    assert all("{{" not in message["content"] for message in messages)

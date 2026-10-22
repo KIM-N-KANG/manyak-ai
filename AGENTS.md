@@ -1,25 +1,17 @@
 # 기본 지침
 
-이 파일이 프로젝트 지침의 정본입니다. `CLAUDE.md`는 이 파일을 가리키는 심링크라 Claude Code와
-Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 고칩니다.
+이 파일이 프로젝트 지침의 정본입니다. 지침을 바꿀 때는 이 파일만 고칩니다.
 
 작업을 시작할 때 형제 하네스 레포지토리의 운영 규칙 `../knk-harness/AGENTS.md`를 먼저 확인합니다
 (Claude Code는 SessionStart 훅(`.claude/settings.json`)이 자동 로드하고, Codex는 직접 엽니다).
-제품 명세는 미리 읽지 않습니다. 작업에 필요한 문서만 아래 인덱스에서 골라 직접 열어 근거로 삼습니다.
+제품 명세를 미리 전부 읽지 않습니다. 문서 목록은 [하네스 운영 지침](../knk-harness/AGENTS.md)의
+Knowledge Base를, 도메인별 명세는 [docs/domain/](../knk-harness/docs/domain/)을 참고합니다.
 
-| 작업 범위 | 먼저 확인할 문서 |
-| --- | --- |
-| 도메인 용어·필드 이름 | `../knk-harness/docs/spec/0-glossary.md` |
-| 제품 배경·MVP 범위·사용자 요구 | `../knk-harness/docs/spec/1-background.md`, `../knk-harness/docs/spec/2-user-stories.md` |
-| 클라이언트 화면·호출 흐름·SSE 소비 방식 | `../knk-harness/docs/spec/3-1-client-spec.md`, `../knk-harness/docs/spec/3-2-web-spec.md` |
-| 백엔드 API·SSE·저장·오류 계약 | `../knk-harness/docs/spec/4-backend-server-spec.md` |
-| AI 요청·응답·실패 처리·채팅 판정 계약 | `../knk-harness/docs/spec/5-ai-server-spec.md` |
-| AI 호출 구조·프롬프트·모델·관측 설정 | `../knk-harness/docs/design/3-ai-server-design.md` |
-| AI 설계 결정의 배경·대안·근거 | `../knk-harness/docs/adr/3-ai-server-adr.md` |
-| 이벤트·지표·AI 관측 | `../knk-harness/docs/spec/6-analytics.md` |
-| AI 서버 배포·환경 변수·운영 검수 | `../knk-harness/docs/design/4-deployment.md` |
-| 채팅 내부 설계·구현 규칙 | `spec/chat/`의 관련 문서 |
-| 스토리 내부 설계·구현 규칙 | `spec/story/`의 관련 문서 |
+- 작업에 맞는 도메인을 고르고, 해당 도메인과 세트의 `AGENTS.md`에서 안내하는 순서에 따라 필요한 명세를 읽습니다.
+- 해당 도메인 세트가 아직 없으면 하네스 운영 지침에서 안내하는 기존 Spec·Design·ADR을 참고합니다.
+- 도메인 명세와 과거 문서가 충돌하면 도메인 명세를 우선합니다.
+- **스펙과 코드가 충돌하면 스펙이 우선입니다.** 코드를 스펙에 맞추며, 현재 코드에 맞추려고 스펙을 임의로 바꾸지 않습니다.
+- 사용자가 작업용 하네스 경로를 지정하면 위 참조도 해당 하네스 경로를 기준으로 읽습니다.
 
 `../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다. 두 가지 예외가 있습니다.
 
@@ -35,10 +27,10 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 ### 서비스 개요
 - 스토리 제작(story)과 채팅 플레이(chat)의 LLM 호출을 맡는 FastAPI 서비스입니다. 완전 stateless로, 상태는 백엔드가 듭니다.
 - LLM 호출은 공통 통로(`src/services/llm/`)를 지납니다. 어느 모델을 어느 공급자로 보내는지, 어느 자리에 어느 공급자를 쓸 수 없는지는
-  등록부(`registry.py`)가 정본이고, 등록되지 않은 모델은 호출 대상이 될 수 없습니다. 용도별 모델은 env(`STORYLINES_MODEL`·`STORY_COMPILE_MODEL`·`CHAT_MODEL`·`CHAT_CHOICE_MODEL`)로 고르며 현재 값은 `src/core/config.py`를 봅니다.
+  등록부(`registry.py`)가 정본이고, 등록되지 않은 모델은 호출 대상이 될 수 없습니다. 스토리·선택지 모델은 env(`STORYLINES_MODEL`·`STORY_COMPILE_MODEL`·`CHAT_CHOICE_MODEL`)로 고르며 현재 값은 `src/core/config.py`를 봅니다. 채팅 본문 모델·추론 강도는 `registry.py`의 `ROUTING_TARGETS`를 사용하며, 요청별 선택 규칙은 `src/services/chat_llm.py`를 봅니다.
 - 로컬 전용(git 무시) 디렉터리 — 존재하지만 커밋 대상이 아닙니다. 커밋에 딸려 들어가면 사고입니다:
   - `scripts/*` — 프롬프트 미리보기·실측 스크립트 창고(`test.sh`·`test.ps1`만 예외로 git 추적).
-  - `experiment/` — 프롬프트·모델 변경의 품질·시간·비용을 baseline과 비교하는 실험 환경. 사용법은 `experiment/README.md`.
+  - `evaluation/` — 프롬프트·모델·추론 강도 조합을 같은 입력으로 생성·채점해 비교하는 평가 환경. 사용법은 `evaluation/program.md`.
   - `references/` — 정제되지 않은 참고 원천 자료(크롤·발췌).
   - `.env`·`.env.jira` — 시크릿. 절대 커밋하거나 문서·예시에 값을 옮기지 않습니다.
 - **스킬은 폴더째 gitignore하지 않습니다.** 비밀은 폴더가 아니라 값 단위로 막습니다 — AWS 계정번호 같은 식별자는
@@ -49,11 +41,8 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 ### 설계·아키텍처
 - 코드 스타일 규칙(프로젝트 레이아웃·네이밍·임포트 순서·응답 모델·에러 처리·금지 패턴)은
   `.agents/STYLEGUIDE.md`를 따릅니다. 코드를 쓸 때도 리뷰할 때도 같은 기준입니다.
-- 제품 동작이나 설계를 바꾸는 작업은 추측하지 말고 위 인덱스에서 제품 명세와 로컬 `spec/` 문서를 골라 먼저 확인합니다.
-  외부 계약(요청·응답·판정·SSE)의 SSOT는 `docs/spec/5-ai-server-spec.md`, 현재 내부 구조·설정은 `docs/design/3-ai-server-design.md`, 설계 결정의 배경·대안·근거는 `docs/adr/3-ai-server-adr.md`입니다.
-- 채팅 프롬프트는 레이어 8종(CORE·SAFETY·STORY·CHARACTER·USER·MEMORY·JUDGEMENT·CHOICES)으로
-  나뉘어 `prompt/chat/`에 템플릿으로 존재합니다. 어떤 내용이 어느 레이어에 속하는지는
-  `spec/chat/1-PROMPT-LAYER.md`·`2-LAYER-PLACEMENT.md`가 정합니다 — 임의 배치 금지.
+- 제품 동작이나 설계를 바꾸는 작업은 위 참조 규칙에 따라 관련 도메인 명세를 먼저 확인합니다.
+  요구사항·외부 계약, 내부 구조·설정, 설계 결정의 이유는 각각을 담당하는 명세를 참고하고 이 파일에 중복해서 적지 않습니다.
 
 ### 작업 워크플로
 - 작업 주기는 스킬로 표준화돼 있습니다: `create-branch` → `create-commit` → `create-pr` → `request-codex-review`(PR에 Codex 리뷰를 받고 지적을 판단·반영).
@@ -69,7 +58,7 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
   ADR(`docs/adr/3-ai-server-adr.md`)에 반영합니다.
 
 ### 스킬 배치(.agents/skills)
-- 스킬 정본은 `.agents/skills/`이고, `.claude/skills/*`는 그것을 가리키는 심링크입니다(한 소스, 두 에이전트). `CLAUDE.md`→`AGENTS.md`도 같은 방식입니다.
+- 스킬 정본은 `.agents/skills/`이고, `.claude/skills/*`는 그것을 가리키는 심링크입니다(한 소스, 두 에이전트).
 - 배치 규칙 상세는 스킬을 만들거나 고칠 때 `.agents/skills/README.md`를 엽니다.
 - 하네스 공용 스킬은 복사하지도 수정하지도 않습니다(하네스 수정 금지 규칙과 동일).
 - `daily-sentry-report` 스킬은 claude.ai 클라우드 루틴이 매일 돌려 슬랙에 올립니다. 루틴은 **`dev`에 머지된 스킬**을 읽습니다 —
@@ -77,19 +66,18 @@ Codex가 같은 내용을 읽습니다. 지침을 바꿀 때는 이 파일만 �
 
 ### 프롬프트·명세 변경
 - `prompt/` 파일 수정은 반드시 `prompt-authoring` 스킬의 설계 원칙을 적용합니다.
-- `prompt/`·`spec/` 파일은 frontmatter의 `version`·`updated`로 버전을 관리합니다. 고치면 커밋 전에 `version`(+1)·`updated`(오늘 날짜)를
-  직접 올립니다(자동 갱신 장치 없음 — 브랜치당 파일별 1회면 충분). `prompt/` frontmatter의 배치 메타(`layer`·`priority`·`placement`·`slots`)는
-  의미를 모르면 `spec/chat/2-LAYER-PLACEMENT.md`를 먼저 봅니다.
+- `prompt/` 파일은 frontmatter의 `version`·`updated`로 버전을 관리합니다. 고치면 커밋 전에 `version`(+1)·`updated`(오늘 날짜)를
+  직접 올립니다(자동 갱신 장치 없음 — 브랜치당 파일별 1회면 충분).
 - 파일은 LF 줄바꿈으로 저장합니다(CRLF면 frontmatter 파싱이 깨질 수 있음).
-- 프롬프트·판정 규칙처럼 실제 LLM 출력으로만 검증되는 변경은 유닛 테스트 통과로 "검증됨"을 주장하지 않습니다.
+- 프롬프트 규칙처럼 실제 LLM 출력으로만 검증되는 변경은 유닛 테스트 통과로 "검증됨"을 주장하지 않습니다.
   실측(라이브 호출) 결과가 있으면 그것을, 없으면 "실측 미실시"를 보고에 명시합니다.
 
 ### 실측·실험 (로컬 도구)
 - 라이브 LLM 호출은 과금됩니다. 실측을 실행하기 전에 예상 호출 규모를 보고하고 승인받습니다.
   - **예외: 릴리스 배포 QA는 상시 승인입니다**(사용자 결정). `release-deploy` 스킬의 `qa.sh`가 돌리는 라이브 호출은 다시 묻지 않습니다.
-    QA 밖의 실측(프롬프트 A/B, 실험 러너)은 종전대로 승인이 필요합니다.
-- 단발 실측·미리보기는 `scripts/`의 로컬 스크립트를, 조건 비교 실험(프롬프트 A/B, 모델·파라미터 변경)은 `experiment/` 러너를 씁니다.
-  실험은 `experiment/README.md`의 개시 체크리스트를 따르고, 본 실행 전 `--smoke`로 싼 시운전을 먼저 돌립니다.
+    QA 밖의 실측(프롬프트 A/B, 평가)은 종전대로 승인이 필요합니다.
+- 단발 실측·미리보기는 `scripts/`의 로컬 스크립트를, 조건 비교(프롬프트·모델·추론 강도)는 `evaluation/`을 씁니다.
+  평가는 `evaluation/program.md`의 실행 순서를 따르고, 본 실행 전 `--plan`으로 호출 수와 예상 비용을 보고합니다.
 
 ### 테스트
 - 테스트는 도커 격리 환경에서 실행합니다: macOS/Linux는 `scripts/test.sh`, Windows는 `scripts/test.ps1`.
@@ -126,6 +114,6 @@ Codex가 이 레포의 PR을 리뷰할 때 따르는 기준입니다. "통과시
 - 성능·불필요한 비용: 중복 LLM 호출, N+1, 토큰 낭비
 - 테스트 부재·약한 단언·커버되지 않은 분기
 - 팀 컨벤션 위반: 커밋·PR에 `Co-Authored-By` 금지, `git add -- <경로>`만 사용(`git add -A`/`.` 금지), `dev` 직접 커밋 금지, 프롬프트 전문·시크릿·채팅 원문 노출 금지
-- 제품 동작·계약 변경이 관련 스펙(`spec/`, `../knk-harness/docs/spec/`)과 어긋나는지
+- 제품 동작·계약 변경이 관련 하네스 명세(`../knk-harness/docs/domain/`, 해당 세트가 없으면 기존 Spec·Design·ADR)과 어긋나는지
 
 각 지적에는 코드상의 근거와 구체적 수정 방향을 함께 답니다. 실제 결함이 없으면 억지 지적 없이 그 사실을 밝힙니다.

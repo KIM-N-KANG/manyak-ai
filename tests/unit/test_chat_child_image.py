@@ -282,8 +282,7 @@ async def test_image_cap_includes_download_and_ignores_late_result(monkeypatch, 
     assert result[-1]["event"] == "completed"
 
 
-async def test_body_timeout_closes_source_without_starting_judgement(monkeypatch, request_data) -> None:
-    from unittest.mock import Mock
+async def test_body_timeout_closes_source(monkeypatch, request_data) -> None:
     closed = asyncio.Event()
     async def slow():
         try:
@@ -291,13 +290,11 @@ async def test_body_timeout_closes_source_without_starting_judgement(monkeypatch
             yield {}
         finally:
             closed.set()
-    callback = Mock()
     result = [e async for e in service.stream_with_child_image(
-        slow(), request_data, deadline=time.monotonic()+0.01, on_body_completed=callback,
+        slow(), request_data, deadline=time.monotonic()+0.01,
     )]
     assert closed.is_set()
     assert result[-1]["event"] == "error"
-    callback.assert_not_called()
 
 
 async def test_on_time_image_survives_delayed_delivery(monkeypatch, request_data) -> None:

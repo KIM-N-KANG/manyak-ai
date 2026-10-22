@@ -1,9 +1,11 @@
+import pytest
+
 from src.core.config import Settings
 
 
 # ── 모델 env var 3분리 (KNK-595) ─────────────────────────────────────────────
 def test_model_fields_read_new_env_names(monkeypatch) -> None:
-    """새 env 이름(STORY_COMPILE_MODEL·STORYLINES_MODEL·CHAT_MODEL)이 각 필드로 매핑된다."""
+    """새 env 이름(STORY_COMPILE_MODEL·STORYLINES_MODEL)이 각 필드로 매핑된다."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
     monkeypatch.setenv("STORY_COMPILE_MODEL", "compile-x")
     monkeypatch.setenv("STORYLINES_MODEL", "storylines-x")
@@ -13,7 +15,7 @@ def test_model_fields_read_new_env_names(monkeypatch) -> None:
 
     assert s.story_compile_model == "compile-x"
     assert s.storylines_model == "storylines-x"
-    assert s.chat_model == "chat-x"
+    assert "chat_model" not in s.model_dump()
 
 
 def test_choice_model_field_reads_its_env(monkeypatch) -> None:
@@ -24,18 +26,20 @@ def test_choice_model_field_reads_its_env(monkeypatch) -> None:
 
     s = Settings(_env_file=None)
 
-    assert (s.chat_model, s.chat_choice_model) == ("chat-x", "choice-x")
+    assert s.chat_choice_model == "choice-x"
+    assert "chat_model" not in s.model_dump()
 
 
 def test_model_defaults(monkeypatch) -> None:
-    """env 미설정 시 컴파일은 Terra, 스토리라인·채팅은 DeepSeek flash를 쓴다."""
+    """env 미설정 시 컴파일은 Terra, 스토리라인·선택지는 DeepSeek flash를 쓴다."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
 
     s = Settings(_env_file=None)
 
     assert s.story_compile_model == "gpt-5.6-terra"
     assert s.storylines_model == "deepseek-flash"
-    assert s.chat_model == "deepseek-flash"
+    assert "chat_model" not in s.model_dump()
+    assert "chat_reasoning_effort" not in s.model_dump()
     assert s.chat_choice_model == "deepseek-flash"
 
 
@@ -51,7 +55,9 @@ def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> Non
     env.write_text(
         "DEEPSEEK_API_KEY=test-key\n"
         "DEEPSEEK_MODEL=deepseek-v4-flash\n"
-        "DEEPSEEK_CHAT_MODEL=deepseek-flash\n",
+        "DEEPSEEK_CHAT_MODEL=deepseek-flash\n"
+        "CHAT_MODEL=unknown-model\n"
+        "CHAT_REASONING_EFFORT=unsupported\n",
         encoding="utf-8",
     )
 
@@ -59,7 +65,8 @@ def test_legacy_env_file_keys_do_not_break_startup(tmp_path, monkeypatch) -> Non
 
     # 옛 키는 무시되고 기본값이 유지된다
     assert s.story_compile_model == "gpt-5.6-terra"
-    assert s.chat_model == "deepseek-flash"
+    assert "chat_model" not in s.model_dump()
+    assert "chat_reasoning_effort" not in s.model_dump()
 
 
 # ── 대체 공급자 접속 정보 (KNK-675, KNK-703) ────────────────────────────────
@@ -104,3 +111,17 @@ def test_settings_no_longer_carries_a_global_provider(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
 
     assert not hasattr(Settings(_env_file=None), "llm_provider")
+
+
+@pytest.mark.parametrize("legacy_value", ["layer", "general", "genral"])
+def test_legacy_chat_prompt_is_ignored_in_environment_and_dotenv(
+    monkeypatch, tmp_path, legacy_value: str
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("CHAT_PROMPT", legacy_value)
+    env = tmp_path / ".env"
+    env.write_text(f"CHAT_PROMPT={legacy_value}\n", encoding="utf-8")
+    for settings in (Settings(_env_file=None), Settings(_env_file=str(env))):
+        assert not hasattr(settings, "chat_prompt")
+    monkeypatch.delenv("CHAT_PROMPT")
+    assert not hasattr(Settings(_env_file=str(env)), "chat_prompt")

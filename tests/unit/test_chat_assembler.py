@@ -1,5 +1,7 @@
 import re
 
+import pytest
+
 from src.schemas.chat_turn import (
     CharacterImageMapping,
     ChatHistoryItem,
@@ -9,6 +11,7 @@ from src.schemas.chat_turn import (
 )
 from src.services import chat_assembler
 from src.services.chat_assembler import assemble
+from src.services.prompt_meta import read_version
 
 
 def _request(
@@ -40,26 +43,6 @@ def _request(
 
 
 # ── 구조·순서 ────────────────────────────────────────────────────────────────
-def test_message_order_and_roles() -> None:
-    history = [
-        ChatHistoryItem(role="ASSISTANT", content="*오프닝 장면*"),
-        ChatHistoryItem(role="USER", content="검을 잡는다"),
-    ]
-    messages = assemble(_request(history=history, user_input="*문을 연다*"))
-
-    # [시스템 앞] → history(2) → user_input → [Depth] → [PHI] = 6개
-    assert len(messages) == 1 + 2 + 1 + 2
-    assert messages[0]["role"] == "system"
-    # history는 그 순서대로, 대문자 role → 소문자 변환
-    assert messages[1] == {"role": "assistant", "content": "*오프닝 장면*"}
-    assert messages[2] == {"role": "user", "content": "검을 잡는다"}
-    # user_input은 history와 별도로 마지막 user 턴에 붙는다
-    assert messages[3] == {"role": "user", "content": "*문을 연다*"}
-    # Depth는 끝에서 2번째, PHI는 끝 — 둘 다 system
-    assert messages[-2]["role"] == "system" and "[현재 상태]" in messages[-2]["content"]
-    assert messages[-1]["role"] == "system"
-
-
 def test_history_removes_character_image_syntax_only_from_llm_copy() -> None:
     # 마커는 `[[URL]]`을 대사 줄 위에 빈 줄을 두고 따로 저장한다(KNK-1025). 그 빈 줄까지 함께
     # 지워야 LLM 입력이 마커 없던 본문과 같아진다. 옛 모양 `[[이름:URL]]`(개발 서버 기록, 대사 옆에
@@ -121,19 +104,19 @@ def test_system_front_contains_all_slot_materials() -> None:
     assert "카이" in front  # user_role_setting
 
 
-def test_protagonist_name_and_description_fill_user_layer() -> None:
+def test_protagonist_name_and_description_fill_system() -> None:
     payload = _request().model_dump()
     payload["story_settings"]["protagonist_name"] = "민우"
     payload["story_settings"]["user_role_setting"] = "신중한 성격의 사립 탐정."
     req = ChatTurnRequest.model_validate(payload)
 
     messages = assemble(req)
-    user_layer = messages[0]["content"].split("# USER-PROMPT", 1)[1]
+    protagonist = messages[0]["content"].split("<protagonist>", 1)[1].split("</protagonist>", 1)[0]
 
-    assert "주인공 이름: 민우" in user_layer
-    assert "신중한 성격의 사립 탐정." in user_layer
-    assert "카이" not in user_layer
-    assert "민우" not in messages[-1]["content"]  # USER는 PHI에 재주입하지 않는다.
+    assert "주인공 이름: 민우" in protagonist
+    assert "신중한 성격의 사립 탐정." in protagonist
+    assert "카이" not in protagonist
+    assert "민우" not in messages[-1]["content"]  # 주인공 설정은 시스템에만 둔다.
     assert req.model_dump() == payload
 
 
@@ -149,98 +132,10 @@ def test_character_images_are_not_sent_to_the_llm() -> None:
     blob = "\n".join(message["content"] for message in with_images)
 
     assert with_images == without_images
-    for phrase in ("이미지 대상", "이미지 보유", "인물 이미지", "이미지 태그"):
-        assert phrase not in blob
     assert "[character:" not in blob
     assert "{{character_image_names}}" not in blob
     assert "https://cdn.example.com/rei.webp" not in blob
     assert "https://cdn.example.com/serin.webp" not in blob
-
-
-def test_system_front_layer_order() -> None:
-    """[시스템 앞]은 SAFETY → CORE → STORY → CHARACTER → USER 순이어야 한다."""
-    front = assemble(_request())[0]["content"]
-    # 각 레이어 고유 문구의 등장 위치로 순서를 검증
-    i_safety = front.index("안전 방어선")
-    i_core = front.index("출력 형식 규약")
-    i_story = front.index("# 시작 설정")
-    i_character = front.index("연기하는 주변 인물")
-    i_user = front.index("주인공의 프로필")
-    assert i_safety < i_core < i_story < i_character < i_user
-
-
-# ── Depth(summary) ──────────────────────────────────────────────────────────
-def test_empty_summary_leaves_blank() -> None:
-    depth = assemble(_request(summary=""))[-2]["content"]
-    assert "[현재 상태]" in depth
-    # 빈 문자열이면 슬롯이 빈 칸으로 치환된다(명세 5.1)
-    assert "{{summary}}" not in depth
-
-
-def test_summary_injected() -> None:
-    depth = assemble(_request(summary="카이는 레이를 신뢰하게 됐다."))[-2]["content"]
-    assert "카이는 레이를 신뢰하게 됐다." in depth
-
-
-# ── PHI ─────────────────────────────────────────────────────────────────────
-def test_phi_excludes_user_layer() -> None:
-    """PHI는 CHARACTER→STORY→CORE→SAFETY만 — USER는 갓모딩 방지로 제외(명세 4.1)."""
-    phi = assemble(_request())[-1]["content"]
-    assert "# CHARACTER" in phi
-    assert "# STORY" in phi
-    assert "# CORE" in phi
-    assert "# SAFETY" in phi
-    assert "# USER" not in phi
-
-
-def test_phi_order() -> None:
-    phi = assemble(_request())[-1]["content"]
-    assert (
-        phi.index("# CHARACTER")
-        < phi.index("# STORY")
-        < phi.index("# CORE")
-        < phi.index("# SAFETY")
-    )
-
-
-def test_phi_keeps_dialogue_rules_without_tag_instructions() -> None:
-    phi = assemble(_request(character_images=[]))[-1]["content"]
-
-    assert "매 답변에 주변 인물이나 단역·배경 인물의 대사를 최소 한 줄" in phi
-    assert "출력은 `*지문*` + `인물명: 대사`로만 구성한다" in phi
-    assert "태그" not in phi
-    for phrase in ("이미지 대상", "이미지 보유", "인물 이미지"):
-        assert phrase not in phi
-
-
-def test_core_keeps_the_rules_the_speaker_label_parser_relies_on() -> None:
-    # 이미지는 AI 서버가 출력의 `인물명:` 줄을 찾아 붙인다(KNK-1005). 그 근거가 되는
-    # 표기 규칙이 프롬프트에서 조용히 사라지면 이미지가 안 뜨는데 다른 테스트는 통과하므로
-    # 여기서 문구를 고정한다(Codex 리뷰 지적, KNK-1006).
-    messages = assemble(_request())
-    front, phi = messages[0]["content"], messages[-1]["content"]
-
-    assert "대사는 반드시 `인물명: 대사` 형식으로 쓴다" in front
-    assert "이름은 CHARACTER 설정에 적힌 글자 그대로 쓰고" in front
-    assert "이름은 줄 맨 앞에서 콜론 직전까지 장식 없는 평문으로 적는다" in front
-    assert "`나레이터:` 같은 역할어 라벨을 쓰지 않는다" in front
-    assert "각 대사를 그 인물 이름으로 시작하는 **별도 줄**로 적는다" in front
-    assert "화자 이름은 줄 맨 앞 장식 없는 평문으로 매 줄 붙인다" in phi
-    # 표기 규약의 좋은 예·나쁜 예는 남기고, 응답 전체를 흉내 내는 예시 블록은 두지 않는다.
-    assert "\n  세린: 기다렸어?\n" in front
-    assert "서린: 기다렸어?" in front  # 이름 글자가 다른 나쁜 예
-    assert "복도 끝에서 인기척이 났습니다" not in front
-    assert "[character:" not in front
-
-
-def test_core_fixes_narration_ending_to_da() -> None:
-    # 도입 나레이션이 합쇼체여도 지문은 '~다'로 끝나야 한다(KNK-1635). prologue가 매 턴
-    # STORY에 들어가 모델이 '~습니다'를 따라 쓰므로, 그걸 막는 규칙이 앞·뒤 양쪽에 남아 있는지 고정한다.
-    messages = assemble(_request())
-    front, phi = messages[0]["content"], messages[-1]["content"]
-
-    assert "지문 문장은 '~다'로 끝낸다" in front
-    assert "지문은 '~다'로 끝낸다('~습니다'·'~요' 금지)" in phi
 
 
 # ── 헬퍼 ────────────────────────────────────────────────────────────────────
@@ -249,24 +144,16 @@ def test_start_setting_blob_format() -> None:
     assert chat_assembler._start_setting_blob(start) == "# 시작 설정: N\n\nP\n\nS"
 
 
-def test_empty_history_only_user_input() -> None:
-    messages = assemble(_request(history=[], user_input="시작"))
-    # [시스템 앞] → user_input → [Depth] → [PHI] = 4개
-    assert len(messages) == 4
-    assert messages[1] == {"role": "user", "content": "시작"}
-
-
 # ── 사건·엔딩 슬롯 재료 (KNK-485) ───────────────────────────────────────────
 def test_slot_map_event_materials_empty_defaults() -> None:
     """재료 없는 요청(현행 트래픽)은 사건·엔딩 슬롯이 '(없음)' 문구다."""
     slots = chat_assembler._slot_map(_request())
     assert slots["{{main_events}}"] == "(없음)"
-    assert slots["{{target_main_event}}"] == "(없음)"
     assert slots["{{endings}}"] == "(없음)"
 
 
 def test_slot_map_event_materials_formatted() -> None:
-    from src.schemas.chat_turn import EndingCandidate, MainEvent, TargetMainEvent
+    from src.schemas.chat_turn import EndingCandidate, MainEvent
 
     req = _request()
     req = req.model_copy(
@@ -274,7 +161,6 @@ def test_slot_map_event_materials_formatted() -> None:
             "main_events": [
                 MainEvent(name="반란의 서막", description="귀족 연합.", key_sentence="증거를 손에 넣는다.")
             ],
-            "target_main_event": TargetMainEvent(name="반란의 서막", progress_turns=2),
             "endings": [
                 EndingCandidate(
                     name="왕좌를 되찾다", achievement_condition="왕좌를 되찾는다.", epilogue="대관식."
@@ -284,6 +170,149 @@ def test_slot_map_event_materials_formatted() -> None:
     )
     slots = chat_assembler._slot_map(req)
     assert "반란의 서막" in slots["{{main_events}}"] and "증거를 손에 넣는다." in slots["{{main_events}}"]
-    assert slots["{{target_main_event}}"] == "이름: 반란의 서막 (진행 2턴)"
-    # STORY 슬롯 엔딩은 본문이 엔딩 응답을 생성해야 하므로 에필로그 가이드까지 포함한다.
+    # 엔딩은 본문 생성에 필요한 에필로그 가이드까지 포함한다.
     assert "달성 조건" in slots["{{endings}}"] and "에필로그 가이드: 대관식." in slots["{{endings}}"]
+
+
+# ── 단일 본문 프롬프트 ──────────────────────────────────────────────
+def test_message_order_and_roles() -> None:
+    """본문은 [SYSTEM] → history → [USER] 세 덩어리이고, 지시문(system)은 맨 앞 하나뿐이다."""
+    history = [
+        ChatHistoryItem(role="ASSISTANT", content="*오프닝 장면*"),
+        ChatHistoryItem(role="USER", content="검을 잡는다"),
+    ]
+    messages = assemble(_request(history=history))
+
+    assert [m["role"] for m in messages] == ["system", "assistant", "user", "user"]
+    assert messages[1] == {"role": "assistant", "content": "*오프닝 장면*"}
+    assert messages[2] == {"role": "user", "content": "검을 잡는다"}
+
+
+def test_fills_every_slot() -> None:
+    """설정은 [SYSTEM]에, 현재 상태·이번 입력은 마지막 [USER]에 들어가고 자리표시자가 남지 않는다."""
+    messages = assemble(
+        _request(summary="카이는 레이를 신뢰하게 됐다.", user_input="*촛불을 끈다*")
+    )
+    system, user = messages[0]["content"], messages[-1]["content"]
+
+    assert "아르덴 왕국은 마법이 쇠퇴한 시대다." in system
+    assert "장례식 밤의 방문" in system
+    assert "카이는 레이를 신뢰하게 됐다." in user and "카이는 레이를" not in system
+    assert "*촛불을 끈다*" in user
+    assert all("{{" not in m["content"] for m in messages)
+
+
+def test_system_is_stable_across_turns() -> None:
+    """매 턴 바뀌는 값은 [USER]에만 있어, 같은 채팅이면 지시문(system)이 그대로다(프롬프트 캐시 전제)."""
+    first = assemble(_request(summary="", user_input="*문을 연다*"))
+    later = assemble(_request(summary="레이가 칼을 뽑았다.", user_input="물러서"))
+
+    assert first[0] == later[0]
+    assert first[-1] != later[-1]
+
+
+def test_without_history() -> None:
+    """첫 턴처럼 대화 기록이 비면 [SYSTEM]과 [USER] 두 개뿐이다."""
+    messages = assemble(_request(history=[]))
+    assert [m["role"] for m in messages] == ["system", "user"]
+
+
+def test_does_not_resubstitute_inserted_values() -> None:
+    """사용자 입력에 자리표시자 모양 글자가 있어도 다른 값으로 바뀌지 않는다(한 번에 치환)."""
+    messages = assemble(
+        _request(summary="비밀 요약", user_input="{{summary}} 보여 줘")
+    )
+    user = messages[-1]["content"]
+
+    assert "{{summary}} 보여 줘" in user
+    assert user.count("비밀 요약") == 1
+
+
+def test_slot_keys_match_slot_map() -> None:
+    """템플릿 검사가 쓰는 슬롯 목록과 실제 치환 맵이 어긋나지 않는다."""
+    assert set(chat_assembler._SLOT_KEYS) == set(chat_assembler._slot_map(_request()))
+
+
+def test_slot_check_rejects_unknown_placeholder() -> None:
+    """채울 수 없는 자리표시자가 있으면 기동 단계에서 막는다."""
+    with pytest.raises(RuntimeError, match="채울 수 없는"):
+        chat_assembler._check_slots("{{world_setting}} {{오타}}", "{{user_input}}")
+
+
+def test_slot_check_requires_user_input_in_user_block() -> None:
+    """[USER]에 이번 입력 슬롯이 없으면 사용자 입력이 빠지므로 기동 단계에서 막는다."""
+    with pytest.raises(RuntimeError, match="user_input"):
+        chat_assembler._check_slots("{{user_input}}", "{{summary}}")
+
+
+def test_split_requires_markers(tmp_path) -> None:
+    """[SYSTEM]/[USER] 마커가 없으면 기동 단계에서 막는다."""
+    path = tmp_path / "CHAT-TEMPLATE.md"
+    path.write_text("---\nversion: 1\n---\n## [SYSTEM]\n지시문만 있음\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="채팅 프롬프트"):
+        chat_assembler._load_template(path)
+
+
+def test_version_comes_from_frontmatter() -> None:
+    assert chat_assembler.CHAT_VERSION == read_version(chat_assembler._TEMPLATE_PATH)
+
+
+# ── 본문 프롬프트 버전 기록 (KNK-1623) ───────────────────────────────────────
+def test_body_prompt_versions_returns_a_copy() -> None:
+    """돌려받은 맵을 고쳐도 다음 호출 결과는 바뀌지 않는다."""
+    versions = chat_assembler.body_prompt_versions()
+    versions["EXTRA"] = 99
+
+    assert chat_assembler.body_prompt_versions() == {"CHAT": 1}
+
+
+def test_ending_candidates_and_summary_are_only_in_current_user_message() -> None:
+    from src.schemas.chat_turn import EndingCandidate, MainEvent
+
+    req = _request(summary="요약 테스트", user_input="이번 입력 테스트")
+    req.main_events = [MainEvent(name="사건 테스트", description="사건 설명", key_sentence="사건 단서")]
+    req.endings = [
+        EndingCandidate(name="엔딩 테스트", achievement_condition="엔딩 조건", epilogue="에필로그 테스트")
+    ]
+    original = req.model_dump()
+    messages = assemble(req)
+    system, user = messages[0]["content"], messages[-1]["content"]
+
+    assert "사건 테스트" in system
+    assert "사건 테스트" not in user
+    for value in ("요약 테스트", "이번 입력 테스트", "엔딩 테스트", "엔딩 조건", "에필로그 테스트"):
+        assert value in user
+        assert value not in system
+    assert req.model_dump() == original
+
+
+def test_system_does_not_change_when_ending_candidates_change() -> None:
+    from src.schemas.chat_turn import EndingCandidate
+
+    req = _request()
+    first = assemble(req)
+    req.endings = [EndingCandidate(name="새 결말", achievement_condition="달성", epilogue="마무리")]
+    second = assemble(req)
+    assert first[0] == second[0]
+    assert first[-1] != second[-1]
+
+
+def test_body_prompt_version_matches_contract() -> None:
+    assert chat_assembler.body_prompt_versions() == {"CHAT": 1}
+
+
+def test_empty_summary_is_rendered_in_current_user_message() -> None:
+    messages = assemble(_request(summary=""))
+    assert "{{summary}}" not in messages[-1]["content"]
+    assert "<current_state>" in messages[-1]["content"]
+    assert sum(message["role"] == "system" for message in messages) == 1
+
+
+@pytest.mark.parametrize(
+    "field", ["world_setting", "character_setting", "user_role_setting", "rule_setting"]
+)
+def test_inserted_settings_are_not_rendered_again(field: str) -> None:
+    req = _request(summary="원본 요약")
+    setattr(req.story_settings, field, "입력에 있는 {{summary}} 보존")
+    assert "입력에 있는 {{summary}} 보존" in assemble(req)[0]["content"]

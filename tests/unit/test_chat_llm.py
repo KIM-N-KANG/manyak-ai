@@ -1,3 +1,5 @@
+from uuid import UUID
+
 import pytest
 
 from tests.conftest import FakeStream
@@ -593,8 +595,8 @@ async def test_stream_captures_model_and_usage(install_llm_sdk) -> None:
     assert completed["model"] == "deepseek-flash"
     assert completed["input_tokens"] == 11
     assert completed["output_tokens"] == 22
-    # provider는 응답에 없는 값이라 모델 이름을 등록부로 해석해 싣는다(KNK-674).
-    assert completed["provider"] == "deepseek"
+    # 공급자는 SDK가 돌려준 모델 이름이 아니라 실제 호출 대상의 등록부를 따른다.
+    assert completed["provider"] == "openai"
 
 
 # ── 토큰 누락은 0이 아니라 null (KNK-673 리뷰) ───────────────────────────────
@@ -609,7 +611,7 @@ async def test_stream_keeps_missing_usage_as_null(mock_stream) -> None:
     assert completed["input_tokens"] is None
     assert completed["output_tokens"] is None
     # 모델명은 응답이 안 알려줘도 요청에 쓴 이름으로 채워진다(폴백은 통로가 맡는다).
-    assert completed["model"] == chat_llm.settings.chat_model
+    assert completed["model"] == "gpt-6-luna"
 
 
 async def test_stream_keeps_usage_without_token_fields_as_null(install_llm_sdk) -> None:
@@ -690,11 +692,12 @@ async def test_stream_error_captures(monkeypatch, install_llm_sdk) -> None:
     assert "boom" not in err_event["message"]  # provider 원문(str(e)) 미노출 — AN-4-10
     assert len(calls) == 1
     assert calls[0]["feature"] == "chat_response"
+    assert calls[0]["prompt_versions"] == {"CHAT": 1}
     # AN-4-8 컨텍스트 — 실패 캡처에 재호출 횟수·소요 시간이 실린다(KNK-529)
     assert calls[0]["retry_count"] == 0
     assert isinstance(calls[0]["latency_ms"], int) and calls[0]["latency_ms"] >= 0
     # 스트림이 오류로 끝나면 종료 이벤트가 없다 — 그래도 provider 태그는 채워져야 한다(KNK-674).
-    assert calls[0]["provider"] == "deepseek"
+    assert calls[0]["provider"] == "openai"
 
 
 # ── 스트림 도중의 실패·취소 (KNK-673) ────────────────────────────────────────
@@ -748,7 +751,7 @@ async def test_stream_cancellation_is_not_reported_as_error(monkeypatch, install
 
 # ── 호출 인자 계약 단언 (KNK-584 재감사 #8) ───────────────────────────────────
 # 가짜가 kwargs를 버리면 model·stream·thinking 설정 회귀를 못 잡는다. 넘긴 인자를
-# 통째로 붙잡아, 본문 경로가 스트리밍·usage 동봉·비추론으로 호출하는지 고정한다.
+# 통째로 붙잡아, 본문 경로가 스트리밍·usage 동봉·라이트 등급 low로 호출하는지 고정한다.
 async def test_stream_call_contract(install_llm_sdk) -> None:
     captured: dict = {}
 
@@ -760,43 +763,58 @@ async def test_stream_call_contract(install_llm_sdk) -> None:
     msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
     _ = [e async for e in stream_chat_turn(msgs)]
 
-    assert captured["model"] == chat_llm.settings.chat_model
+    assert captured["model"] == "gpt-6-luna"
     assert captured["messages"] is msgs  # 조립한 messages를 가공 없이 그대로 넘긴다
     assert captured["stream"] is True
     assert captured["stream_options"] == {"include_usage": True}  # 토큰 로깅용
-    # 추론 끄기는 이제 호출부가 아니라 등록부(use_thinking=False)의 뜻을 어댑터가 옮긴 것이다.
-    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert captured["reasoning_effort"] == "low"
     # 타임아웃을 호출마다 넘긴다 — 비우면 상한이 SDK 기본값(10분)으로 늘어난다(KNK-673).
     assert captured["timeout"] == chat_llm._TIMEOUT_SECONDS == 90.0
-    # 본문은 지문·대사를 자유 생성하므로 json 모드·출력 상한을 걸지 않는다.
+    # 본문은 지문·대사를 자유 생성하므로 json 모드를 걸지 않는다.
     assert "response_format" not in captured
     assert "max_tokens" not in captured
+    assert "max_completion_tokens" not in captured
+
+
+async def test_chat_reasoning_effort_reaches_the_request(install_llm_sdk, monkeypatch) -> None:
+    """기존 전역 모델·추론 설정이 요청별 라우팅을 덮어쓰지 않는다."""
+    captured: dict = {}
+
+    async def _create(**kwargs):
+        captured.update(kwargs)
+        return FakeStream([_FakeChunk("본문")])
+
+    install_llm_sdk(_create)
+    monkeypatch.setenv("CHAT_MODEL", "deepseek-flash")
+    monkeypatch.setenv("CHAT_REASONING_EFFORT", "high")
+    _ = [e async for e in stream_chat_turn([{"role": "user", "content": "U"}])]
+
+    assert captured["reasoning_effort"] == "low"
+    assert "extra_body" not in captured  # 추론 끄기 문법이 함께 나가지 않는다
 
 
 # ── provider는 고정값이 아니라 지금 쓰는 모델의 공급자다 (KNK-674) ────────────
-# 모든 테스트가 DeepSeek이면 "그냥 'deepseek'을 적어둔 코드"와 구분되지 않는다.
-# 다른 회사 모델을 하나 끼워 넣어, 값이 모델을 따라 바뀌는지 본다.
-async def test_provider_follows_the_selected_model(other_provider_model, install_llm_sdk) -> None:
-    other_provider_model(chat_llm)
+# 오로라 짝수 그룹의 성공·실패 기록이 선택한 Sol 모델과 공급자를 따르는지 확인한다.
+async def test_provider_follows_the_selected_model(install_llm_sdk) -> None:
 
     async def _create(**kwargs):
         return FakeStream([_FakeChunk("본문")])
 
     install_llm_sdk(_create)
 
-    events = [e async for e in stream_chat_turn([])]
+    events = [e async for e in stream_chat_turn([], user_id=UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), model_tier="AURORA")]
     completed = next(e for e in events if e["event"] == "completed")
 
-    assert completed["provider"] == "not-deepseek"
+    assert completed["provider"] == "openai"
+    assert completed["model"] == "gpt-6.1-sol"
 
 
 async def test_failure_capture_provider_follows_the_selected_model(
-    monkeypatch, other_provider_model, install_llm_sdk
+    monkeypatch, install_llm_sdk
 ) -> None:
     """스트림이 오류로 끝나도 같은 값이 실린다 — 종료 이벤트가 없는 경로다."""
     from openai import OpenAIError
 
-    other_provider_model(chat_llm)
     calls: list = []
     monkeypatch.setattr(chat_llm, "capture_ai_exception", lambda *a, **k: calls.append(k))
 
@@ -805,10 +823,11 @@ async def test_failure_capture_provider_follows_the_selected_model(
 
     install_llm_sdk(_create)
 
-    events = [e async for e in stream_chat_turn([])]
+    events = [e async for e in stream_chat_turn([], user_id=UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), model_tier="AURORA")]
 
     assert any(e["event"] == "error" for e in events)
-    assert calls[0]["provider"] == "not-deepseek"
+    assert calls[0]["provider"] == "openai"
+    assert calls[0]["model"] == "gpt-6.1-sol"
 
 
 async def test_provider_is_resolved_before_the_llm_call(monkeypatch, install_llm_sdk) -> None:
@@ -837,3 +856,124 @@ async def test_provider_is_resolved_before_the_llm_call(monkeypatch, install_llm
         [e async for e in stream_chat_turn([])]
 
     assert calls["n"] == 0  # LLM을 부르기도 전에 막힌다
+
+
+@pytest.mark.parametrize(
+    ("user_id", "tier", "model", "provider", "effort"),
+    [
+        (None, "LITE", "gpt-6-luna", "openai", "low"),
+        (None, "AURORA", "gpt-6-luna", "openai", "low"),
+        ("3f2504e0-4f89-41d3-9a0c-0305e82c330a", "AURORA", "gpt-6.1-sol", "openai", "low"),
+        ("3f2504e0-4f89-41d3-9a0c-0305e82c330b", "AURORA", "gemini-3.8-flash", "google", "medium"),
+    ],
+)
+async def test_planned_chat_models_stream_through_provider_sdk(
+    monkeypatch, install_llm_sdk, user_id, tier, model, provider, effort
+) -> None:
+    """본문 서비스부터 공급자 SDK까지 모델·추론 설정·완료 정보를 확인한다."""
+    from types import SimpleNamespace
+
+    from src.services.llm import google_sdk
+
+    captured: dict = {}
+    messages = [
+        {"role": "system", "content": "이야기 지시"},
+        {"role": "assistant", "content": "*이전 장면*"},
+        {"role": "user", "content": "이번 입력"},
+    ]
+
+    async def google_chunks():
+        yield SimpleNamespace(
+            text="*새 장면*", usage_metadata=None, model_version=model,
+            candidates=[SimpleNamespace(finish_reason=SimpleNamespace(name="STOP"))],
+        )
+
+    async def create(**kwargs):
+        captured.update(kwargs)
+        if provider == "google":
+            return google_chunks()
+        return FakeStream([_FakeChunk("*새 장면*")])
+
+    if provider == "google":
+        monkeypatch.setattr(
+            google_sdk, "_client", lambda _: SimpleNamespace(
+                aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=create))
+            )
+        )
+    else:
+        install_llm_sdk(create)
+
+    events = [event async for event in stream_chat_turn(
+        messages, user_id=UUID(user_id) if user_id else None, model_tier=tier,
+    )]
+    completed = next(event for event in events if event["event"] == "completed")
+    assert completed["ai_output"] == "*새 장면*"
+    assert completed["provider"] == provider
+    assert completed["model"] == model
+    assert captured["model"] == model
+    if provider == "google":
+        config = captured["config"]
+        assert config.max_output_tokens is None
+        assert config.http_options.timeout == 90000
+        assert config.system_instruction == "이야기 지시"
+        assert config.thinking_config.thinking_level.value.lower() == effort
+        assert [content.role for content in captured["contents"]] == ["model", "user"]
+    else:
+        assert captured["reasoning_effort"] == effort
+        assert captured["messages"] == messages
+        assert captured["stream"] is True
+        assert "temperature" not in captured
+
+
+@pytest.mark.parametrize("last_digit", "0123456789abcdefABCDEF")
+def test_aurora_assignment_is_stable_for_all_uuid_endings(last_digit: str) -> None:
+    member = UUID(f"3f2504e0-4f89-41d3-9a0c-0305e82c330{last_digit}")
+    expected = ("gpt-6.1-sol", "low") if int(last_digit, 16) % 2 == 0 else ("gemini-3.8-flash", "medium")
+    assert chat_llm.select_chat_model(member, "AURORA") == expected
+    assert chat_llm.select_chat_model(member, "LITE") == ("gpt-6-luna", "low")
+    assert chat_llm.select_chat_model(member, "AURORA") == expected
+
+
+async def test_concurrent_routes_do_not_change_shared_settings_or_registry(monkeypatch) -> None:
+    import asyncio
+
+    from src.core.config import settings
+    from src.services.llm import registry
+    from src.services.llm.base import StreamCompleted, TokenUsage
+
+    before_settings = settings.model_dump()
+    before_registry = dict(registry._REGISTRY)
+    pending = 0
+    ready = asyncio.Event()
+    captured = {}
+
+    async def fake_stream(req):
+        nonlocal pending
+        key = req.messages[0]["content"]
+        captured[key] = (req.model, req.reasoning_effort)
+        pending += 1
+        if pending == 3:
+            ready.set()
+        await ready.wait()
+        yield StreamCompleted(model=req.model, provider=registry.resolve(req.model).provider, usage=TokenUsage())
+
+    monkeypatch.setattr(chat_llm.llm, "stream", fake_stream)
+
+    async def run(label, user_id, tier):
+        return [event async for event in stream_chat_turn(
+            [{"role": "user", "content": label}], user_id=user_id, model_tier=tier,
+        )]
+
+    results = await asyncio.wait_for(asyncio.gather(
+        run("guest", None, "AURORA"),
+        run("even", UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330a"), "AURORA"),
+        run("odd", UUID("3f2504e0-4f89-41d3-9a0c-0305e82c330b"), "AURORA"),
+    ), timeout=2)
+    assert captured == {
+        "guest": ("gpt-6-luna", "low"),
+        "even": ("gpt-6.1-sol", "low"),
+        "odd": ("gemini-3.8-flash", "medium"),
+    }
+    assert [events[-1]["model"] for events in results] == ["gpt-6-luna", "gpt-6.1-sol", "gemini-3.8-flash"]
+    assert settings.model_dump() == before_settings
+    assert registry._REGISTRY == before_registry

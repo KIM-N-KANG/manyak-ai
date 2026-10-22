@@ -1,6 +1,6 @@
 """채팅 턴 API(시점 B 런타임)의 입출력 계약.
 
-spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
+하네스 docs/domain/CHAT/AI/5-CONTRACT.md 기준. 단일 채팅 턴 API는 매 턴
 백엔드가 모든 재료를 실어 보내고 AI는 받은 것만으로 응답하는 **완전 stateless**
 구조다. AI는 턴 사이에 아무것도 보관하지 않으며, 세션 식별자도 두지 않는다.
 
@@ -12,6 +12,7 @@ spec/chat/4-SERVICE-IMPLEMENTATION.md 기준. 단일 채팅 턴 API는 매 턴
 import logging
 from typing import Literal
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -85,8 +86,7 @@ class MainEvent(BaseModel):
 
     컴파일 산출물(`StoryMainEventOut`)·일반 제작 저작분과 동일 구조로 백엔드
     `story_main_events`에서 온다. key_sentence는 사용자 입력이 이 사건과 의미상
-    관련되는지 판단하는 기준 문장이며, 관련성 판정은 AI의 정성 판정이다(spec/5-ai-server-spec.md §5-3-4 ·
-    adr/3-ai-server-adr.md D11).
+    관련되는지 판단하는 기준 문장이다. 본문·선택지 프롬프트 재료로 쓴다.
     """
 
     name: str
@@ -94,24 +94,10 @@ class MainEvent(BaseModel):
     key_sentence: str
 
 
-class TargetMainEvent(BaseModel):
-    """목표 사건 상태 — 이 채팅이 현재 향해 진행 중인 주요 사건(채팅당 최대 1개).
-
-    AI는 무상태(D2)라 직전 턴 completed 메타(`targetMainEvent`)를 백엔드가
-    저장했다가 매 턴 되돌려 싣는다. progress_turns는 목표를 향해 진행한 턴 수이며
-    이탈 턴에는 동결된다(증가 판정도 AI 몫 — §5-3-4 진행 규칙).
-    """
-
-    name: str
-    progress_turns: int = Field(ge=0)
-
-
 class EndingCandidate(BaseModel):
-    """도달 후보 엔딩 — 달성 조건(자연어) 정성 판정의 재료.
+    """도달 후보 엔딩 — 본문 프롬프트 재료.
 
-    min_turns가 없는 이유: 최소 턴 수는 결정적 판정이라 백엔드가 충족한 후보만
-    걸러 싣는다(D11 분담). 이미 도달한 채팅이면 endings 자체가 빈 배열로 와서
-    재판정이 차단된다(도달 인정은 채팅당 최초 1회 — spec/4-backend-server-spec.md §4-3-10).
+    min_turns가 없는 이유: 최소 턴 수는 백엔드가 확인해 충족한 후보만 걸러 싣는다.
     """
 
     name: str
@@ -174,8 +160,8 @@ class ChatImageSlot(BaseModel):
         return value
 
 
-class ChatTurnRequest(BaseModel):
-    """채팅 턴 API 입력 (매 턴, 완전 stateless).
+class ChatCommonRequest(BaseModel):
+    """본문과 선택지 생성에서 공유하는 요청 재료.
 
     session_id를 두지 않는다 — AI는 무상태라 식별자로 조회·분기할 게 없고, 대화를
     묶는 책임은 백엔드(chatId)에 있다. genre는 `stories.genre`에서 직접 치환된다
@@ -200,13 +186,12 @@ class ChatTurnRequest(BaseModel):
     # 이라, 그전까지 백엔드는 빈 문자열을 보낸다.
     summary: str
     # ── 주요 사건·엔딩 진행 재료 (KNK-482, spec/5-ai-server-spec.md §5-3-4 · adr/3-ai-server-adr.md D11) ──────────────
-    # 넷 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
+    # 둘 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
     # 않으므로, 없으면 기존 요청과 동일하게 동작한다(하위호환 — 백엔드 전달은
-    # spec/4-backend-server-spec.md §4-3-10). 재료가 실리면 프롬프트 판정 재료와 completed 판정 메타의
-    # 입력이 된다.
+    # spec/4-backend-server-spec.md §4-3-10). 재료가 실리면 본문 프롬프트에 들어간다.
+    # 목표 사건(`target_main_event`)·완결 사건(`occurred_main_event_names`)은 판정 제거(KNK-1626)로
+    # 뺐다. 백엔드가 계속 보내도 모르는 필드라 무시된다(pydantic 기본 extra="ignore").
     main_events: list[MainEvent] = Field(default_factory=list, max_length=10)
-    target_main_event: TargetMainEvent | None = None
-    occurred_main_event_names: list[str] = Field(default_factory=list)
     endings: list[EndingCandidate] = Field(default_factory=list)
     # 이미지가 저장된 주변 인물만 전달한다. 없으면 기존 채팅과 동일하게 동작한다.
     # 개수 상한을 두지 않는다 — 인물당 표정별 다중 이미지가 오면 5개를 넘고, 인물 수
@@ -233,6 +218,13 @@ class ChatTurnRequest(BaseModel):
         return None
 
 
+class ChatTurnRequest(ChatCommonRequest):
+    """채팅 턴 입력. 회원 UUID와 등급은 라우팅에만 쓰고 프롬프트에서 제외한다."""
+
+    user_id: UUID | None = None
+    model_tier: Literal["LITE", "AURORA"] = "LITE"
+
+
 # ── 출력 (AI → 백엔드, SSE 스트림) ──────────────────────────────────────────
 # manyak-server의 SSE 규격(started→token→completed→error)과 통일한다.
 # AI(manyak-ai)가 발행하는 이벤트는 token·character_image·completed·error·ping 5개다.
@@ -244,10 +236,10 @@ EVENT_CHARACTER_IMAGE = "character_image"
 EVENT_COMPLETED = "completed"
 EVENT_ERROR = "error"
 
-# 본문이 끝난 뒤 판정을 기다리는 동안만 주기적으로 내보내는 신호다(KNK-750).
+# 이미지용으로 본문·이미지를 기다리는 동안 주기적으로 내보내는 신호다(KNK-750).
 #
 # 백엔드의 이벤트 간 상한(`RestChatTurnAiClient.timeout(60s)`)은 **프레임을 하나라도 받으면
-# 처음부터 다시 센다**. 판정 구간에 아무 프레임도 안 나가면 그 시계가 60초를 다 세고 정상
+# 처음부터 다시 센다**. 기다리는 구간에 아무 프레임도 안 나가면 그 시계가 60초를 다 세고 정상
 # 턴을 끊는다 — ping이 그 시계를 되돌린다.
 #
 # 백엔드는 이 이름을 모른다. 모르는 이벤트는 조용히 넘기므로(`when`에 else 가지가 없다)
@@ -287,19 +279,8 @@ class CharacterImageData(BaseModel):
     image_url: str = Field(serialization_alias="imageUrl")
 
 
-class TargetMainEventOut(BaseModel):
-    """completed 판정 메타 — 이번 턴 판정 후 목표 사건 상태.
-
-    백엔드가 저장했다가 다음 턴 요청(`target_main_event`)에 되돌려 싣는다(D11 —
-    상태 보관은 백엔드, 관측과 같은 '응답 계약의 일부' 방식). 와이어는 camelCase.
-    """
-
-    name: str
-    progress_turns: int = Field(ge=0, serialization_alias="progressTurns")
-
-
 class CompletedData(BaseModel):
-    """event: completed — 한 턴 응답 완료(본문 + 판정 메타).
+    """event: completed — 한 턴 응답 완료.
 
     - aiOutput: 본문(상황 묘사 + 인물 대사)과 인물별 첫 대사 줄 위 별도 줄의 `[[URL]]` 저장 마커.
       백엔드가 chatId·turnId를 더해 마커 포함 원문을 DB(history)에 저장한다.
@@ -322,17 +303,8 @@ class CompletedData(BaseModel):
     )
     # 로깅 메타(KNK-243). completed 이벤트에만 실리며 엔드포인트가 항상 채운다.
     meta: ChatResponseMeta | None = None
-    # ── 주요 사건·엔딩 판정 메타 (KNK-483, §5-3-4·D11) ─────────────────────────
-    # 백엔드가 턴 저장 트랜잭션에서 채팅 상태로 반영한다(목표 갱신·사건 완결 기록·
-    # 엔딩 도달 해소). 재료가 없거나 판정이 실패하면 셋 다 null — 판정 실패가 턴을
-    # 깨지 않는다(선택지 폴백과 같은 원칙). 서버 DTO는 ignoreUnknown이라 선행 배포 안전.
-    target_main_event: TargetMainEventOut | None = Field(
-        default=None, serialization_alias="targetMainEvent"
-    )
-    occurred_main_event_name: str | None = Field(
-        default=None, serialization_alias="occurredMainEventName"
-    )
-    ending_name: str | None = Field(default=None, serialization_alias="endingName")
+    # 판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 판정 제거(KNK-1626)와
+    # 함께 뺐다. 백엔드 DTO는 세 필드가 없으면 null로 읽어(ignoreUnknown·기본값 null) 동작이 같다.
 
 
 class ErrorData(BaseModel):

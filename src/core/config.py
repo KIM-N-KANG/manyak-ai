@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
-    app_version: str = "0.4.8"
+    app_version: str = "0.5.0"
     debug: bool = False
 
     # KNK-1554: Langfuse와 분리된 인프라 추적. endpoint는 /v1/traces까지 포함합니다.
@@ -34,18 +34,38 @@ class Settings(BaseSettings):
     # 주소 기본값은 None — SDK 기본 주소를 쓴다는 뜻이다.
     gemini_api_key: str = ""
     gemini_api_url: str | None = None
+    # 오픈소스 계열 공급자 접속 정보(KNK-1628). OpenAI SDK로 부르므로 주소를 비우면 SDK 기본값인
+    # OpenAI 주소로 키가 나간다 — 그래서 None이 아니라 각 회사의 OpenAI 호환 주소를 기본값으로 둔다.
+    # 키는 원래 이름이 없으면 로컬 .env의 개발용 칸(*_DEV)을 읽는다. 이 셋은 grid search에만 쓰여
+    # 운영 키가 없고, 같은 값을 원래 이름에 또 복사해 두지 않으려는 것이다(사용자 결정).
+    alibaba_api_key: str = Field(
+        default="", repr=False, validation_alias=AliasChoices("ALIBABA_API_KEY", "ALIBABA_API_KEY_DEV")
+    )
+    alibaba_api_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    zai_api_key: str = Field(
+        default="", repr=False, validation_alias=AliasChoices("ZAI_API_KEY", "ZAI_API_KEY_DEV")
+    )
+    zai_api_url: str = "https://api.z.ai/api/paas/v4"
+    moonshot_api_key: str = Field(
+        default="", repr=False, validation_alias=AliasChoices("MOONSHOT_API_KEY", "MOONSHOT_API_KEY_DEV")
+    )
+    moonshot_api_url: str = "https://api.moonshot.ai/v1"
+    # OpenRouter(Qwen 중계). 위 셋과 같은 이유로 회사 주소를 기본값에, 개발용 칸(*_DEV)을 대체 키로 둔다.
+    openrouter_api_key: str = Field(
+        default="", repr=False, validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPENROUTER_API_KEY_DEV")
+    )
+    openrouter_api_url: str = "https://openrouter.ai/api/v1"
     # JEV 판정(KNK-1448). 키 부재는 서버 기동 대신 해당 호출에서 드러낸다.
     typesafe_api_key: str = Field(default="", repr=False)
     typesafe_api_url: str = "https://api.typesafe.ai"
     jev_model: str = "jev-1.13.0"
-    # 모델은 용도별 env var로 분리한다(KNK-595). 스토리라인·채팅은 지금은 같은 flash 기본이지만
-    # 독립적으로 바꿀 수 있도록 필드를 나눴다. manyak-infra의 Compose env 이름도 같이 맞춘다.
+    # 스토리와 선택지는 환경 변수로 고르고, 채팅 본문은 registry.ROUTING_TARGETS로 라우팅한다.
     story_compile_model: str = "gpt-5.6-terra"  # 스토리 컴파일 전용
     storylines_model: str = "deepseek-flash"  # 스토리라인 생성 전용(fast, KNK-215)
-    chat_model: str = "deepseek-flash"  # 채팅 본문·판정 공용(fast, KNK-215)
     # 선택지는 본문과 따로 고른다(KNK-1416). 본문 모델을 바꿔도 별도 API인 선택지가 딸려가지
     # 않게 하려는 것이다. 운영 env가 없으면 이 기본값이 쓰이므로 분리 전 운영과 같은 모델로 둔다.
     chat_choice_model: str = "deepseek-flash"  # 선택지 전용
+
     # provider는 더 이상 설정값이 아니다(KNK-674). 위 모델 이름들을 등록부가 해석해
     # 호출별로 정한다(`llm.provider_of`) — 스토리와 채팅을 서로 다른 회사로 돌릴 수 있어야
     # 하는데, 전역값 하나로는 둘 중 하나가 반드시 거짓이 되기 때문이다.

@@ -60,12 +60,17 @@ def provider_of(model: str) -> str:
     return registry.resolve(model).provider
 
 
+def routing_target(slot: str) -> tuple[str, str]:
+    """코드에 정의된 라우팅 자리의 모델과 추론 강도를 반환한다."""
+    return registry.ROUTING_TARGETS[slot]
+
+
 def validate_startup() -> None:
     """기동 시 한 번 부른다 — 설정만으로 알 수 있는 문제를 첫 요청 전에 드러낸다.
 
     등록·키 검사(등록부)에 더해, **담당 어댑터가 그 모델의 설정을 실제로 표현할 수 있는지**까지
     본다. 이걸 빼면 어댑터가 모르는 공급자 문법이 첫 사용자 요청에서야 LlmConfigError로 터지는데,
-    그 예외는 LlmError가 아니라서 실패를 흡수해야 하는 경로(선택지 폴백·판정 null)를 관통해
+    그 예외는 LlmError가 아니라서 실패를 흡수해야 하는 경로(선택지 폴백)를 관통해
     500이 된다.
 
     여기서 막으면 **배포가 실패하고 AI 서버가 내려간다**(배포는 기존 컨테이너를 교체한다 —
@@ -73,11 +78,11 @@ def validate_startup() -> None:
     요청마다 500·502를 내면서도 살아 있는 것처럼 보여, 문제를 훨씬 늦게 알게 된다.
 
     어댑터 선택 실패(`_adapter_of`)도 함께 잡아 어느 env가 문제인지 붙인다 — 메시지만 보고
-    STORYLINES_MODEL·STORY_COMPILE_MODEL·CHAT_MODEL·CHAT_CHOICE_MODEL 중
+    STORYLINES_MODEL·STORY_COMPILE_MODEL·본문 라우팅·CHAT_CHOICE_MODEL 중
     무엇을 고칠지 알 수 있어야 한다.
 
     **조각 흘리기가 필요한 자리인지도 본다.** 어느 env가 그런 자리인지는 등록부가 알고
-    (`registry.STREAMING_ENVS`), 할 수 있는지는 어댑터가 밝힌다(`SUPPORTS_STREAMING`) —
+    (`registry.STREAMING_SLOTS`), 할 수 있는지는 어댑터가 밝힌다(`SUPPORTS_STREAMING`) —
     통로는 둘을 맞춰보기만 하므로 여기에 용도 이름이 박히지 않는다.
     """
     registry.validate_selected_models()
@@ -90,7 +95,7 @@ def validate_startup() -> None:
                 continue
             adapter, resolved = _adapter_of(model)
             adapter.check_supported(resolved)
-            if env_name in registry.STREAMING_ENVS and not adapter.SUPPORTS_STREAMING:
+            if env_name in registry.STREAMING_SLOTS and not adapter.SUPPORTS_STREAMING:
                 raise LlmConfigError(
                     f"모델 '{model}'의 어댑터 '{resolved.adapter}'는 조각 흘리기(스트리밍)를 "
                     f"하지 못하는데, 이 자리는 스트리밍으로 호출됩니다."
@@ -170,7 +175,7 @@ def request_body(req: LlmRequest) -> dict[str, object]:
 
 
 async def complete(req: LlmRequest) -> LlmResult:
-    """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·판정·검수)."""
+    """LLM을 한 번 부르고 결과를 돌려준다(스토리라인·컴파일·선택지·검수)."""
     adapter, resolved = _request_adapter(req)
     return await adapter.complete(req, resolved)
 

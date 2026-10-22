@@ -16,9 +16,14 @@ from src.services.llm.base import (
     ADAPTER_ANTHROPIC_SDK,
     ADAPTER_OPENAI_SDK,
     ADAPTER_TYPESAFE_API,
+    PROVIDER_ALIBABA,
     PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
+    PROVIDER_GOOGLE,
+    PROVIDER_MOONSHOT,
     PROVIDER_OPENAI,
+    PROVIDER_OPENROUTER,
+    PROVIDER_ZAI,
     STRUCTURED_OUTPUT_JSON_OBJECT,
     STRUCTURED_OUTPUT_JSON_SCHEMA,
     LlmConfigError,
@@ -46,10 +51,26 @@ def _clear_llm_env(monkeypatch) -> None:
         "JEV_MODEL",
         "TYPESAFE_API_KEY",
         "TYPESAFE_API_URL",
+        "GEMINI_API_KEY",
+        "GEMINI_API_URL",
         "OPENAI_API_KEY",
         "OPENAI_API_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_API_URL",
+        "ALIBABA_API_KEY",
+        "ALIBABA_API_KEY_DEV",
+        "ALIBABA_API_URL",
+        "ZAI_API_KEY",
+        "ZAI_API_KEY_DEV",
+        "ZAI_API_URL",
+        "MOONSHOT_API_KEY",
+        "MOONSHOT_API_KEY_DEV",
+        "MOONSHOT_API_URL",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEY_DEV",
+        "OPENROUTER_API_URL",
+        "CHAT_REASONING_EFFORT",
+        "CHAT_PROMPT",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -59,6 +80,7 @@ def _settings(**overrides: str) -> Settings:
     values: dict[str, str] = {
         "deepseek_api_key": "deepseek-test-key",
         "openai_api_key": "openai-test-key",
+        "gemini_api_key": "google-test-key",
     } | overrides
     return Settings(_env_file=None, **values)
 
@@ -311,7 +333,11 @@ def test_deepseek_flash_pricing_and_capabilities() -> None:
 
 @pytest.mark.parametrize("legacy", ["deepseek-v4-flash", "deepseek-v4-pro"])
 def test_legacy_deepseek_names_are_not_registered(legacy: str) -> None:
-    """옛 이름은 alias라 호출은 되지만 응답 모델명이 달라지므로 등록부에서 뺐다(KNK-1195)."""
+    """옛 이름은 alias라 호출은 되지만 응답 모델명이 달라지므로 등록부에서 뺐다(KNK-1195).
+
+    `deepseek-v4-pro`는 2026-09-14부터 V4.1-Flash로 라우팅된다(9/10 공지). V4.1-Pro가 나오기 전에
+    다시 등록하면 Flash를 Pro로 착각해 비교하고 비용도 Pro 단가로 잘못 잡는다.
+    """
     with pytest.raises(LlmConfigError):
         registry.resolve(legacy)
 
@@ -381,8 +407,8 @@ def test_gpt_5_6_luna_pricing_reflects_july_30_price_cut() -> None:
 
 
 def test_gpt_6_luna_passes_chat_model_startup_checks(monkeypatch) -> None:
-    """CHAT_MODEL로 골라도 금지 공급자·스트리밍 검사를 통과한다(KNK-1411)."""
-    monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
+    """기본 본문 라우팅 모델이 금지 공급자·스트리밍 검사를 통과한다."""
+    monkeypatch.setattr(registry, "settings", _settings())
 
     llm.validate_startup()  # 예외 없이 통과
 
@@ -441,6 +467,104 @@ def test_credentials_for_openai(monkeypatch) -> None:
     assert (creds.api_key_env, creds.base_url_env) == ("OPENAI_API_KEY", "OPENAI_API_URL")
 
 
+@pytest.mark.parametrize(
+    ("provider", "env_prefix", "default_url"),
+    [
+        (PROVIDER_ALIBABA, "ALIBABA", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+        (PROVIDER_ZAI, "ZAI", "https://api.z.ai/api/paas/v4"),
+        (PROVIDER_MOONSHOT, "MOONSHOT", "https://api.moonshot.ai/v1"),
+        (PROVIDER_OPENROUTER, "OPENROUTER", "https://openrouter.ai/api/v1"),
+    ],
+)
+def test_credentials_for_open_model_providers(
+    monkeypatch, provider: str, env_prefix: str, default_url: str
+) -> None:
+    """오픈소스 계열 공급자는 주소 기본값이 그 회사 주소다(KNK-1628).
+
+    OpenAI SDK로 부르므로 주소가 None이면 SDK 기본값인 OpenAI 주소로 그 회사 키가 나간다.
+    """
+    monkeypatch.setattr(registry, "settings", _settings(**{f"{env_prefix}_API_KEY": "k"}))
+
+    creds = registry.credentials(provider)
+
+    assert creds.api_key == "k"
+    assert creds.base_url == default_url
+    assert (creds.api_key_env, creds.base_url_env) == (f"{env_prefix}_API_KEY", f"{env_prefix}_API_URL")
+
+
+@pytest.mark.parametrize("env_prefix", ["ALIBABA", "ZAI", "MOONSHOT", "OPENROUTER"])
+def test_open_model_key_falls_back_to_dev_slot(monkeypatch, env_prefix: str) -> None:
+    """원래 이름이 없으면 .env의 개발용 칸(*_DEV)을 읽고, 둘 다 있으면 원래 이름이 이긴다."""
+    monkeypatch.setenv(f"{env_prefix}_API_KEY_DEV", "dev-key")
+    assert getattr(_settings(), f"{env_prefix.lower()}_api_key") == "dev-key"
+
+    monkeypatch.setenv(f"{env_prefix}_API_KEY", "main-key")
+    assert getattr(_settings(), f"{env_prefix.lower()}_api_key") == "main-key"
+
+
+def test_chat_does_not_require_mid_conversation_system_support(monkeypatch) -> None:
+    """단일 본문은 중간 system 지원이 없어도 등록된 모델을 사용할 수 있다."""
+    unverified = ResolvedModel(
+        model="glm-unverified",
+        supported_reasoning_efforts=frozenset({"none"}),
+        provider=PROVIDER_ZAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=False,
+    )
+    monkeypatch.setitem(registry._REGISTRY, "glm-unverified", unverified)
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", ("glm-unverified", "none"))
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(ZAI_API_KEY="k"),
+    )
+
+    llm.validate_startup()
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-max", "qwen3.8-flash", "glm-5.2", "kimi-k3"])
+def test_open_models_pass_startup_for_chat_body(monkeypatch, model: str) -> None:
+    """단일 프롬프트는 공급자에 따른 레이어 제한 없이 기동한다."""
+    keys = {"OPENROUTER_API_KEY": "k", "ZAI_API_KEY": "k", "MOONSHOT_API_KEY": "k"}
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", (model, registry.resolve(model).reasoning_effort))
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(
+            **keys
+        ),
+    )
+
+    llm.validate_startup()  # 예외 없이 통과
+
+
+def test_open_model_prices_and_limits() -> None:
+    """공식 문서(2026-10-12 확인)의 단가·한도를 고정한다(KNK-1628)."""
+    expected = {
+        "glm-5.2": ("1.4", "0.26", "4.4", 1_000_000, 131_072),
+        "kimi-k3": ("3.00", "0.30", "15.00", 1_048_576, 1_048_576),
+    }
+    for model, (inp, cached, out, context, max_out) in expected.items():
+        resolved = registry.resolve(model)
+        price = resolved.pricing_on(date(2026, 10, 12))
+        assert (
+            price.input_usd_per_1m_tokens,
+            price.cache_read_input_usd_per_1m_tokens,
+            price.output_usd_per_1m_tokens,
+        ) == (Decimal(inp), Decimal(cached), Decimal(out)), model
+        assert (resolved.context_window_tokens, resolved.max_output_tokens) == (context, max_out)
+        assert resolved.capabilities_verified_on == date(2026, 10, 12)
+
+
+def test_kimi_cannot_turn_thinking_off_in_registry() -> None:
+    """Kimi K3는 추론을 끌 수 없어 등록부도 켜진 상태이고, 강도 목록에 none이 없다."""
+    kimi = registry.resolve("kimi-k3")
+
+    assert kimi.use_thinking is True
+    assert "none" not in kimi.supported_reasoning_efforts
+    assert kimi.supports_temperature is False
+
+
 def test_credentials_unknown_provider_rejected() -> None:
     """접속 규칙이 없는 공급자는 조용히 넘어가지 않는다."""
     with pytest.raises(LlmConfigError):
@@ -487,6 +611,8 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
 
 def test_missing_moderation_key_does_not_block_other_features(monkeypatch) -> None:
     """검수에만 필요한 키는 기동을 막지 않지만 스토리에 쓰는 키는 필요하다."""
+    # 검수에만 키가 필요한 조건을 만들기 위해 검사 대상에서 본문 라우팅을 제외한다.
+    monkeypatch.setattr(registry, "ROUTING_TARGETS", {})
     monkeypatch.setattr(
         registry,
         "settings",
@@ -528,7 +654,9 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
     assert registry.selected_models() == (
         ("STORYLINES_MODEL", "deepseek-flash"),
         ("STORY_COMPILE_MODEL", "gpt-5.6-terra"),
-        ("CHAT_MODEL", "deepseek-flash"),
+        ("CHAT_LITE", "gpt-6-luna"),
+        ("CHAT_AURORA_EVEN", "gpt-6.1-sol"),
+        ("CHAT_AURORA_ODD", "gemini-3.8-flash"),
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
         ("MODERATION_MODEL", "gpt-6-luna"),
         ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
@@ -536,19 +664,12 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
     )
 
 
-def test_chat_model_change_leaves_choice_model(monkeypatch) -> None:
-    """CHAT_MODEL만 바꾸면 선택지는 기본 모델에 남는다(KNK-1416).
-
-    분리 전에는 선택지도 CHAT_MODEL을 같이 써서, 본문 모델을 바꾸면 별도 API인 선택지까지
-    딸려갔다. 운영에 새 env가 없어도 이 성질이 지켜져야 한다. 판정은 본문과 같은 모델이다.
-    """
-    monkeypatch.setattr(registry, "settings", _settings(chat_model="gpt-6-luna"))
-
+def test_chat_routes_leave_choice_model_independent(monkeypatch) -> None:
+    monkeypatch.setattr(registry, "settings", _settings(chat_choice_model="gpt-5.6-luna"))
     selected = dict(registry.selected_models())
-
-    assert selected["CHAT_MODEL"] == "gpt-6-luna"
-    assert selected["CHAT_CHOICE_MODEL"] == "deepseek-flash"
-    llm.validate_startup()  # 예외 없이 통과
+    assert selected["CHAT_LITE"] == "gpt-6-luna"
+    assert selected["CHAT_CHOICE_MODEL"] == "gpt-5.6-luna"
+    llm.validate_startup()
 
 
 def test_choice_slot_blocks_anthropic(monkeypatch) -> None:
@@ -563,6 +684,23 @@ def test_choice_slot_blocks_anthropic(monkeypatch) -> None:
         registry.validate_selected_models()
 
     assert "CHAT_CHOICE_MODEL" in str(exc_info.value)
+
+
+def test_startup_ignores_removed_judgement_model(monkeypatch) -> None:
+    """판정 제거(KNK-1626) 회귀: 판정 자리는 기동 검사에서 빠진다.
+
+    전에는 판정 모델을 비우면 본문 모델을 물려받아, 본문을 Anthropic으로 두면 판정 자리 금지로
+    기동이 실패했다. 운영 env에 옛 CHAT_JUDGEMENT_MODEL이 남아 있어도 무시돼야 한다.
+    """
+    monkeypatch.setenv("CHAT_JUDGEMENT_MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(),
+    )
+
+    assert "CHAT_JUDGEMENT_MODEL" not in dict(registry.selected_models())
+    llm.validate_startup()  # 예외 없이 통과
 
 
 def test_validate_passes_with_default_models(monkeypatch) -> None:
@@ -635,7 +773,7 @@ def test_validate_names_the_env_for_provider_without_credentials(monkeypatch) ->
 
     **공급자 이름은 규칙이 생길 일이 없는 값을 쓴다.** 예전에는 여기에 "anthropic"을 썼는데,
     KNK-675에서 그 공급자의 규칙이 실제로 생기자 검사 지점이 조용히 "키가 비었다"로 옮겨갔다.
-    두 오류 메시지에 모두 CHAT_MODEL이 들어 있어 테스트는 계속 통과했고, 정작 이 테스트가
+    두 오류 메시지에 모두 STORYLINES_MODEL이 들어 있어 테스트는 계속 통과했고, 정작 이 테스트가
     지키려던 경로는 아무도 밟지 않게 됐다.
 
     같은 일이 또 생기지 않도록 **어느 단계에서 막혔는지도 함께 단언한다** — env 이름만 보면
@@ -649,14 +787,14 @@ def test_validate_names_the_env_for_provider_without_credentials(monkeypatch) ->
     )
     monkeypatch.setitem(registry._REGISTRY, "model-of-an-unsupported-provider", future)
     monkeypatch.setattr(
-        registry, "settings", _settings(chat_model="model-of-an-unsupported-provider")
+        registry, "settings", _settings(storylines_model="model-of-an-unsupported-provider")
     )
 
     with pytest.raises(LlmConfigError) as exc_info:
         registry.validate_selected_models()
 
     message = str(exc_info.value)
-    assert "CHAT_MODEL" in message
+    assert "STORYLINES_MODEL" in message
     assert "접속 정보 규칙이 없습니다" in message
 
 
@@ -713,3 +851,149 @@ def test_provider_of_rejects_unregistered_model() -> None:
     """등록 안 된 모델은 어느 공급자인지 알 수 없다 — 지어내지 않고 설정 오류로 막는다."""
     with pytest.raises(LlmConfigError):
         llm.provider_of("있지도-않은-모델")
+
+
+# ── 채팅 grid search 후보(2026-10-16) ──────────────────────────────────────────
+@pytest.mark.parametrize(
+    ("name", "provider", "sent_model", "use_thinking", "default_effort", "efforts"),
+    [
+        # Qwen은 OpenRouter 이름으로 보낸다. 평문 qwen/qwen3.8-max는 OpenRouter 카탈로그에 없다.
+        ("qwen3.8-max", PROVIDER_OPENROUTER, "qwen/qwen3.8-max-0902", True, "low", {"low", "medium", "high", "xhigh"}),
+        ("qwen3.8-flash", PROVIDER_OPENROUTER, "qwen/qwen3.8-flash", False, None, {"none", "low", "medium", "high", "xhigh"}),
+        ("claude-haiku-5-5", PROVIDER_ANTHROPIC, "claude-haiku-5-5", False, None, {"none", "low", "medium", "high", "xhigh", "max"}),
+        ("claude-sonnet-5-5", PROVIDER_ANTHROPIC, "claude-sonnet-5-5", True, "low", {"low", "medium", "high", "xhigh", "max"}),
+        ("claude-opus-5-5", PROVIDER_ANTHROPIC, "claude-opus-5-5", True, "low", {"low", "medium", "high", "xhigh", "max"}),
+        ("gpt-6.1-sol", PROVIDER_OPENAI, "gpt-6.1-sol", True, "low", {"low", "medium", "high", "xhigh", "max"}),
+        ("gemini-3.8-flash", PROVIDER_GOOGLE, "gemini-3.8-flash", True, "low", {"low", "medium", "high"}),
+        ("deepseek-flash", PROVIDER_DEEPSEEK, "deepseek-flash", False, None, {"none", "low", "high", "max"}),
+    ],
+)
+def test_grid_search_models(name, provider, sent_model, use_thinking, default_effort, efforts) -> None:
+    """공식 문서(2026-10-16)로 확인한 공급자·전송 이름·추론 설정을 고정한다.
+
+    기본 강도는 none~high 중 그 모델이 받는 가장 낮은 값이다. 강도 목록에는 회사가 실제로 다르게
+    처리하는 값만 있다 — 별칭(예: DeepSeek의 medium → high)을 넣으면 같은 설정을 두 번 돌린다.
+    """
+    resolved = registry.resolve(name)
+
+    assert (resolved.provider, resolved.model) == (provider, sent_model)
+    assert (resolved.use_thinking, resolved.reasoning_effort) == (use_thinking, default_effort)
+    assert resolved.supported_reasoning_efforts == frozenset(efforts)
+
+
+def test_grid_search_model_prices() -> None:
+    """공식 가격표(2026-10-16 확인)의 1M 토큰당 단가를 고정한다."""
+    expected = {
+        "qwen3.8-max": ("2", "0.25", "6"),
+        "qwen3.8-flash": ("0.15", "0.016", "0.47"),
+        "claude-haiku-5-5": ("0.10", "0.01", "0.50"),
+        "claude-sonnet-5-5": ("2", "0.10", "10"),
+        "claude-opus-5-5": ("4", "0.20", "20"),
+        "gpt-6.1-sol": ("2.00", "0.10", "10.00"),
+        "gemini-3.8-flash": ("0.75", "0.075", "3.75"),
+    }
+    for model, (inp, cached, out) in expected.items():
+        price = registry.resolve(model).pricing_on(date(2026, 10, 16))
+        assert (
+            price.input_usd_per_1m_tokens,
+            price.cache_read_input_usd_per_1m_tokens,
+            price.output_usd_per_1m_tokens,
+        ) == (Decimal(inp), Decimal(cached), Decimal(out)), model
+    assert registry.resolve("gemini-3.8-flash").pricing_on(date(2027, 1, 1)).input_usd_per_1m_tokens == Decimal("1.50")
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [("claude-opus-5-5", "none"), ("claude-sonnet-5-5", "none"), ("kimi-k3", "medium"), ("gemini-3.8-flash", "none")],
+)
+def test_chat_reasoning_effort_rejected_at_startup(monkeypatch, model: str, effort: str) -> None:
+    """채팅 모델이 받지 않는 강도는 첫 채팅이 아니라 서버 기동에서 막는다."""
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", (model, effort))
+    keys = {"ANTHROPIC_API_KEY": "k", "MOONSHOT_API_KEY": "k", "GEMINI_API_KEY": "k"}
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(
+            **keys,
+        ),
+    )
+
+    with pytest.raises(LlmConfigError) as exc_info:
+        registry.validate_selected_models()
+
+    assert "CHAT_LITE" in str(exc_info.value)
+    assert "추론 강도" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [("claude-haiku-5-5", "none"), ("claude-sonnet-5-5", "high"), ("qwen3.8-flash", "medium"), ("gpt-6.1-sol", "low")],
+)
+def test_chat_reasoning_effort_accepted_at_startup(monkeypatch, model: str, effort: str) -> None:
+    monkeypatch.setitem(registry.ROUTING_TARGETS, "CHAT_LITE", (model, effort))
+    keys = {"ANTHROPIC_API_KEY": "k", "OPENROUTER_API_KEY": "k"}
+    monkeypatch.setattr(
+        registry,
+        "settings",
+        _settings(
+            **keys,
+        ),
+    )
+
+    llm.validate_startup()  # 예외 없이 통과
+
+
+@pytest.mark.parametrize("slot,model,provider,effort", [
+    ("CHAT_LITE", "gpt-6-luna", PROVIDER_OPENAI, "low"),
+    ("CHAT_AURORA_EVEN", "gpt-6.1-sol", PROVIDER_OPENAI, "low"),
+    ("CHAT_AURORA_ODD", "gemini-3.8-flash", PROVIDER_GOOGLE, "medium"),
+])
+def test_chat_routes_pass_startup(monkeypatch, slot, model, provider, effort) -> None:
+    monkeypatch.setattr(registry, "settings", _settings())
+    assert registry.ROUTING_TARGETS[slot] == (model, effort)
+    llm.validate_startup()
+    assert registry.resolve(model).provider == provider
+
+
+@pytest.mark.parametrize("slot", list(registry.ROUTING_TARGETS))
+@pytest.mark.parametrize("problem", ["unregistered", "effort", "streaming", "adapter", "evaluation"])
+def test_each_chat_route_rejects_invalid_configuration(monkeypatch, slot, problem) -> None:
+    from dataclasses import replace
+    from src.services.llm import google_sdk, openai_sdk
+
+    monkeypatch.setattr(registry, "settings", _settings())
+    model, effort = registry.ROUTING_TARGETS[slot]
+    if problem == "unregistered":
+        monkeypatch.delitem(registry._REGISTRY, model)
+    elif problem == "effort":
+        monkeypatch.setitem(registry.ROUTING_TARGETS, slot, (model, "unsupported"))
+    elif problem == "streaming":
+        adapter = google_sdk if registry.resolve(model).provider == PROVIDER_GOOGLE else openai_sdk
+        monkeypatch.setattr(adapter, "SUPPORTS_STREAMING", False)
+        # 다른 라우팅 자리의 검사에서 먼저 막히지 않도록 이 자리만 스트리밍 대상으로 둔다.
+        monkeypatch.setattr(registry, "STREAMING_SLOTS", frozenset({slot}))
+    elif problem == "adapter":
+        monkeypatch.setitem(registry._REGISTRY, model, replace(registry.resolve(model), adapter="missing-adapter"))
+    else:
+        monkeypatch.setitem(registry.ROUTING_TARGETS, slot, ("jev-1.13.0", effort))
+    with pytest.raises(LlmConfigError, match=slot):
+        llm.validate_startup()
+
+
+@pytest.mark.parametrize("field,env", [("openai_api_key", "OPENAI_API_KEY"), ("gemini_api_key", "GEMINI_API_KEY")])
+@pytest.mark.parametrize("value", ["", "   ", " key", "key\nvalue", "key value", "키"])
+def test_chat_route_keys_are_required_and_validated(monkeypatch, field, env, value) -> None:
+    # 컴파일을 다른 공급자로 돌려도 채팅 자체가 키를 요구해야 한다.
+    monkeypatch.setattr(registry, "settings", _settings(story_compile_model="deepseek-flash", **{field: value}))
+    with pytest.raises(LlmConfigError) as exc_info:
+        llm.validate_startup()
+    assert env in str(exc_info.value)
+    assert "CHAT_" in str(exc_info.value)
+
+
+def test_removed_chat_settings_are_ignored_at_startup(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_MODEL", "unregistered-old-model")
+    monkeypatch.setenv("CHAT_REASONING_EFFORT", "unsupported")
+    monkeypatch.setattr(registry, "settings", _settings())
+    llm.validate_startup()
+    assert "CHAT_MODEL" not in dict(registry.selected_models())

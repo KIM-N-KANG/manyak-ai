@@ -14,14 +14,14 @@
 
 from pydantic import BaseModel, Field
 
-from src.schemas.chat_turn import ChatTurnRequest
+from src.schemas.chat_turn import ChatCommonRequest
 from src.schemas.response_meta import StoryResponseMeta
 
 
-class ChatChoicesRequest(ChatTurnRequest):
-    """선택지 생성 입력 — 턴 요청 재료 전체 + 방금 생성된 본문.
+class ChatChoicesRequest(ChatCommonRequest):
+    """선택지 생성 입력 — 공통 요청 재료 + 방금 생성된 본문.
 
-    ChatTurnRequest를 상속해 백엔드가 턴 요청과 같은 조립 로직을 재사용하게 한다.
+    ChatCommonRequest를 상속해 백엔드가 턴 요청과 같은 조립 로직을 재사용하게 한다.
     ⚠️ history는 **메인 턴 요청과 동일한 스냅샷(이번 턴 제외)**이어야 한다 — 선택지
     호출 시점에는 이번 턴이 이미 DB에 저장돼 있으므로, 그대로 재조립하면 방금 장면이
     history와 ai_output에 중복 삽입된다(제외는 백엔드 책임 — spec/4-backend-server-spec.md 재생성 조립과

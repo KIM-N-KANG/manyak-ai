@@ -8,13 +8,13 @@
 **계측을 왜 여기서만 켜나 (핵심 설계).** `langfuse.openai`는 import되는 순간 `openai` 모듈의
 `AsyncCompletions.create`를 프로세스 전역으로 monkey-patch한다 — 서브클래스가 아니라 원본
 클래스 메서드를 바꾼다. 그래서 서비스 모듈이 `from langfuse.openai import ...`로 바꾸면 그
-파일을 import하는 **모든** 경로(운영 서버뿐 아니라 experiment 러너·scripts 로컬 도구)가 계측을
-물려받는다. 그건 원치 않는다 — experiment는 자체 기록 체계가 있어 이중 기록이 되고, 러너는
+파일을 import하는 **모든** 경로(운영 서버뿐 아니라 evaluation 평가 코드·scripts 로컬 도구)가 계측을
+물려받는다. 그건 원치 않는다 — evaluation은 자체 기록 체계가 있어 이중 기록이 되고, 평가 코드는
 init_langfuse를 부르지 않으므로 키 처리도 안 된다.
 
 그래서 서비스 모듈은 순정 `openai`를 쓰고, 계측 import는 **여기 init_langfuse 안에서만** 한다.
 init_langfuse는 앱 기동 경로(main.py)에서만 불리므로, 서버를 띄우지 않고 함수를 직접 부르는
-experiment·scripts에는 계측이 아예 실리지 않는다. 뒤늦은 import여도 이미 만들어진 클라이언트에
+evaluation·scripts에는 계측이 아예 실리지 않는다. 뒤늦은 import여도 이미 만들어진 클라이언트에
 패치가 걸린다(monkey-patch가 인스턴스가 아니라 클래스 메서드를 바꾸기 때문).
 
 **원문 취급은 Sentry와 정반대.** Sentry는 원문을 싣지 않지만(AN-4-10), Langfuse는 원문을 싣는
@@ -43,6 +43,7 @@ import logging
 import sys
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timezone
 
 from src.core.config import settings
 from src.core.request_context import get_correlation_ids
@@ -72,7 +73,7 @@ def init_langfuse() -> None:
     """앱 시작 시 Langfuse를 초기화하고 openai 계측을 건다. 키가 비거나 JP·prod 조건 미충족이면 no-op.
 
     계측 import(`langfuse.openai`)를 이 함수 안에서만 하는 이유는 모듈 docstring 참조 —
-    서버 기동 경로에서만 계측이 실리고 experiment·scripts에는 실리지 않게 하기 위함이다.
+    서버 기동 경로에서만 계측이 실리고 evaluation·scripts에는 실리지 않게 하기 위함이다.
     """
     if not settings.langfuse_public_key or not settings.langfuse_secret_key:
         logger.info("LANGFUSE_PUBLIC_KEY/SECRET_KEY 미설정 — Langfuse 비활성(no-op)")
@@ -470,6 +471,100 @@ def observe_generation(
         if exc is not None:
             generation._mark_failed(exc)
         _close_observation(stack, "생성 관측")
+
+
+class _StreamGeneration:
+    """start_stream_generation이 돌려주는 핸들. 스트림이 끝나는 방식마다 관측을 닫는다(KNK-1627).
+
+    observe_generation과 달리 컨텍스트 블록이 아니다. 스트리밍 어댑터는 async generator라 블록이
+    yield를 넘나들면, 사용자가 중간에 끊을 때 들어오는 GeneratorExit가 오류로 기록되고 멈춘 사이
+    만든 다른 관측의 부모가 틀어진다. 그래서 관측을 현재 컨텍스트에 올리지 않고 만든 뒤, 어댑터가
+    끝난 방식(정상·오류·취소)에 맞춰 직접 닫는다.
+
+    닫기는 한 번만 일어난다 — 두 번째 호출은 무시한다. 비활성이면 span이 None이라 아무 일도 하지
+    않고, 기록 실패는 경고 로그로만 남긴다(_Generation과 같은 원칙).
+    """
+
+    def __init__(self, span: object | None = None) -> None:
+        self._span = span
+        self._ended = False
+        self._completion_start_time: datetime | None = None
+
+    def mark_first_chunk(self) -> None:
+        """첫 공급자 조각 수신 시각. OpenAI 자동 계측처럼 빈 텍스트 조각도 포함한다."""
+        if self._span is None or self._ended or self._completion_start_time is not None:
+            return
+        self._completion_start_time = datetime.now(timezone.utc)
+
+    def finish(
+        self, *, output: object | None = None, usage_details: dict[str, int] | None = None
+    ) -> None:
+        """정상 종료. 출력과 토큰 사용량을 싣고 닫는다."""
+        self._end(output=output, usage_details=usage_details)
+
+    def fail(
+        self, exc: BaseException, *, usage_details: dict[str, int] | None = None
+    ) -> None:
+        """오류 종료. 예외 원문은 싣지 않고 타입 이름만 남긴다(공급자 메시지에 입력이 섞일 수 있다)."""
+        self._end(level="ERROR", status_message=type(exc).__name__, usage_details=usage_details)
+
+    def cancel(
+        self, *, output: object | None = None, usage_details: dict[str, int] | None = None
+    ) -> None:
+        """사용자 취소(연결 끊김). 오류가 아니므로 WARNING으로 표시하고, 그때까지의 출력·토큰을 싣는다."""
+        self._end(
+            level="WARNING", status_message="cancelled", output=output, usage_details=usage_details
+        )
+
+    def _end(self, **fields: object) -> None:
+        if self._span is None or self._ended:
+            return
+        self._ended = True
+        values = {k: v for k, v in fields.items() if v is not None}
+        if self._completion_start_time is not None:
+            values["completion_start_time"] = self._completion_start_time
+        try:
+            if values:
+                self._span.update(**values)
+        except Exception as e:  # noqa: BLE001 — 관측 기록 실패가 서비스 응답을 깨면 안 된다
+            logger.warning("Langfuse 스트림 관측 기록 실패(%s) — 응답에는 영향 없음", type(e).__name__)
+        try:
+            self._span.end()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Langfuse 스트림 관측 종료 실패(%s) — 응답에는 영향 없음", type(e).__name__)
+
+
+def start_stream_generation(
+    name: str,
+    *,
+    model: str,
+    model_parameters: dict[str, str | int | float | bool | None] | None = None,
+    input_data: object | None = None,
+) -> _StreamGeneration:
+    """스트리밍 LLM 호출 하나를 generation 관측으로 연다(KNK-1627). 닫는 것은 핸들 몫이다.
+
+    관측은 지금 컨텍스트의 트레이스(예: "채팅 턴") 아래에 붙지만 현재 관측으로 올리지는 않는다 —
+    `_StreamGeneration` 참조. 비활성이거나 SDK 시작이 실패하면 아무것도 하지 않는 핸들을 준다.
+    """
+    if not _state.enabled:
+        return _StreamGeneration()
+    try:
+        from langfuse import get_client
+
+        observation_kwargs: dict[str, object] = {
+            "name": name,
+            "as_type": "generation",
+            "model": model,
+        }
+        if model_parameters is not None:
+            observation_kwargs["model_parameters"] = model_parameters
+        if input_data is not None:
+            observation_kwargs["input"] = input_data
+        span = get_client().start_observation(**observation_kwargs)
+    except Exception as e:  # noqa: BLE001 — 관측 시작 실패가 본작업을 막으면 안 된다
+        logger.warning("Langfuse 스트림 관측 시작 실패(%s) — 관측 없이 본작업 진행", type(e).__name__)
+        return _StreamGeneration()
+    return _StreamGeneration(span)
 
 
 def shutdown_langfuse() -> None:
