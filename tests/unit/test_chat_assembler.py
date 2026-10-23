@@ -203,7 +203,7 @@ def test_fills_every_slot() -> None:
 
 
 def test_system_is_stable_across_turns() -> None:
-    """매 턴 바뀌는 값은 [USER]에만 있어, 같은 채팅이면 지시문(system)이 그대로다(프롬프트 캐시 전제)."""
+    """설정과 분량 선택이 같으면 요약·사용자 입력이 바뀌어도 시스템 메시지는 유지된다."""
     first = assemble(_request(summary="", user_input="*문을 연다*"))
     later = assemble(_request(summary="레이가 칼을 뽑았다.", user_input="물러서"))
 
@@ -264,7 +264,7 @@ def test_body_prompt_versions_returns_a_copy() -> None:
     versions = chat_assembler.body_prompt_versions()
     versions["EXTRA"] = 99
 
-    assert chat_assembler.body_prompt_versions() == {"CHAT": 2}
+    assert chat_assembler.body_prompt_versions() == {"CHAT": 3}
 
 
 def test_ending_candidates_and_summary_are_only_in_current_user_message() -> None:
@@ -299,7 +299,7 @@ def test_system_does_not_change_when_ending_candidates_change() -> None:
 
 
 def test_body_prompt_version_matches_contract() -> None:
-    assert chat_assembler.body_prompt_versions() == {"CHAT": 2}
+    assert chat_assembler.body_prompt_versions() == {"CHAT": 3}
 
 
 def test_empty_summary_is_rendered_in_current_user_message() -> None:

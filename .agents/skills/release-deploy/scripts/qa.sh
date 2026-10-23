@@ -5,6 +5,7 @@
 #   qa.sh --no-live    # 유닛만. 릴리스 게이트로는 부족하므로 종료코드 3을 낸다
 #
 # 라이브 구간은 실제 DeepSeek를 호출한다(릴리스 QA 1회당 통합 테스트 7건 규모).
+# 운영(main) 대비 모더레이션이 바뀐 릴리스는 검수 데이터셋 테스트도 켠다(이미지 장수만큼 추가 호출).
 # 이 호출은 사전 승인된 범위다 — 다시 묻지 않는다.
 #
 # 종료코드: 0 = 릴리스 진행 가능 / 1 = 테스트 실패 / 2 = 사용법 오류 / 3 = 라이브 미실시
@@ -18,7 +19,7 @@ RUN_LIVE=1
 for arg in "$@"; do
   case "$arg" in
     --no-live) RUN_LIVE=0 ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
     *) echo "FAIL: 모르는 인자 '$arg'. 쓸 수 있는 것: --no-live, --help" >&2; exit 2 ;;
   esac
 done
@@ -131,6 +132,21 @@ ensure_llm_keys() {
   return 0
 }
 
+# 검수 데이터셋 테스트는 운영(main) 대비 모더레이션이 바뀐 릴리스에서만 켠다(KNK-1770).
+# 비교 기준을 못 구하면 켠다 — 바뀌었는지 모르는 채 건너뛰면 검수 확인 없이 배포된다.
+MODERATION_PATHS="prompt/moderation src/services/moderation src/schemas/moderation.py src/api/v1/moderation tests/integration/test_moderation_dataset_live.py"
+moderation_changed() {
+  local base config_diff
+  git -C "$ROOT" fetch -q origin main 2>/dev/null || true
+  base=$(git -C "$ROOT" merge-base origin/main HEAD 2>/dev/null) || return 0
+  # 작업 트리와 비교해 커밋하지 않은 수정도 잡는다.
+  [ -n "$(git -C "$ROOT" diff --name-only "$base" -- $MODERATION_PATHS)" ] && return 0
+  # 검수 모델 설정은 config.py의 moderation_ 줄만 본다. 파이프로 grep -q에 바로 넘기면
+  # pipefail 아래서 git이 SIGPIPE로 죽어 일치해도 실패로 읽힐 수 있어 변수를 거친다.
+  config_diff=$(git -C "$ROOT" diff "$base" -- src/core/config.py)
+  grep -qE '^[-+][^-+].*moderation_' <<<"$config_diff"
+}
+
 FAILED=""
 
 # 유닛 단계도 .env의 키를 요구한다 — conftest가 `src.main`을 import하는데 Settings의
@@ -164,6 +180,13 @@ elif [ "$RUN_LIVE" = "0" ]; then
   echo "############ 2/2 라이브 — --no-live로 건너뜀 ############"
 else
   echo "############ 2/2 라이브 통합 테스트 (실제 LLM 호출 — 과금) ############"
+  if moderation_changed; then
+    echo ">>> 운영 대비 모더레이션 변경 있음 — 검수 데이터셋 테스트를 포함합니다"
+    export RUN_MODERATION_DATASET=1
+  else
+    echo ">>> 운영 대비 모더레이션 변경 없음 — 검수 데이터셋 테스트는 건너뜁니다"
+    unset RUN_MODERATION_DATASET
+  fi
   # 위 0/2에서 이미 확보했으면 여기선 grep 한 번으로 즉시 통과한다(재조회 없음).
   if ! ensure_llm_keys; then
     echo ">>> 라이브 건너뜀 — LLM 키($REQUIRED_KEYS)를 .env에도 Secrets에도 확보하지 못했습니다"
