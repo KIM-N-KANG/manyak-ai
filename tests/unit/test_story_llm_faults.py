@@ -334,7 +334,7 @@ async def test_generate_storylines_uses_flash_model(monkeypatch) -> None:
     )
 
     assert captured["model"] == story_llm.settings.storylines_model  # storylines = flash
-    assert captured["max_tokens"] == story_llm._STORYLINES_MAX_TOKENS == 6_144
+    assert captured["max_tokens"] == story_llm._STORYLINES_MAX_TOKENS == 12_288
     assert response.meta.model == story_llm.settings.storylines_model
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
