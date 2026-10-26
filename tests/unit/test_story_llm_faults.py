@@ -21,6 +21,7 @@ from openai import (
 )
 
 from src.core.sentry import (
+    ERROR_CONTENT_REFUSED,
     ERROR_INVALID_AI_RESPONSE,
     ERROR_PROVIDER_BAD_REQUEST,
     ERROR_PROVIDER_RATE_LIMITED,
@@ -411,6 +412,83 @@ async def test_provider_error_is_not_retried(monkeypatch, captures) -> None:
     assert calls["count"] == 1  # 재호출 없음
     assert captures[-1]["error_code"] == ERROR_PROVIDER_RATE_LIMITED
     assert ei.value.retry_count == 0  # 재호출이 없었으므로 0이 사실
+
+
+# ── 내용 거절 → 422 content_refused, 재호출 없음(KNK-1859) ─────────────────────
+_REFUSAL_TEXT = "요청하신 내용에는 노골적인 성적 행위가 포함되어 있어 안전 정책상 생성할 수 없습니다."
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        _REFUSAL_TEXT,  # Gemini가 JSON 대신 돌려준 평문 거절문(운영 PYTHON-FASTAPI-5 사례)
+        "```\n" + _REFUSAL_TEXT + "\n```",  # 코드펜스로 감싼 평문도 펜스를 벗긴 뒤 같은 판정
+    ],
+)
+async def test_plain_text_refusal_returns_422_without_retry(monkeypatch, captures, content) -> None:
+    """JSON으로 시작하지 않는 본문은 거절로 보고 재호출 예산이 있어도 즉시 422."""
+    create, calls = _returns_sequence([content, '{"meta": {"title": "t"}}'])
+    _install(monkeypatch, create)
+
+    with pytest.raises(HTTPException) as ei:
+        await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert ei.value.status_code == 422
+    assert isinstance(ei.value.detail, str)  # 스키마 위반 422(배열)와 타입으로 구별된다(7-1-5)
+    assert "안전 정책" in ei.value.detail
+    assert _REFUSAL_TEXT not in ei.value.detail  # 거절문 원문은 응답에 싣지 않는다
+    assert calls["count"] == 1  # 재호출 없음
+    assert captures[-1]["error_code"] == ERROR_CONTENT_REFUSED
+    assert ei.value.retry_count == 0
+
+
+@pytest.mark.parametrize("reason", ["safety", "content_filter", "refusal"])
+async def test_refusal_finish_reason_returns_422_before_parsing(monkeypatch, captures, reason) -> None:
+    """공급자 안전 필터 중단은 본문이 비어 있어도 invalid가 아니라 거절. 회사별 단어를 모두 잡는다."""
+    calls = {"count": 0}
+
+    async def _create(**kwargs):
+        calls["count"] += 1
+        resp = _Resp("", kwargs["model"])
+        resp.choices[0].finish_reason = reason
+        return resp
+
+    _install(monkeypatch, _create)
+
+    with pytest.raises(HTTPException) as ei:
+        await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert ei.value.status_code == 422
+    assert calls["count"] == 1  # 재호출 없음
+    assert captures[-1]["error_code"] == ERROR_CONTENT_REFUSED
+    assert captures[-1]["level"] == "warning"  # 정상 동작이라 오류 등급이 아니다(7-3)
+
+
+@pytest.mark.parametrize("content", ["   ", "```json\n```"])
+async def test_blank_after_unfencing_is_invalid_not_refusal(monkeypatch, captures, content) -> None:
+    """펜스만 있거나 공백뿐인 헛답은 거절이 아니라 종전대로 invalid 재호출 경로."""
+    create, calls = _returns_sequence([content, '{"meta": {"title": "t"}}'])
+    _install(monkeypatch, create)
+
+    parsed, usage = await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert parsed == {"meta": {"title": "t"}}
+    assert calls["count"] == 2  # 재호출로 복구
+    assert captures[0]["error_code"] == ERROR_INVALID_AI_RESPONSE
+
+
+@pytest.mark.parametrize("content", ['{"broken', '["a", "b"]'])
+async def test_json_looking_output_is_not_a_refusal(monkeypatch, captures, content) -> None:
+    """`{`·`[`로 시작했다가 깨지거나 비객체인 출력은 종전대로 invalid 재호출 경로(502)."""
+    create, calls = _returns_sequence([content, content, content])
+    _install(monkeypatch, create)
+
+    with pytest.raises(HTTPException) as ei:
+        await story_llm._complete_json("sys", "user", max_invalid_retries=2)
+
+    assert ei.value.status_code == 502
+    assert calls["count"] == 3
+    assert captures[-1]["error_code"] == ERROR_INVALID_AI_RESPONSE
 
 
 async def test_generate_storylines_retries_twice_on_invalid(monkeypatch, captures) -> None:
