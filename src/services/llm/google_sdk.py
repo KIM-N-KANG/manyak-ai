@@ -320,6 +320,11 @@ def _finish_reason_of(response: object) -> str | None:
             reason = candidates[0].finish_reason
             if reason is not None:
                 return reason.name.lower() if hasattr(reason, "name") else str(reason)
+        # 입력 자체가 안전 필터에 막히면 후보가 비고 prompt_feedback.block_reason에만 사유가 온다.
+        # 그대로 두면 빈 응답으로 보여 재호출이 나가므로 "safety"로 정규화한다(KNK-1859, Codex 리뷰).
+        block = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+        if block is not None and getattr(block, "name", str(block)).upper() not in ("", "BLOCKED_REASON_UNSPECIFIED"):
+            return "safety"
     except Exception:
         logger.warning("응답에서 종료 이유를 꺼내지 못했다 — None으로 넘긴다", exc_info=True)
     return None

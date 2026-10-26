@@ -912,3 +912,35 @@ async def test_real_google_sdk_closes_http_response(monkeypatch, ending: str) ->
             await response.aclose()
         await sdk_client.aio.aclose()
         sdk_client.close()
+
+
+# ── 거절 신호 정규화(KNK-1859) ─────────────────────────────────────────────────
+def test_prompt_block_is_normalized_to_safety_finish_reason() -> None:
+    """입력 자체가 안전 필터에 막히면 후보가 비고 prompt_feedback.block_reason만 온다.
+    그대로 두면 빈 응답으로 보여 재호출이 나가므로 safety로 넘긴다."""
+    resp = SimpleNamespace(
+        text="",
+        candidates=[],
+        prompt_feedback=SimpleNamespace(block_reason=SimpleNamespace(name="SAFETY")),
+    )
+
+    assert google_sdk._finish_reason_of(resp) == "safety"
+
+
+def test_unspecified_block_reason_is_not_a_refusal() -> None:
+    """block_reason이 '미지정'이면 차단이 아니다 — None 유지."""
+    resp = SimpleNamespace(
+        text="",
+        candidates=[],
+        prompt_feedback=SimpleNamespace(block_reason=SimpleNamespace(name="BLOCKED_REASON_UNSPECIFIED")),
+    )
+
+    assert google_sdk._finish_reason_of(resp) is None
+
+
+def test_candidate_finish_reason_wins_over_prompt_feedback() -> None:
+    """후보가 있으면 후보의 종료 이유를 쓴다(정상 응답에 prompt_feedback이 함께 와도 stop)."""
+    resp = _fake_response(finish_reason_name="STOP")
+    resp.prompt_feedback = SimpleNamespace(block_reason=None)
+
+    assert google_sdk._finish_reason_of(resp) == "stop"
