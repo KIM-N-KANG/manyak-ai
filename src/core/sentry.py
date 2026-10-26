@@ -69,6 +69,8 @@ ERROR_PROVIDER_RATE_LIMITED = "provider_rate_limited"
 ERROR_PROVIDER_BAD_REQUEST = "provider_bad_request"
 ERROR_PROVIDER_UNAVAILABLE = "provider_unavailable"
 ERROR_INVALID_AI_RESPONSE = "invalid_ai_response"
+# 모델이 내용을 이유로 생성을 거절(KNK-1859). 공급자 안전 필터 중단 또는 JSON이 아닌 평문 거절문.
+ERROR_CONTENT_REFUSED = "content_refused"
 ERROR_SCHEMA_VALIDATION_FAILED = "schema_validation_failed"
 ERROR_UNEXPECTED = "unexpected_error"
 
