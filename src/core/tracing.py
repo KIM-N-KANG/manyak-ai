@@ -16,10 +16,12 @@ from contextvars import ContextVar
 from threading import Event, Thread
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from opentelemetry.context import Context
+    from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SpanExporter
     from opentelemetry.trace import Span
@@ -35,6 +37,7 @@ _request_parent: ContextVar[Context | None] = ContextVar("infra_request_parent",
 
 class _TracingState:
     provider: TracerProvider | None = None
+    meter_provider: MeterProvider | None = None
 
 
 _state = _TracingState()
@@ -156,35 +159,112 @@ class _RequestParentMiddleware:
             _request_parent.reset(token)
 
 
-def instrument_app(app: FastAPI) -> None:
-    """기동 실패를 격리한다. off/잘못된 URL이면 OTel을 불러오지도 않는다."""
-    from src.core.config import settings
-
-    if not settings.manyak_tracing_enabled:
-        return
-    endpoint = settings.manyak_otlp_traces_endpoint
+def _valid_endpoint(endpoint: str) -> bool:
     try:
         url = urlsplit(endpoint)
-        valid = url.scheme in {"http", "https"} and bool(url.hostname) and url.port != 0
-        valid = valid and not url.username and not url.password and not url.fragment
+        return (
+            url.scheme in {"http", "https"} and bool(url.hostname) and url.port != 0
+            and url.username is None and url.password is None and not url.query and not url.fragment
+        )
     except ValueError:
-        valid = False
-    if not valid:
-        # 설정 값은 자격증명/쿼리일 수도 있어 로그에 싣지 않는다.
-        logger.error("인프라 추적 비활성: MANYAK_OTLP_TRACES_ENDPOINT에 전체 HTTP(S) URL이 필요합니다")
+        return False
+
+
+def _create_meter_provider(endpoint: str) -> MeterProvider:
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+        OTLPMetricExporter,
+    )
+    from opentelemetry.sdk.metrics import (
+        AlwaysOffExemplarFilter,
+        Counter,
+        Histogram,
+        MeterProvider,
+        ObservableCounter,
+        ObservableGauge,
+        ObservableUpDownCounter,
+        UpDownCounter,
+    )
+    from opentelemetry.sdk.metrics.export import (
+        AggregationTemporality,
+        PeriodicExportingMetricReader,
+    )
+    from opentelemetry.sdk.metrics.view import DropAggregation, View
+    from opentelemetry.sdk.resources import Resource
+
+    exporter = OTLPMetricExporter(
+        endpoint=endpoint, timeout=2,
+        preferred_temporality={
+            instrument: AggregationTemporality.CUMULATIVE
+            for instrument in (Counter, Histogram, UpDownCounter, ObservableCounter,
+                               ObservableGauge, ObservableUpDownCounter)
+        },
+    )
+    reader = None
+    try:
+        reader = PeriodicExportingMetricReader(exporter, export_interval_millis=60000)
+        return MeterProvider(
+            resource=Resource({"service.name": "manyak-ai", "service.instance.id": str(uuid4())}),
+            metric_readers=[reader], shutdown_on_exit=False,
+            # exemplar에는 View가 버린 Host 같은 속성이 남으므로 항상 끈다.
+            exemplar_filter=AlwaysOffExemplarFilter(),
+            views=[
+                View(
+                    instrument_name="http.server.duration",
+                    attribute_keys={"http.method", "http.status_code", "http.target"},
+                ),
+                View(instrument_name="http.server.active_requests", attribute_keys={"http.method"}),
+                *[View(instrument_name=name, aggregation=DropAggregation()) for name in (
+                    "http.server.request.size", "http.server.response.size",
+                )],
+            ],
+        )
+    except Exception:  # reader 생성 이후 실패해도 전송 스레드와 exporter를 회수한다.
+        Thread(target=reader.shutdown if reader is not None else exporter.shutdown, daemon=True).start()
+        raise
+
+
+def instrument_app(app: FastAPI) -> None:
+    """추적과 지표를 독립적으로 초기화한다. 둘 다 꺼지면 OTel import도 하지 않는다."""
+    from src.core.config import settings
+
+    if not settings.manyak_tracing_enabled and not settings.manyak_otlp_metrics_enabled:
         return
-    if _state.provider is not None:
+    if _state.provider is not None or _state.meter_provider is not None:
         return
     provider = None
+    meter_provider = None
+    if settings.manyak_tracing_enabled:
+        if not _valid_endpoint(settings.manyak_otlp_traces_endpoint):
+            logger.error("인프라 추적 비활성: MANYAK_OTLP_TRACES_ENDPOINT에 전체 HTTP(S) URL이 필요합니다")
+        else:
+            try:
+                from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                    OTLPSpanExporter,
+                )
+
+                provider = _create_provider(OTLPSpanExporter(
+                    endpoint=settings.manyak_otlp_traces_endpoint, timeout=2,
+                ))
+            except Exception as exc:  # noqa: BLE001 — 추적 실패가 지표와 기동을 막지 않는다.
+                logger.error("인프라 추적 초기화 실패(%s): 비활성으로 기동", type(exc).__name__)
+    if settings.manyak_otlp_metrics_enabled:
+        if not _valid_endpoint(settings.manyak_otlp_metrics_endpoint):
+            logger.error("인프라 지표 비활성: MANYAK_OTLP_METRICS_ENDPOINT에 전체 HTTP(S) URL이 필요합니다")
+        else:
+            try:
+                meter_provider = _create_meter_provider(settings.manyak_otlp_metrics_endpoint)
+            except Exception as exc:  # noqa: BLE001 — 지표 실패가 추적과 기동을 막지 않는다.
+                logger.error("인프라 지표 초기화 실패(%s): 비활성으로 기동", type(exc).__name__)
+    if provider is None and meter_provider is None:
+        return
     try:
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         from opentelemetry.metrics import NoOpMeterProvider
         from opentelemetry.propagate import set_global_textmap
-        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-
-        provider = _create_provider(OTLPSpanExporter(endpoint=endpoint, timeout=2))
-        set_global_textmap(TraceContextTextMapPropagator())
+        from opentelemetry.trace import NoOpTracerProvider
+        from opentelemetry.trace.propagation.tracecontext import (
+            TraceContextTextMapPropagator,
+        )
 
         def save_request_span(span: Span, scope: Scope) -> None:
             scope["manyak.infra_span"] = span
@@ -192,17 +272,22 @@ def instrument_app(app: FastAPI) -> None:
             if template is not None:
                 span.set_attribute("manyak.route_template", template)
 
-        app.add_middleware(_RequestParentMiddleware)
+        if provider is not None:
+            set_global_textmap(TraceContextTextMapPropagator())
+            app.add_middleware(_RequestParentMiddleware)
         FastAPIInstrumentor.instrument_app(
-            app, tracer_provider=provider, meter_provider=NoOpMeterProvider(),
+            app, tracer_provider=provider if provider is not None else NoOpTracerProvider(),
+            meter_provider=meter_provider if meter_provider is not None else NoOpMeterProvider(),
             excluded_urls="health", exclude_spans=["receive", "send"],
-            server_request_hook=save_request_span,
+            server_request_hook=save_request_span if provider is not None else None,
         )
         _state.provider = provider
-    except Exception as exc:  # 관측 초기화 실패가 앱 기동을 막지 않도록 격리한다.
-        logger.error("인프라 추적 초기화 실패(%s): 비활성으로 기동", type(exc).__name__)
-        if provider is not None:
-            Thread(target=provider.shutdown, daemon=True).start()
+        _state.meter_provider = meter_provider
+    except Exception as exc:  # noqa: BLE001 — 공통 계측 실패도 앱 기동을 막지 않도록 격리한다.
+        logger.error("인프라 계측 초기화 실패(%s): 비활성으로 기동", type(exc).__name__)
+        for created in (provider, meter_provider):
+            if created is not None:
+                Thread(target=created.shutdown, daemon=True).start()
 
 
 @contextmanager
@@ -277,6 +362,10 @@ async def bounded_shutdown(callback: Callable[[], None], timeout: float = 3) -> 
 
 async def shutdown_tracing() -> None:
     provider = _state.provider
+    meter_provider = _state.meter_provider
     _state.provider = None
+    _state.meter_provider = None
     if provider is not None:
         await bounded_shutdown(provider.shutdown)
+    if meter_provider is not None:
+        await bounded_shutdown(meter_provider.shutdown)

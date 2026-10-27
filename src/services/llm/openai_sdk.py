@@ -331,12 +331,21 @@ def _usage_of(payload: object, resolved: ResolvedModel) -> TokenUsage:
 
 
 def _finish_reason_of(payload: object) -> str | None:
-    """응답 종료 이유(잘림 감지용). `_text_of`와 같은 규칙 — 못 꺼내면 None이고 예외는 없다."""
+    """응답 종료 이유(잘림 감지용). `_text_of`와 같은 규칙 — 못 꺼내면 None이고 예외는 없다.
+
+    OpenAI는 안전 거절을 `finish_reason="stop"`에 본문을 비우고 `message.refusal`에 사유를 적어
+    보낸다. 그 칸을 버리면 호출부가 빈 응답으로 보고 재호출을 태우므로, 거절 사유가 있으면
+    종료 이유를 "refusal"로 정규화해 넘긴다(KNK-1859, Codex 리뷰).
+    """
     try:
-        reason = payload.choices[0].finish_reason  # type: ignore[attr-defined]
+        choice = payload.choices[0]  # type: ignore[attr-defined]
+        reason = choice.finish_reason
+        refusal = getattr(getattr(choice, "message", None), "refusal", None)
     except Exception:
         logger.warning("응답에서 종료 이유를 꺼내지 못했다 — None으로 넘긴다", exc_info=True)
         return None
+    if isinstance(refusal, str) and refusal.strip():
+        return "refusal"
     return reason if isinstance(reason, str) else None
 
 

@@ -10,12 +10,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Service"
-    app_version: str = "0.5.3"
+    app_version: str = "0.5.4"
     debug: bool = False
 
     # KNK-1554: Langfuse와 분리된 인프라 추적. endpoint는 /v1/traces까지 포함합니다.
     manyak_tracing_enabled: bool = False
     manyak_otlp_traces_endpoint: str = ""
+    manyak_otlp_metrics_enabled: bool = False
+    manyak_otlp_metrics_endpoint: str = ""
 
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"

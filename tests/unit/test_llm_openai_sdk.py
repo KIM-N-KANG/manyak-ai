@@ -1146,3 +1146,33 @@ async def test_gateway_rejects_adapter_without_code(monkeypatch) -> None:
         await llm.complete(_req(model="model-of-an-unsupported-adapter"))
 
     assert "adapter-with-no-code" in str(exc_info.value)
+
+
+# ── 거절 신호 정규화(KNK-1859) ─────────────────────────────────────────────────
+async def test_message_refusal_is_normalized_to_refusal_finish_reason(monkeypatch) -> None:
+    """OpenAI 안전 거절은 content=None·finish_reason=stop에 message.refusal로 온다.
+    그 칸을 버리면 호출부가 빈 응답으로 보고 재호출을 태우므로 finish_reason을 refusal로 넘긴다."""
+    choice = SimpleNamespace(
+        message=SimpleNamespace(content=None, refusal="I can't help with that."),
+        finish_reason="stop",
+    )
+    resp = SimpleNamespace(choices=[choice], model="deepseek-flash", usage=_usage())
+    _install(monkeypatch, _FakeCompletions(result=resp))
+
+    result = await openai_sdk.complete(_req(), _FLASH)
+
+    assert result.finish_reason == "refusal"
+    assert result.text == ""
+
+
+async def test_empty_refusal_field_keeps_original_finish_reason(monkeypatch) -> None:
+    """refusal 칸이 비어 있으면(정상 응답) 종료 이유를 바꾸지 않는다."""
+    choice = SimpleNamespace(
+        message=SimpleNamespace(content="본문", refusal=None), finish_reason="stop"
+    )
+    resp = SimpleNamespace(choices=[choice], model="deepseek-flash", usage=_usage())
+    _install(monkeypatch, _FakeCompletions(result=resp))
+
+    result = await openai_sdk.complete(_req(), _FLASH)
+
+    assert result.finish_reason == "stop"

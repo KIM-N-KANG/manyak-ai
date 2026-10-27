@@ -12,6 +12,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from src.core.config import settings
 from src.core.sentry import (
+    ERROR_CONTENT_REFUSED,
     ERROR_INVALID_AI_RESPONSE,
     ERROR_PROVIDER_BAD_REQUEST,
     ERROR_PROVIDER_RATE_LIMITED,
@@ -64,6 +65,16 @@ _CHARACTER_DESCRIPTION_ADAPTER = TypeAdapter(CharacterDescription)
 
 class _InvalidAiResponse(Exception):
     """LLM이 빈 응답·비객체 JSON을 반환 — invalid_ai_response로 분류한다."""
+
+
+class _ContentRefused(Exception):
+    """모델이 내용을 이유로 생성을 거절 — content_refused로 분류한다(KNK-1859).
+
+    두 신호 중 하나면 거절이다. 공급자 안전 필터가 생성을 끊은 경우(finish_reason=safety)와,
+    본문이 JSON으로 시작하지 않는 평문(Gemini가 "안전 정책상 생성할 수 없다"는 설명문을 돌려준
+    경우. 운영 30일 컴파일 파싱 실패 11건이 전부 이것이었다). 같은 입력은 다시 거절되므로
+    invalid 재호출 대상에서 빼고 422로 바로 끝낸다 — 재호출은 돈만 들고 결과가 같다.
+    """
 
 
 @dataclass
@@ -137,6 +148,16 @@ _DETAIL_BY_CODE = {
     ERROR_INVALID_AI_RESPONSE: "LLM이 올바른 형식의 응답을 반환하지 않았습니다.",
 }
 
+# 내용 거절(422) detail. 스키마 위반 422는 detail이 배열이라 백엔드가 타입으로 구별한다(7-1-5).
+_CONTENT_REFUSED_DETAIL = "입력 내용이 안전 정책에 맞지 않아 생성할 수 없습니다."
+
+# 공급자 안전 필터가 생성을 중단했을 때의 종료 이유(어댑터가 소문자로 정규화해 넘긴다).
+# 회사마다 단어가 다르다 — Gemini: safety·prohibited_content·blocklist·spii, OpenAI 계열: content_filter,
+# Anthropic: refusal. 하나만 보면 모델을 바꾸는 순간 거절이 다시 invalid 재호출로 샌다(리뷰 1).
+_REFUSAL_FINISH_REASONS = frozenset(
+    {"safety", "prohibited_content", "blocklist", "spii", "content_filter", "refusal"}
+)
+
 # prompt_settings 하위에 속하는 재호출 블록명. 병합 시 prompt_settings 안에 덮어쓴다.
 _PROMPT_SETTINGS_BLOCKS = {
     "world_setting",
@@ -175,7 +196,8 @@ async def _complete_json(
     validate: Callable[[dict], None] | None = None,
     max_tokens: int = _COMPILE_MAX_TOKENS,
 ) -> tuple[dict, LlmUsage]:
-    """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로 변환한다.
+    """LLM을 호출해 (JSON dict, 사용 메타)를 반환한다. 호출·빈응답·파싱 오류를 502로,
+    내용 거절(_ContentRefused)은 재호출 없이 422로 변환한다(KNK-1859).
 
     model이 None이면 컴파일용 story_compile_model로 폴백한다. 기본 인자에 settings 값을
     직접 두면 import 시점에 고정돼 런타임 오버라이드(테스트 등)가 반영되지 않으므로 호출
@@ -242,10 +264,25 @@ async def _complete_json(
             output_tokens = _add_tokens(output_tokens, usage.output_tokens)
             # 통로는 응답 모양이 깨져도 예외를 던지지 않고 빈 문자열을 준다 — 아래 invalid 경로가
             # 그대로 받아 재호출(KNK-312)을 태운다.
+            # 거절은 파싱보다 먼저 본다. 안전 필터 중단은 본문이 비거나 잘려 와서 아래 invalid
+            # 경로로 새면 재호출 2회를 헛되이 태운다(7-1-1 "출력 오류보다 먼저 판정").
+            if result.finish_reason in _REFUSAL_FINISH_REASONS:
+                raise _ContentRefused("공급자 안전 필터가 생성을 중단했습니다.")
             content = result.text
             if not content:
                 raise _InvalidAiResponse("LLM이 빈 응답을 반환했습니다.")
-            parsed = json.loads(_strip_code_fence(content))
+            unfenced = _strip_code_fence(content)
+            if not unfenced.strip():
+                # 펜스만 있거나 공백뿐인 헛답. 거절 판정보다 먼저 걸러야 재호출로 살아난다(리뷰 2).
+                raise _InvalidAiResponse("LLM이 빈 응답을 반환했습니다.")
+            try:
+                parsed = json.loads(unfenced)
+            except json.JSONDecodeError:
+                # JSON으로 시작조차 안 하면 거절문(평문)이다. `{`·`[`로 시작했다가 깨진 것은
+                # 출력 잘림·이스케이프 누락이라 종전대로 invalid(재호출 대상)로 둔다.
+                if not unfenced.lstrip().startswith(("{", "[")):
+                    raise _ContentRefused("LLM이 JSON 대신 평문 거절문을 반환했습니다.")
+                raise
             if not isinstance(parsed, dict):
                 # json_object를 무시하고 배열·스칼라를 반환한 경우. dict 가정이 깨지면
                 # 호출부(compile_story 등)에서 AttributeError로 500이 나므로 여기서 막는다.
@@ -260,6 +297,28 @@ async def _complete_json(
                 provider=result.provider,
                 retry_count=attempts,
             )
+        except _ContentRefused as exc:
+            # 내용 거절은 재호출 없이 422로 끝낸다(KNK-1859). 백엔드는 detail이 문자열인 422를
+            # 수위 안내로 분기한다. 거절문 원문은 Sentry·Langfuse로만 남긴다.
+            capture_ai_exception(
+                exc,
+                feature=feature,
+                provider=provider,
+                error_code=ERROR_CONTENT_REFUSED,
+                model=resolved_model,
+                prompt_versions=prompt_versions,
+                retry_count=attempts,
+                latency_ms=int((time.monotonic() - start) * 1000),
+                # 수위 입력을 거절한 건 정상 동작이라 오류가 아니다(7-3 "조치 없음"). error로 두면
+                # 아침 Sentry 리포트에 매번 오른다(리뷰 4).
+                level="warning",
+            )
+            http_exc = HTTPException(
+                status_code=422,  # starlette가 상수 이름을 바꾸는 중이라 숫자로 둔다
+                detail=_CONTENT_REFUSED_DETAIL,
+            )
+            http_exc.retry_count = attempts
+            raise http_exc from exc
         except (LlmError, json.JSONDecodeError, _InvalidAiResponse) as exc:
             # 실패를 한 곳에서 모아 Sentry에 보고하고(AN-4) error_code별 502로 바꾼다. 502 detail에는
             # provider 원문(str(e))을 싣지 않는다 — 내부 상세는 Sentry로만 보낸다(AN-4-7·4-10).
