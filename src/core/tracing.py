@@ -164,7 +164,7 @@ def _valid_endpoint(endpoint: str) -> bool:
         url = urlsplit(endpoint)
         return (
             url.scheme in {"http", "https"} and bool(url.hostname) and url.port != 0
-            and url.username is None and url.password is None and not url.fragment
+            and url.username is None and url.password is None and not url.query and not url.fragment
         )
     except ValueError:
         return False
@@ -204,9 +204,16 @@ def _create_meter_provider(endpoint: str) -> MeterProvider:
         return MeterProvider(
             resource=Resource({"service.name": "manyak-ai", "service.instance.id": str(uuid4())}),
             metric_readers=[reader], shutdown_on_exit=False,
-            views=[View(instrument_name=name, aggregation=DropAggregation()) for name in (
-                "http.server.request.size", "http.server.response.size",
-            )],
+            views=[
+                View(
+                    instrument_name="http.server.duration",
+                    attribute_keys={"http.method", "http.status_code", "http.target"},
+                ),
+                View(instrument_name="http.server.active_requests", attribute_keys={"http.method"}),
+                *[View(instrument_name=name, aggregation=DropAggregation()) for name in (
+                    "http.server.request.size", "http.server.response.size",
+                )],
+            ],
         )
     except Exception:  # reader 생성 이후 실패해도 전송 스레드와 exporter를 회수한다.
         Thread(target=reader.shutdown if reader is not None else exporter.shutdown, daemon=True).start()

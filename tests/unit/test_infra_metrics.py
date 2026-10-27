@@ -69,10 +69,13 @@ async def health():
     return {"ok": True}
 
 messages = []
+infra_messages = []
 class Capture(logging.Handler):
     def emit(self, record):
         messages.append(record.getMessage())
-tracing.logger.addHandler(Capture())
+        if record.name == tracing.logger.name:
+            infra_messages.append(record.getMessage())
+logging.getLogger().addHandler(Capture())
 spans = InMemorySpanExporter()
 metric_path = "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter"
 trace_path = "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
@@ -86,14 +89,23 @@ async def requests_and_shutdown():
             reader_factory.assert_called_once_with(exporters[0], export_interval_millis=60000)
             provider.force_flush()
             assert not exporters[0].batches  # health 요청만으로는 지표가 생기지 않는다
-        pending = asyncio.create_task(client.post("/work/PRIVATE-PATH?token=PRIVATE-QUERY", content="PRIVATE-BODY"))
+        hosts = ["PRIVATE-HOST-ONE.test", "PRIVATE-HOST-TWO.test", "PRIVATE-HOST-THREE.test"]
+        pending = asyncio.create_task(client.post(
+            "/work/PRIVATE-PATH?token=PRIVATE-QUERY", content="PRIVATE-BODY", headers={"host": hosts[0]},
+        ))
         await asyncio.wait_for(entered.wait(), 2)
         if tracing._state.meter_provider:
             provider.force_flush()
             active = [m for r in exporters[0].batches[-1].resource_metrics for s in r.scope_metrics for m in s.metrics]
-            assert next(m for m in active if m.name == "http.server.active_requests").data.data_points[0].value == 1
+            active_points = next(m for m in active if m.name == "http.server.active_requests").data.data_points
+            assert len(active_points) == 1
+            assert active_points[0].value == 1
+            assert dict(active_points[0].attributes) == {"http.method": "POST"}
         release.set()
         assert (await pending).status_code == 200
+        for host in hosts[1:]:
+            response = await client.post("/work/PRIVATE-PATH?token=PRIVATE-QUERY", headers={"host": host})
+            assert response.status_code == 200
         await client.get("/PRIVATE-UNREGISTERED?secret=PRIVATE-QUERY")
         if tracing._state.meter_provider:
             provider.force_flush()
@@ -110,8 +122,22 @@ async def requests_and_shutdown():
             duration = metrics["http.server.duration"]
             assert duration.unit == "ms"
             assert duration.data.aggregation_temporality == AggregationTemporality.CUMULATIVE
-            point = next(p for p in duration.data.data_points if p.attributes.get("http.target") == "/work/{item}")
-            assert point.count == 1 and point.attributes["http.status_code"] == 200
+            work_points = [p for p in duration.data.data_points if p.attributes.get("http.target") == "/work/{item}"]
+            assert len(work_points) == 1  # Host만 다른 요청은 같은 시계열로 합쳐진다.
+            point = work_points[0]
+            assert point.count == len(hosts)
+            assert dict(point.attributes) == {
+                "http.method": "POST", "http.status_code": 200, "http.target": "/work/{item}",
+            }
+            for point in duration.data.data_points:
+                expected_keys = {"http.method", "http.status_code"}
+                if point.attributes["http.status_code"] == 200:
+                    expected_keys.add("http.target")
+                assert set(point.attributes) == expected_keys
+            active_points = metrics["http.server.active_requests"].data.data_points
+            assert len(active_points) == 2  # POST와 등록되지 않은 경로의 GET만 구분한다.
+            assert {p.attributes["http.method"] for p in active_points} == {"POST", "GET"}
+            assert all(set(p.attributes) == {"http.method"} for p in active_points)
             earlier = next(m for r in first.resource_metrics for s in r.scope_metrics for m in s.metrics if m.name == duration.name)
             assert [p.count for p in earlier.data.data_points] == [p.count for p in duration.data.data_points]
             assert all(p.value == 0 for p in metrics["http.server.active_requests"].data.data_points)
@@ -137,9 +163,9 @@ async def requests_and_shutdown():
         finally:
             replacement.shutdown()
 
-with patch(metric_path, side_effect=create_exporter) as metrics_factory, patch(trace_path, return_value=spans), patch(reader_path, wraps=PeriodicExportingMetricReader) as reader_factory:
+with patch(metric_path, side_effect=create_exporter) as metrics_factory, patch(trace_path, return_value=spans) as traces_factory, patch(reader_path, wraps=PeriodicExportingMetricReader) as reader_factory:
     if scenario == "invalid":
-        for endpoint in ("", "file:///PRIVATE", "http:///PRIVATE", "https://user:PRIVATE@host/v1/metrics", "https://host/#PRIVATE", "https://host:bad", "https://host:0", "https://@host/PRIVATE"):
+        for endpoint in ("", "file:///PRIVATE", "http:///PRIVATE", "https://user:PRIVATE@host/v1/metrics", "https://host/#PRIVATE", "https://host:bad", "https://host:0", "https://@host/PRIVATE", "https://collector.test/v1/metrics?token=PRIVATE-METRIC-TOKEN"):
             settings.manyak_otlp_metrics_endpoint = endpoint
             test_app = FastAPI()
             tracing.instrument_app(test_app)
@@ -147,7 +173,21 @@ with patch(metric_path, side_effect=create_exporter) as metrics_factory, patch(t
             assert tracing._state.provider is not None  # 지표만 꺼진다.
             asyncio.run(tracing.shutdown_tracing())
         assert not metrics_factory.called
-        assert len(messages) == 8 and all("PRIVATE" not in m for m in messages)
+        assert len(infra_messages) == 9, messages
+        assert all("PRIVATE" not in m for m in messages)
+        assert all("https://collector.test/v1/metrics" not in m for m in messages)
+    elif scenario == "invalid_trace_query":
+        settings.manyak_otlp_traces_endpoint = "https://collector.test/v1/traces?token=PRIVATE-TRACE-TOKEN"
+        tracing.instrument_app(app)
+        assert tracing._state.provider is None
+        assert tracing._state.meter_provider is not None  # 추적 주소 오류는 지표를 끄지 않는다.
+        assert not traces_factory.called
+        assert metrics_factory.called
+        assert len(infra_messages) == 1, messages
+        assert "인프라 추적 비활성" in infra_messages[0]
+        assert all("PRIVATE" not in m for m in messages)
+        assert all("https://collector.test/v1/traces" not in m for m in messages)
+        asyncio.run(requests_and_shutdown())
     elif scenario in {"exporter_failure", "provider_failure", "trace_failure", "instrument_failure", "reader_failure"}:
         if scenario == "exporter_failure":
             metrics_factory.side_effect = RuntimeError("PRIVATE")
@@ -177,7 +217,10 @@ with patch(metric_path, side_effect=create_exporter) as metrics_factory, patch(t
             assert tracing._state.provider is None and tracing._state.meter_provider is None
         else:
             assert tracing._state.meter_provider is None and tracing._state.provider is not None
-        assert len(messages) == 1 and "RuntimeError" in messages[0] and "PRIVATE" not in messages[0]
+        # provider 생성 실패 후 reader의 마지막 수집은 SDK 경고도 남긴다.
+        assert len(infra_messages) == 1, messages
+        assert "RuntimeError" in infra_messages[0], messages
+        assert all("PRIVATE" not in m for m in messages)
         asyncio.run(requests_and_shutdown())
     else:
         tracing.instrument_app(app)
@@ -189,7 +232,7 @@ with patch(metric_path, side_effect=create_exporter) as metrics_factory, patch(t
 
 @pytest.mark.parametrize("scenario", [
     "metrics_only", "traces_only", "both", "invalid", "exporter_failure",
-    "provider_failure", "trace_failure", "instrument_failure", "reader_failure",
+    "provider_failure", "trace_failure", "instrument_failure", "reader_failure", "invalid_trace_query",
 ])
 def test_infra_metrics_err09(scenario: str) -> None:
     result = subprocess.run(
