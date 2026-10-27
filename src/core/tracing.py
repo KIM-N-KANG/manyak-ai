@@ -175,6 +175,7 @@ def _create_meter_provider(endpoint: str) -> MeterProvider:
         OTLPMetricExporter,
     )
     from opentelemetry.sdk.metrics import (
+        AlwaysOffExemplarFilter,
         Counter,
         Histogram,
         MeterProvider,
@@ -204,6 +205,8 @@ def _create_meter_provider(endpoint: str) -> MeterProvider:
         return MeterProvider(
             resource=Resource({"service.name": "manyak-ai", "service.instance.id": str(uuid4())}),
             metric_readers=[reader], shutdown_on_exit=False,
+            # exemplar에는 View가 버린 Host 같은 속성이 남으므로 항상 끈다.
+            exemplar_filter=AlwaysOffExemplarFilter(),
             views=[
                 View(
                     instrument_name="http.server.duration",

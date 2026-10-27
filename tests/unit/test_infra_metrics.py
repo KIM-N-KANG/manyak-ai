@@ -81,6 +81,14 @@ metric_path = "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetric
 trace_path = "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
 reader_path = "opentelemetry.sdk.metrics.export.PeriodicExportingMetricReader"
 
+def assert_private_metrics_excluded(batch):
+    assert "PRIVATE" not in batch.to_json()
+    for resource in batch.resource_metrics:
+        for scope in resource.scope_metrics:
+            for metric in scope.metrics:
+                for point in metric.data.data_points:
+                    assert not point.exemplars
+
 async def requests_and_shutdown():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await client.get("/health")
@@ -96,6 +104,8 @@ async def requests_and_shutdown():
         await asyncio.wait_for(entered.wait(), 2)
         if tracing._state.meter_provider:
             provider.force_flush()
+            assert len(exporters[0].batches) == 1
+            assert_private_metrics_excluded(exporters[0].batches[0])
             active = [m for r in exporters[0].batches[-1].resource_metrics for s in r.scope_metrics for m in s.metrics]
             active_points = next(m for m in active if m.name == "http.server.active_requests").data.data_points
             assert len(active_points) == 1
@@ -110,9 +120,11 @@ async def requests_and_shutdown():
         if tracing._state.meter_provider:
             provider.force_flush()
             first = exporters[0].batches[-1]
+            # exemplar는 수집 때 소모되므로 두 번째 flush 전에 첫 묶음부터 검사한다.
+            assert_private_metrics_excluded(first)
             provider.force_flush()
             batch = exporters[0].batches[-1]
-            assert "PRIVATE" not in str(batch)
+            assert_private_metrics_excluded(batch)
             for resource in batch.resource_metrics:
                 assert set(resource.resource.attributes) == {"service.name", "service.instance.id"}
                 assert resource.resource.attributes["service.name"] == "manyak-ai"
