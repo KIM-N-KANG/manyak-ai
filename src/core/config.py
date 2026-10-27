@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     # KNK-1554: Langfuse와 분리된 인프라 추적. endpoint는 /v1/traces까지 포함합니다.
     manyak_tracing_enabled: bool = False
     manyak_otlp_traces_endpoint: str = ""
+    manyak_otlp_metrics_enabled: bool = False
+    manyak_otlp_metrics_endpoint: str = ""
 
     deepseek_api_key: str
     deepseek_api_url: str = "https://api.deepseek.com"
