@@ -54,13 +54,39 @@ from src.services.chat_selected_images import stream_with_selected_images
 from src.services.chat_child_image import ChildImageObservation, stream_with_child_image
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
 from src.services.chat_compact import CompactProgress, generate_compact
+from src.services.chat_compact_prompt import COMPACT_VERSION
 
 router = APIRouter()
 
 
 async def _compact_result(payload: ChatCompactRequest) -> ChatCompactResponse:
-    summary = await generate_compact(payload, CompactProgress())
-    return ChatCompactResponse(summary=summary)
+    progress = CompactProgress()
+    started = time.monotonic()
+    with observe_request(
+        "대화 요약", input_data=payload.model_dump(mode="json"),
+        metadata={
+            **select_connection_metadata("creation_id", "story_id", "chat_id", "start_setting_id", "turn_number", "is_regenerated"),
+            "prompt_versions": {"COMPACT": COMPACT_VERSION},
+        },
+    ) as trace:
+        status = "failed"
+        try:
+            summary = await generate_compact(payload, progress)
+            result = ChatCompactResponse(summary=summary)
+            trace.set_output(result.model_dump())
+            status = "success"
+            return result
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except Exception as exc:
+            trace.mark_failed(exc)
+            raise
+        finally:
+            trace.set_metadata(
+                status=status, attempts=progress.attempts, fallback_used=progress.fallback_used,
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
 
 
 async def _wait_compact_disconnect(request: Request) -> None:

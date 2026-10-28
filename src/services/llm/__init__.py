@@ -37,7 +37,9 @@ from src.services.llm.base import (
     message_has_images,
 )
 
-__all__ = ["complete", "evaluate", "observation_metadata", "provider_of", "request_body", "stream", "validate_startup"]
+from src.services.llm.observation import usage_details
+
+__all__ = ["complete", "evaluate", "observation_metadata", "provider_of", "request_body", "stream", "usage_details", "validate_startup"]
 
 
 def observation_metadata(model: str) -> dict[str, str]:
@@ -156,12 +158,12 @@ def _request_adapter(req: LlmRequest) -> tuple[LlmAdapter, ResolvedModel]:
         raise LlmConfigError("response_schema와 json_mode는 동시에 지정할 수 없습니다.")
     if req.max_retries is not None and req.max_retries < 0:
         raise LlmConfigError("max_retries는 0 이상이어야 합니다.")
-    if resolved.adapter != ADAPTER_OPENAI_SDK and (
-        req.response_schema is not None or not req.automatic_observation
+    if resolved.adapter != ADAPTER_OPENAI_SDK and req.response_schema is not None:
+        raise LlmConfigError("이 어댑터는 요청별 스키마 설정을 지원하지 않습니다.")
+    if resolved.adapter not in (ADAPTER_OPENAI_SDK, ADAPTER_ANTHROPIC_SDK) and (
+        req.max_retries is not None or not req.automatic_observation
     ):
-        raise LlmConfigError("이 어댑터는 요청별 스키마·자동 관측 설정을 지원하지 않습니다.")
-    if resolved.adapter not in (ADAPTER_OPENAI_SDK, ADAPTER_ANTHROPIC_SDK) and req.max_retries is not None:
-        raise LlmConfigError("이 어댑터는 요청별 재시도 설정을 지원하지 않습니다.")
+        raise LlmConfigError("이 어댑터는 요청별 재시도·자동 관측 설정을 지원하지 않습니다.")
     if req.reasoning_effort is not None:
         if req.reasoning_effort not in resolved.supported_reasoning_efforts:
             raise LlmConfigError(f"모델 '{req.model}'이 요청한 추론 강도를 지원하지 않습니다.")

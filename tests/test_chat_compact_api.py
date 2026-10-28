@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -147,3 +149,42 @@ async def test_disconnect_cancels_only_its_request(client, monkeypatch):
     assert stopped.is_set()
     assert messages == []
     assert response.json() == {"summary": "other summary"}
+
+
+@pytest.mark.parametrize("outcome", ["success", "failed", "cancelled"])
+async def test_root_observation(monkeypatch, outcome):
+    record = {}
+
+    @contextmanager
+    def observe(*args, **kwargs):
+        record.update(kwargs["metadata"])
+        yield SimpleNamespace(
+            set_metadata=lambda **values: record.update(values),
+            set_output=lambda value: None,
+            mark_failed=lambda exc: None,
+        )
+
+    async def generate(payload, progress):
+        progress.attempts = 3
+        progress.fallback_used = True
+        if outcome == "failed":
+            raise CompactFailed()
+        if outcome == "cancelled":
+            raise asyncio.CancelledError()
+        return "PRIVATE"
+
+    monkeypatch.setattr(chat, "observe_request", observe)
+    monkeypatch.setattr(chat, "generate_compact", generate)
+    monkeypatch.setattr(chat, "select_connection_metadata", lambda *args: {"chat_id": "chat-test"})
+    payload = chat.ChatCompactRequest(summary="PRIVATE", history=[])
+    if outcome == "success":
+        await chat._compact_result(payload)
+    else:
+        with pytest.raises(CompactFailed if outcome == "failed" else asyncio.CancelledError):
+            await chat._compact_result(payload)
+    assert record["status"] == outcome
+    assert record["attempts"] == 3 and record["fallback_used"] is True
+    assert record["duration_ms"] >= 0
+    assert record["chat_id"] == "chat-test"
+    assert "COMPACT" in record["prompt_versions"]
+    assert "PRIVATE" not in str(record)

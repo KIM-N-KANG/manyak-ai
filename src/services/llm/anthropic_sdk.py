@@ -28,6 +28,7 @@ import hashlib
 import json
 import logging
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 
 import httpx
 from anthropic import (
@@ -499,18 +500,20 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
             client = client.with_options(max_retries=req.max_retries)
         kwargs = _build_kwargs(req, resolved)
         # 관측 블록 안에서 나가는 예외(공급자 실패)는 관측에 ERROR로 남고 그대로 전파된다.
-        with observe_generation(
+        observation = observe_generation(
             _OBSERVATION_NAME,
             model=resolved.model,
             model_parameters=_model_parameters(req, resolved),
             input_data=req.messages,
-        ) as generation:
+        ) if req.automatic_observation else nullcontext()
+        with observation as generation:
             try:
                 response = await client.messages.create(**kwargs)
             except AnthropicError as exc:
                 raise _translate(exc, resolved) from exc
             text = _text_of(response)
-            generation.finish(output=text, usage_details=_usage_details(_usage_parts(response)))
+            if generation is not None:
+                generation.finish(output=text, usage_details=_usage_details(_usage_parts(response)))
         return LlmResult(
             text=text,
             # 응답이 돌려준 실제 모델명. 비어 오면 요청에 쓴 이름으로 채운다 — 빈 값을 올리면

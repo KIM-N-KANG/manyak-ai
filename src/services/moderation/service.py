@@ -16,7 +16,7 @@ from src.services.moderation.input import prepare_input
 from src.services.moderation.limits import ModerationRequestTooLarge, validate_request_size
 from src.services.moderation.models import ImageErrorCode, ModelDecision, ModerationCall, ModerationImageFailure, ModerationResult, failure
 from src.services.moderation.prompt import build_messages
-from src.services.moderation.observation import usage_details, without_media
+from src.services.moderation.observation import without_media
 from src.services.moderation.response import InvalidModerationResponse, parse_response
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ async def moderate_story(
                 call.provider = result.provider
                 call.input_tokens = result.usage.input_tokens
                 call.output_tokens = result.usage.output_tokens
-                observation.set_usage(model=result.model, usage_details=usage_details(result.usage))
+                observation.set_usage(model=result.model, usage_details=llm.usage_details(result.usage, result.provider))
                 logger.info(
                     "검수 모델 호출 완료 model=%s input_tokens=%s output_tokens=%s",
                     result.model, result.usage.input_tokens, result.usage.output_tokens,

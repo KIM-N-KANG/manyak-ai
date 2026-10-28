@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
+from src.core import langfuse
 from src.schemas.chat_compact import ChatCompactRequest
 from src.services import chat_compact as service
 from src.services.llm import anthropic_sdk, openai_sdk
@@ -22,8 +25,28 @@ def result(text: str = "summary", model: str = "claude-sonnet-5-5") -> LlmResult
     return LlmResult(text=text, model=model, provider="anthropic", usage=TokenUsage(100, 20, 10, 30))
 
 
+@pytest.fixture
+def observations(monkeypatch):
+    records = []
+
+    @contextmanager
+    def observe(*args, **kwargs):
+        record = dict(kwargs)
+        record["metadata"] = dict(kwargs.get("metadata", {}))
+        records.append(record)
+        yield SimpleNamespace(
+            set_metadata=lambda **values: record["metadata"].update(values),
+            set_usage=lambda **values: record.update(values),
+            set_output=lambda value: record.update(output=value),
+            mark_failed=lambda exc: record.update(error=type(exc).__name__),
+        )
+
+    monkeypatch.setattr(service, "observe_model_call", observe)
+    return records
+
+
 @pytest.mark.parametrize("success_at", [1, 2, 3, 4, None])
-async def test_attempt_order_and_settings(monkeypatch, success_at):
+async def test_attempt_order_settings_and_observation(monkeypatch, observations, success_at):
     requests = []
 
     async def complete(req):
@@ -46,7 +69,10 @@ async def test_attempt_order_and_settings(monkeypatch, success_at):
     assert progress.fallback_used == (count > 2)
     for req in requests:
         assert (req.reasoning_effort, req.max_tokens, req.timeout, req.max_retries) == ("low", 12288, 60.0, 0)
+        assert req.automatic_observation is False
         assert req.messages == requests[0].messages
+    assert [item["metadata"]["status"] for item in observations] == ["failed"] * (count - bool(success_at)) + (["success"] if success_at else [])
+    assert all(item["usage_details"] == {"input": 60, "output": 20, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 30} for item in observations)
 
 
 @pytest.mark.parametrize("exception", [LlmConfigError("config"), RuntimeError("code")])
@@ -80,7 +106,7 @@ async def test_timeout_stops_each_attempt(monkeypatch):
 
 
 @pytest.mark.parametrize("cancel_at", [1, 3])
-async def test_cancellation_stops_following_attempts(monkeypatch, cancel_at):
+async def test_cancellation_stops_following_attempts(monkeypatch, observations, cancel_at):
     started = asyncio.Event()
     stopped = asyncio.Event()
     calls = []
@@ -103,6 +129,25 @@ async def test_cancellation_stops_following_attempts(monkeypatch, cancel_at):
         await task
     assert stopped.is_set()
     assert len(calls) == cancel_at
+    assert observations[-1]["metadata"]["status"] == "cancelled"
+
+
+async def test_provider_error_original_not_logged_or_sent(monkeypatch, caplog):
+    captures = []
+
+    async def complete(req):
+        raise LlmUnavailable("PRIVATE_SOURCE_TEXT", model=req.model, provider="anthropic")
+
+    monkeypatch.setattr(service.llm, "complete", complete)
+    monkeypatch.setattr(service, "capture_ai_exception", lambda exc, **kw: captures.append((exc, kw)))
+    with pytest.raises(service.CompactFailed):
+        await service.generate_compact(request(), service.CompactProgress())
+    assert len(captures) == 4
+    assert "PRIVATE_SOURCE_TEXT" not in caplog.text
+    for exc, metadata in captures:
+        assert "PRIVATE_SOURCE_TEXT" not in str(exc)
+        assert exc.__context__ is None and exc.__cause__ is None
+        assert metadata["error_code"] == "provider_unavailable"
 
 
 @pytest.mark.parametrize("succeed", [False, True])
@@ -134,7 +179,7 @@ async def test_real_sdks_have_no_hidden_retries(monkeypatch, succeed):
 
 
 @pytest.mark.parametrize("success_at", [1, 2, 3, 4, None])
-async def test_length_limit_retries_without_truncation(monkeypatch, success_at):
+async def test_length_limit_retries_without_truncation(monkeypatch, observations, success_at):
     calls = []
     valid = "가" * 2998 + " \n"
     oversized = valid + " "
@@ -152,3 +197,22 @@ async def test_length_limit_retries_without_truncation(monkeypatch, success_at):
         assert await service.generate_compact(request(), progress) == valid
     assert len(calls) == (success_at or 4)
     assert [req.model for req in calls] == ([service.MODELS[0]] * 2 + [service.MODELS[1]] * 2)[:len(calls)]
+    for record in observations[:(success_at - 1 if success_at else 4)]:
+        assert record["metadata"]["error_code"] == "invalid_ai_response"
+        assert record["metadata"]["status"] == "failed"
+        assert record["usage_details"]["output"] == 20
+
+
+async def test_observation_failure_does_not_stop_generation(monkeypatch):
+    import langfuse as sdk
+
+    def fail():
+        raise RuntimeError("collector unavailable")
+
+    async def complete(req):
+        return result()
+
+    monkeypatch.setattr(langfuse._state, "enabled", True)
+    monkeypatch.setattr(sdk, "get_client", fail)
+    monkeypatch.setattr(service.llm, "complete", complete)
+    assert await service.generate_compact(request(), service.CompactProgress()) == "summary"
