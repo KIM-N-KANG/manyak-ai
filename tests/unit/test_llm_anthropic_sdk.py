@@ -152,6 +152,64 @@ def _code_of(source: str) -> str:
     return ast.unparse(tree)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_retries, expected_calls", [(0, 1), (1, 2), (None, 3)])
+@pytest.mark.parametrize("failure", ["server", "rate", "timeout"])
+async def test_complete_request_retry_limit(monkeypatch, max_retries, expected_calls, failure):
+    """실제 SDK의 전송 횟수로 요청별 한도와 기본값 보존을 확인한다."""
+    calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if failure == "timeout":
+            raise httpx.ReadTimeout("test timeout", request=request)
+        return httpx.Response(
+            429 if failure == "rate" else 500,
+            headers={"retry-after-ms": "1"},
+            json={"type": "error", "error": {"type": "api_error", "message": "test error"}},
+        )
+
+    async with AsyncAnthropic(
+        api_key="test-key", max_retries=2,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    ) as client:
+        monkeypatch.setattr(anthropic_sdk, "_client", lambda provider: client)
+        error = {"server": LlmUnavailable, "rate": LlmRateLimited, "timeout": LlmTimeout}[failure]
+        with pytest.raises(error):
+            await anthropic_sdk.complete(_req(max_retries=max_retries), _NO_THINKING)
+        assert calls == expected_calls
+        assert client.max_retries == 2
+
+
+@pytest.mark.asyncio
+async def test_complete_retry_override_does_not_change_next_request(monkeypatch):
+    """재사용 클라이언트에서 재시도를 끈 뒤에도 기본 요청은 재시도해 성공한다."""
+    calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(
+                500, headers={"retry-after-ms": "1"},
+                json={"type": "error", "error": {"type": "api_error", "message": "test error"}},
+            )
+        return httpx.Response(200, json=_response().model_dump(mode="json"))
+
+    async with AsyncAnthropic(
+        api_key="test-key", max_retries=2,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    ) as client:
+        monkeypatch.setattr(anthropic_sdk, "_client", lambda provider: client)
+        with pytest.raises(LlmUnavailable):
+            await anthropic_sdk.complete(_req(max_retries=0), _NO_THINKING)
+        assert calls == 1
+        result = await anthropic_sdk.complete(_req(), _NO_THINKING)
+        assert result.text == "본문"
+        assert calls == 3
+
+
 def _anthropic_error(kind: str) -> BaseException:
     request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     if kind == "timeout":

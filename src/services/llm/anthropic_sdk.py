@@ -69,9 +69,8 @@ logger = logging.getLogger(__name__)
 # 설정이 바뀌면 새 클라이언트가 만들어지고, 옛 것은 닫지 않고 버린다(프로덕션 안정화 후로 미룬 사안).
 _clients: dict[tuple[str, str | None, str], AsyncAnthropic] = {}
 
-# 전송 실패 시 SDK가 다시 시도하는 횟수. **openai_sdk와 같은 2로 맞춘다** — 공급자를 바꿔도
-# 호출부의 시간 계산이 같아야 한다. 시간 초과도 재시도 대상이라 예산이 부풀려지는 문제도
-# 그대로 물려받는다(두 어댑터 공통 사안이라 별도 티켓).
+# 요청에서 별도로 지정하지 않았을 때 SDK가 다시 시도하는 횟수.
+# 단발 호출은 LlmRequest.max_retries로 이 기본값을 덮어쓸 수 있다.
 _MAX_RETRIES = 2
 
 # 이 어댑터는 조각 흘리기를 한다(`stream`, KNK-696). 기동 검사가 읽는다 — `base.LlmAdapter` 참조.
@@ -496,6 +495,8 @@ async def complete(req: LlmRequest, resolved: ResolvedModel) -> LlmResult:
                 f"없습니다 — 이 공급자는 이 값으로 응답 대기 시간을 계산하므로 비워둘 수 없습니다."
             )
         client = _client(resolved.provider)
+        if req.max_retries is not None:
+            client = client.with_options(max_retries=req.max_retries)
         kwargs = _build_kwargs(req, resolved)
         # 관측 블록 안에서 나가는 예외(공급자 실패)는 관측에 ERROR로 남고 그대로 전파된다.
         with observe_generation(
