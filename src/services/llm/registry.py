@@ -763,6 +763,9 @@ ROUTING_TARGETS: dict[str, tuple[str, str]] = {
 }
 STREAMING_SLOTS = frozenset(ROUTING_TARGETS)
 
+# 비스트리밍 요약의 기본·폴백 모델. 호출과 기동 검사에서 함께 사용한다.
+COMPACT_MODELS = ("claude-sonnet-5-5", "deepseek-flash")
+
 
 def blocked_providers(env_name: str) -> frozenset[str]:
     """이 자리(env)에 쓸 수 없는 공급자를 반환한다."""
@@ -873,6 +876,8 @@ def selected_models() -> tuple[tuple[str, str], ...]:
         ("STORY_COMPILE_MODEL", settings.story_compile_model),
         *((slot, model) for slot, (model, _) in ROUTING_TARGETS.items()),
         ("CHAT_CHOICE_MODEL", settings.chat_choice_model),
+        ("CHAT_COMPACT_MODEL", COMPACT_MODELS[0]),
+        ("CHAT_COMPACT_FALLBACK_MODEL", COMPACT_MODELS[1]),
         ("MODERATION_MODEL", settings.moderation_model),
         ("MODERATION_FALLBACK_MODEL", settings.moderation_fallback_model),
         ("JEV_MODEL", settings.jev_model),

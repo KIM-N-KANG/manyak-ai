@@ -65,6 +65,11 @@ def routing_target(slot: str) -> tuple[str, str]:
     return registry.ROUTING_TARGETS[slot]
 
 
+def compact_models() -> tuple[str, str]:
+    """기동 검사에 포함된 요약 기본·폴백 모델을 반환한다."""
+    return registry.COMPACT_MODELS
+
+
 def validate_startup() -> None:
     """기동 시 한 번 부른다 — 설정만으로 알 수 있는 문제를 첫 요청 전에 드러낸다.
 

@@ -81,6 +81,7 @@ def _settings(**overrides: str) -> Settings:
         "deepseek_api_key": "deepseek-test-key",
         "openai_api_key": "openai-test-key",
         "gemini_api_key": "google-test-key",
+        "anthropic_api_key": "anthropic-test-key",
     } | overrides
     return Settings(_env_file=None, **values)
 
@@ -584,7 +585,8 @@ def test_startup_checks_the_key_only_of_selected_models(monkeypatch) -> None:
     같은 빈 키가 **고르는 순간 막는지**를 짝으로 확인한다 — 통과와 거부를 가르는 것이 정말
     "선택 여부"임을 이 대비가 고정한다.
     """
-    # 안 고르면 — Anthropic 키가 비어도 기동한다
+    # 요약에서도 Anthropic을 선택하지 않은 경우만 빈 키를 허용한다.
+    monkeypatch.setattr(registry, "COMPACT_MODELS", ("deepseek-flash", "deepseek-flash"))
     monkeypatch.setattr(registry, "settings", _settings(anthropic_api_key=""))
     registry.validate_selected_models()
 
@@ -658,10 +660,35 @@ def test_selected_models_covers_every_model_env(monkeypatch) -> None:
         ("CHAT_AURORA_EVEN", "gpt-6.1-sol"),
         ("CHAT_AURORA_ODD", "gemini-3.8-flash"),
         ("CHAT_CHOICE_MODEL", "deepseek-flash"),
+        ("CHAT_COMPACT_MODEL", "claude-sonnet-5-5"),
+        ("CHAT_COMPACT_FALLBACK_MODEL", "deepseek-flash"),
         ("MODERATION_MODEL", "gpt-6-luna"),
         ("MODERATION_FALLBACK_MODEL", "deepseek-flash"),
         ("JEV_MODEL", "jev-1.13.0"),
     )
+
+
+def test_compact_missing_anthropic_key_fails_startup(monkeypatch) -> None:
+    monkeypatch.setattr(registry, "settings", _settings(anthropic_api_key=""))
+    with pytest.raises(LlmConfigError, match="CHAT_COMPACT_MODEL.*ANTHROPIC_API_KEY"):
+        llm.validate_startup()
+
+
+def test_compact_models_are_validated_and_can_start(monkeypatch) -> None:
+    monkeypatch.setattr(registry, "settings", _settings())
+    selected = dict(registry.selected_models())
+    assert llm.compact_models() == (
+        selected["CHAT_COMPACT_MODEL"], selected["CHAT_COMPACT_FALLBACK_MODEL"],
+    )
+    assert "CHAT_COMPACT_MODEL" not in registry.STREAMING_SLOTS
+    llm.validate_startup()
+
+
+def test_compact_unknown_fallback_fails_startup(monkeypatch) -> None:
+    monkeypatch.setattr(registry, "settings", _settings())
+    monkeypatch.setattr(registry, "COMPACT_MODELS", ("claude-sonnet-5-5", "unknown-compact-model"))
+    with pytest.raises(LlmConfigError, match="CHAT_COMPACT_FALLBACK_MODEL"):
+        llm.validate_startup()
 
 
 def test_chat_routes_leave_choice_model_independent(monkeypatch) -> None:
