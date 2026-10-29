@@ -17,6 +17,7 @@ started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed�
 completed에서 뺐다. 백엔드는 없는 필드를 null로 읽어 동작이 같다.
 """
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncGenerator
@@ -24,13 +25,14 @@ from contextlib import aclosing
 from dataclasses import asdict
 
 from anyio import CancelScope
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 from src.core.langfuse import observe_request
 from src.core.request_context import ConnectionMetadata, select_connection_metadata
 from src.schemas.chat_choices import ChatChoicesRequest, ChatChoicesResponse
+from src.schemas.chat_compact import ChatCompactRequest, ChatCompactResponse
 from src.schemas.chat_turn import (
     EVENT_CHARACTER_IMAGE,
     EVENT_COMPLETED,
@@ -51,8 +53,63 @@ from src.services.chat_llm import select_chat_model, stream_chat_turn
 from src.services.chat_selected_images import stream_with_selected_images
 from src.services.chat_child_image import ChildImageObservation, stream_with_child_image
 from src.services.chat_choices import NEXT_ACTIONS_VERSION, generate_choices
+from src.services.chat_compact import CompactProgress, generate_compact
+from src.services.chat_compact_prompt import COMPACT_VERSION
 
 router = APIRouter()
+
+
+async def _compact_result(payload: ChatCompactRequest) -> ChatCompactResponse:
+    progress = CompactProgress()
+    started = time.monotonic()
+    with observe_request(
+        "대화 요약", input_data=payload.model_dump(mode="json"),
+        metadata={
+            **select_connection_metadata("creation_id", "story_id", "chat_id", "start_setting_id", "turn_number", "is_regenerated"),
+            "prompt_versions": {"COMPACT": COMPACT_VERSION},
+        },
+    ) as trace:
+        status = "failed"
+        try:
+            summary = await generate_compact(payload, progress)
+            result = ChatCompactResponse(summary=summary)
+            trace.set_output(result.model_dump())
+            status = "success"
+            return result
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except Exception as exc:
+            trace.mark_failed(exc)
+            raise
+        finally:
+            trace.set_metadata(
+                status=status, attempts=progress.attempts, fallback_used=progress.fallback_used,
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
+
+
+async def _wait_compact_disconnect(request: Request) -> None:
+    # FastAPI가 요청 본문을 읽은 뒤 호출하므로 다음 ASGI 메시지를 기다릴 수 있다.
+    while (await request.receive())["type"] != "http.disconnect":
+        pass
+
+
+@router.post("/chat/compact", response_model=ChatCompactResponse)
+async def chat_compact(payload: ChatCompactRequest, request: Request) -> ChatCompactResponse:
+    generation = asyncio.create_task(_compact_result(payload))
+    disconnect = asyncio.create_task(_wait_compact_disconnect(request))
+    try:
+        done, _ = await asyncio.wait({generation, disconnect}, return_when=asyncio.FIRST_COMPLETED)
+        if disconnect in done:
+            disconnect.result()
+            raise asyncio.CancelledError()
+        return await generation
+    finally:
+        generation.cancel()
+        disconnect.cancel()
+        with CancelScope(shield=True):
+            await asyncio.gather(generation, disconnect, return_exceptions=True)
 
 # 백엔드가 SSE 연결 하나에 허용하는 전체 시간(초).
 #
