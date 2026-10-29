@@ -38,7 +38,7 @@ for p in "${WATCH[@]}"; do EXCLUDE+=(":(exclude)$p"); done
 
 # 현재 AI 세트의 안내와 계약을 확인한다. 기준 SHA는 현재 명세에 새로 저장하지 않는다.
 for domain in STORY CHAT MODERATION; do
-  for filename in AGENTS.md CONTRACT.md; do
+  for filename in AGENTS.md 5-CONTRACT.md; do
     f="$DOMAIN_ROOT/$domain/AI/$filename"
     [ -f "$f" ] || {
       echo "FAIL: knk-harness 경로를 확인해주세요. '$f'를 찾을 수 없습니다." >&2

@@ -28,7 +28,7 @@ HEADER_REQUEST_ID = "X-Manyak-Request-Id"
 HEADER_SESSION_ID = "X-Manyak-Session-Id"
 HEADER_DEVICE_ID_HASH = "X-Manyak-Device-Id-Hash"  # 해시 전용(원본 미수신)
 
-# Langfuse 생성 결과 연결용 헤더(docs/platform/BACKEND/OBSERVABILITY.md#메트릭과-운영-연동, docs/reference/ANALYTICS.md).
+# Langfuse 생성 결과 연결용 헤더(docs/platform/BACKEND/OBSERVABILITY.md §2-4, docs/reference/ANALYTICS.md).
 HEADER_CREATION_ID = "X-Manyak-Creation-Id"
 HEADER_PARENT_CREATION_ID = "X-Manyak-Parent-Creation-Id"
 HEADER_STORYLINE_ID = "X-Manyak-Storyline-Id"
