@@ -185,7 +185,7 @@ class ChatCommonRequest(BaseModel):
     # 넣는다(빈 문자열이면 빈 칸 그대로). 메모리를 요약·기록(생성)하는 로직은 별개 기능(Phase 4)
     # 이라, 그전까지 백엔드는 빈 문자열을 보낸다.
     summary: str
-    # ── 주요 사건·엔딩 진행 재료 (KNK-482, docs/domain/CHAT/AI/5-CONTRACT.md · adr/3-ai-server-adr.md D11) ──────────────
+    # ── 주요 사건·엔딩 진행 재료 (KNK-482, docs/domain/CHAT/AI/5-CONTRACT.md · docs/reference/decisions/AI.md D11) ──────────────
     # 둘 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
     # 않으므로, 없으면 기존 요청과 동일하게 동작한다(하위호환 — 백엔드 전달은
     # docs/domain/CHAT/BACKEND/4-1-PIPELINES.md). 재료가 실리면 본문 프롬프트에 들어간다.
