@@ -49,7 +49,7 @@ class CharacterInput(BaseModel):
     """인물 단위 입력 세트(KNK-833) — 주인공·주변 인물 공용. 세 항목 전부 선택.
 
     빈 값(null·빈 배열)은 LLM이 자동 생성한다. 개수 상한(주변 인물 5명·특징 3개)은
-    백엔드가 강제하므로 여기서 검증하지 않는다(docs/domain/STORY/AI/5-CONTRACT.md).
+    백엔드가 강제하므로 여기서 검증하지 않는다(docs/domain/STORY/AI/CONTRACT.md).
     """
 
     name: Annotated[str | None, BeforeValidator(_clean_name)] = None

@@ -181,7 +181,7 @@ class Ending(BaseModel):
 class StorySpec(BaseModel):
     """스토리 컴파일(시점 A-1)의 영속 산출물 — 스토리 명세 JSON(MVP 확정본).
 
-    내부 데이터 모델은 하네스 docs/domain/STORY/AI/6-2-SOFTWARE-IMPLEMENTATION.md를 참고한다.
+    내부 데이터 모델은 하네스 docs/domain/STORY/AI/SOFTWARE-IMPLEMENTATION.md를 참고한다.
     """
 
     meta: Meta
@@ -293,7 +293,7 @@ class CharacterImageOut(BaseModel):
 
 # 썸네일 한 장의 이름. 지금은 스토리당 한 장이라 고정이다(KNK-1027 image_name 계약).
 THUMBNAIL_IMAGE_NAME = "썸네일_기본"
-# 썸네일 실패 사유 코드. docs/domain/STORY/AI/5-CONTRACT.md 계약과 같다 — 이 밖의 값은 스키마가 막는다.
+# 썸네일 실패 사유 코드. docs/domain/STORY/AI/CONTRACT.md 계약과 같다 — 이 밖의 값은 스키마가 막는다.
 # skipped는 실패가 아니라 화풍 NONE이라 일부러 만들지 않은 경우다(KNK-1484). 백엔드는 error가 있으면 표지 없이 저장한다.
 ThumbnailErrorCode = Literal["timeout", "rate_limited", "rejected", "generation_failed", "skipped"]
 THUMBNAIL_ERROR_CODES: tuple[str, ...] = ("timeout", "rate_limited", "rejected", "generation_failed", "skipped")

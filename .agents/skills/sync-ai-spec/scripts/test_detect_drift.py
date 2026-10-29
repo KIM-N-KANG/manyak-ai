@@ -31,7 +31,7 @@ def main() -> None:
         docs = [
             root / "knk-harness/docs/domain" / domain / "AI" / filename
             for domain in ("STORY", "CHAT", "MODERATION")
-            for filename in ("AGENTS.md", "5-CONTRACT.md")
+            for filename in ("AGENTS.md", "CONTRACT.md")
         ]
         for doc in docs:
             doc.parent.mkdir(parents=True, exist_ok=True)

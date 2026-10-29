@@ -731,7 +731,7 @@ def _merge_blocks(data: dict, refill: dict, blocks: list[str]) -> None:
 
 
 def _inject_genre(data: dict, genre_tags: list[str]) -> None:
-    """genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 덮어쓴다(하네스 docs/domain/STORY/AI/6-1-AI-EXECUTION.md)."""
+    """genre는 예외 경로 — LLM 출력이 아니라 입력 태그를 정본으로 덮어쓴다(하네스 docs/domain/STORY/AI/AI-EXECUTION.md)."""
     if isinstance(data.get("meta"), dict):
         data["meta"]["genre"] = ", ".join(genre_tags)
 
@@ -740,7 +740,7 @@ def _inject_protagonist(data: dict, protagonist: CharacterInput) -> None:
     """사용자가 입력한 주인공 이름·성별을 주인공 프로필에 정본으로 덮어쓴다(KNK-838).
 
     사용자가 정한 값은 LLM 출력에 맡기지 않고 코드가 담보한다(장르 덮어쓰기와 같은
-    원칙, docs/domain/STORY/AI/5-CONTRACT.md · docs/reference/decisions/AI.md D7). 비운 항목은 LLM이 지은 값을 그대로 둔다.
+    원칙, docs/domain/STORY/AI/CONTRACT.md · docs/reference/decisions/AI.md D7). 비운 항목은 LLM이 지은 값을 그대로 둔다.
     성별은 계약 값("MALE"·"FEMALE")이 아니라 통글에 실리는 한국어로 바꿔 쓴다.
     """
     ur = _as_dict(data.get("prompt_settings")).get("user_role_setting")
@@ -978,7 +978,7 @@ def _default_image_name(character_name: str) -> str:
     """인물 이미지 한 장의 이름(KNK-1027). 지금은 인물당 한 장이라 `인물이름_기본`으로 고정한다.
 
     이름은 AI가 완성해서 주는 문자열이다 — 백엔드가 `name`·표정 같은 칸을 조립하지 않게 해,
-    구분 기준이 늘어도 백엔드가 바뀌지 않게 한다(docs/domain/CHAT/AI/5-CONTRACT.md · docs/reference/decisions/AI.md 기존 인물 이미지 계약).
+    구분 기준이 늘어도 백엔드가 바뀌지 않게 한다(docs/domain/CHAT/AI/CONTRACT.md · docs/reference/decisions/AI.md 기존 인물 이미지 계약).
     """
     return f"{character_name}_기본"
 
@@ -1104,7 +1104,7 @@ async def compile_story(request: StoryCompileRequest) -> StoryCompileResponse:
     흐름: LLM 세분 JSON → genre·주인공 이름/성별 주입 → 빈 필수키·사용자 인물 카드 검증(KNK-833) →
     모자란 블록과 이름·소개·외형 필드를 한 번에 부분 재호출(최대 2회) → 엔딩 미완성 시 빈 배열 폴백(KNK-465)
     → StorySpec 파싱 → nested 통글 변환.
-    컴파일 구현 기준은 하네스 docs/domain/STORY/AI/6-2-SOFTWARE-IMPLEMENTATION.md를 따른다.
+    컴파일 구현 기준은 하네스 docs/domain/STORY/AI/SOFTWARE-IMPLEMENTATION.md를 따른다.
     """
     compile_provider = llm.provider_of(settings.story_compile_model)
     system_prompt, user_prompt, version_key = build_compile_prompt(

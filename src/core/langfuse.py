@@ -18,15 +18,15 @@ evaluation·scripts에는 계측이 아예 실리지 않는다. 뒤늦은 import
 패치가 걸린다(monkey-patch가 인스턴스가 아니라 클래스 메서드를 바꾸기 때문).
 
 **원문 취급은 Sentry와 정반대.** Sentry는 원문을 싣지 않지만(AN-4-10), Langfuse는 원문을 싣는
-것이 도입 목적이다. 원문 비수집 원칙의 명시적 예외이며, 6-analytics §6-7 개정이 짝이다(KNK-634).
+것이 도입 목적이다. 원문 비수집 원칙의 명시적 예외이며, ANALYTICS.md의 개인정보와 원문 수집 원칙 개정이 짝이다(KNK-634).
 
 **켜고 끄기.** 키가 비면 no-op이라 로컬·CI는 관측 때문에 외부 의존이 생기지 않는다. no-op일
 때는 계측 import 자체를 하지 않으므로, 순정 openai가 그대로 남아 경고 소음도 없다.
 
-**활성화 가드 (KNK-652).** 원문 수집은 6-analytics §6-7이 "prod 전용·JP 리전 저장" 조건 아래
+**활성화 가드 (KNK-652).** 원문 수집은 ANALYTICS.md의 개인정보와 원문 수집 원칙이 "prod 전용·JP 리전 저장" 조건 아래
 허용한 예외다. 키 유무만 보고 켜면 키가 다른 환경에 흘러들거나 HOST를 빠뜨렸을 때(기본값이
 JP가 아님) 허용 조건 밖에서 원문이 수집되므로, 키가 있어도 host가 JP 엔드포인트이고 환경이
-prod일 때만 켠다(docs/reference/ANALYTICS.md §6-7). 미충족이면 기동을 막지 않고 no-op + 오류 로그 — 관측
+prod일 때만 켠다(docs/reference/ANALYTICS.md#개인정보와-원문-수집-원칙). 미충족이면 기동을 막지 않고 no-op + 오류 로그 — 관측
 실패가 서비스를 깨면 안 된다는 원칙과 같다. 로컬 통합 검증이 필요하면 로컬 `.env`의
 환경값을 의식적으로 prod로 바꿔 켠다(기본은 차단).
 
@@ -50,7 +50,7 @@ from src.core.request_context import get_correlation_ids
 
 logger = logging.getLogger(__name__)
 
-# 원문 수집이 허용된 유일한 저장 리전(JP)과 환경(prod) — 6-analytics §6-7 예외 조건.
+# 원문 수집이 허용된 유일한 저장 리전(JP)과 환경(prod) — ANALYTICS.md의 개인정보와 원문 수집 원칙 예외 조건.
 _ALLOWED_HOST = "https://jp.cloud.langfuse.com"
 _ALLOWED_ENVIRONMENT = "prod"
 
@@ -86,7 +86,7 @@ def init_langfuse() -> None:
     if host != _ALLOWED_HOST:
         logger.error(
             "Langfuse 비활성 — LANGFUSE_HOST가 JP 엔드포인트(%s)가 아님: %s "
-            "(원문 수집은 JP 리전만 허용, docs/reference/ANALYTICS.md §6-7)",
+            "(원문 수집은 JP 리전만 허용, docs/reference/ANALYTICS.md#개인정보와-원문-수집-원칙)",
             _ALLOWED_HOST,
             settings.langfuse_host,
         )
@@ -94,7 +94,7 @@ def init_langfuse() -> None:
     if settings.sentry_environment != _ALLOWED_ENVIRONMENT:
         logger.error(
             "Langfuse 비활성 — 환경이 prod가 아님: %s "
-            "(원문 수집은 prod 전용, docs/reference/ANALYTICS.md §6-7. 로컬 검증은 .env 환경값을 의식적으로 변경)",
+            "(원문 수집은 prod 전용, docs/reference/ANALYTICS.md#개인정보와-원문-수집-원칙. 로컬 검증은 .env 환경값을 의식적으로 변경)",
             settings.sentry_environment,
         )
         return
@@ -162,7 +162,7 @@ def dimension_tags(
     후속, docs/reference/ANALYTICS.md). story `genre_tags`는 키워드 단계 개편(KNK-621)이 커스텀 장르
     입력을 400으로 차단하면 사전 정의만 남는다 — 켜기는 그 배포 이후로 순서를 잡는다.
     주인공·주변 인물 특징(인물 세트 `features`, KNK-833)은 사용자가 직접 키워드를 입력해
-    추가할 수 있어(US-3-3, docs/domain/STORY/BACKEND/3-2-DB-SCHEMA.md) **원문이 섞이고 카디널리티가 폭발**한다 — 그래서
+    추가할 수 있어(US-3-3, docs/domain/STORY/BACKEND/DB-SCHEMA.md) **원문이 섞이고 카디널리티가 폭발**한다 — 그래서
     인자 자체를 두지 않아 트레이스 태그로 새어 나갈 경로를 없앴다(AN-4-10·§6-7 원문 비수집,
     KNK-640 리뷰). 사용자 자유입력(user_input·additional_info)도 마찬가지.
     """

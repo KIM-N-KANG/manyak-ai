@@ -16,15 +16,15 @@ description: |
 # AI 서버 스펙 동기화 (sync-ai-spec)
 
 knk-harness의 `docs/domain/<DOMAIN>/AI/AGENTS.md`에서 대상과 읽는 순서를 확인한다.
-STORY, CHAT, MODERATION 중 영향을 받는 세트만 갱신하며, 번호 문서의 형식은 하네스 작성 가이드를 따른다.
+STORY, CHAT, MODERATION 중 영향을 받는 세트만 갱신하며, 역할별 문서의 형식은 하네스 작성 가이드를 따른다.
 아래 파일명은 해당 AI 세트 기준이다.
 
 | 역할 | 문서 | 내용 |
 | --- | --- | --- |
-| 배경과 요구사항 | 1, 2, 3번 문서 | 승인된 사용자 목표와 태스크 범위 |
-| 설계와 외부 계약 | 4번 문서, `5-CONTRACT.md` | 책임 경계, 입력과 출력 및 실패 계약 |
-| 실행과 평가 구현 | 6번 문서 | 모델 호출, 설정, 정렬과 평가 |
-| 운영과 검증 | 7번 문서 | 오류, 테스트, 관측과 배포 |
+| 배경과 요구사항 | `BACKGROUND.md`, `USER-STORY.md`, `OPERATION-REQUIREMENTS.md`, `TASK-DEFINITION.md` | 승인된 사용자 목표와 태스크 범위 |
+| 설계와 외부 계약 | `COGNITIVE-ARCHITECTURE.md`, `SOFTWARE-ARCHITECTURE.md`, `CONTRACT.md` | 책임 경계, 입력과 출력 및 실패 계약 |
+| 실행과 평가 구현 | `AI-EXECUTION.md`, `SOFTWARE-IMPLEMENTATION.md`, `AI-ALIGNMENT.md`, `AI-EVALUATION-METHOD.md`, `AI-EVALUATION-IMPLEMENTATION.md`, `AI-PERFORMANCE-REPORT.md` | 모델 호출, 설정, 정렬과 평가 |
+| 운영과 검증 | `ERROR-HANDLING.md`, `TEST-CASES.md`, `OBSERVABILITY.md`, `DEPLOYMENT.md` | 오류, 테스트, 관측과 배포 |
 | 결정 이유 | `DECISIONS.md` | 확정된 기록을 보존하고 후속 결정에 대체 범위 연결 |
 
 기존 통합 AI Design과 ADR은 과거 근거로 보존한다. 새 도메인 계약을 그 문서에 다시 정의하지 않는다.
@@ -89,7 +89,7 @@ STORY, CHAT, MODERATION 중 영향을 받는 세트만 갱신하며, 번호 문�
 
 - [ ] 승인받은 항목만 수정한다. Spec은 승인된 계약, Design은 현재 구조를 짧게 쓰고, ADR은 확정 본문 보존·4층 순서·기존 문체·LF 유지 → §3
 - [ ] 비교에 사용한 이전 SHA와 대상 dev SHA, 도메인별 검토 범위를 동기화 PR과 검증 기록에 남긴다. 모든 도메인을 검토하지 않았다면 전체 AI 문서가 동기화됐다고 기록하지 않는다.
-- [ ] 하네스의 제품 및 AI 작성 가이드를 따른다. 현재 번호 문서에 이력용 메타 표를 추가하지 않으며 기존 ADR의 ID와 결정일을 보존한다.
+- [ ] 하네스의 제품 및 AI 작성 가이드를 따른다. 현재 명세 본문에 이력용 메타 표를 추가하지 않으며 기존 ADR의 ID와 결정일을 보존한다.
 
 ## 5단계 — 커밋·PR
 

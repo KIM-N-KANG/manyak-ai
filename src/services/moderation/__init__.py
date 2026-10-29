@@ -3,5 +3,5 @@
 - `images.py` — 검수할 이미지를 백엔드가 준 공개 URL에서 내려받아 형식·크기를 확인한다(KNK-1359).
 - `service.py` — 기본·대체 모델을 호출하고 검증한 최종 판정을 반환한다(KNK-1360).
 
-계약은 하네스 `docs/domain/MODERATION/AI/5-CONTRACT.md`이 정본이다.
+계약은 하네스 `docs/domain/MODERATION/AI/CONTRACT.md`이 정본이다.
 """
