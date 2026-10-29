@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# 스펙 드리프트 감지 — spec/5-ai-server-spec.md의 기준 코드 SHA 이후 dev에 쌓인 변경을 뽑는다.
+# AI 도메인 명세 동기화: 명시한 기준 SHA 이후 dev의 변경을 조회한다.
 #
-#   bash .agents/skills/sync-ai-spec/scripts/detect-drift.sh
+#   bash .agents/skills/sync-ai-spec/scripts/detect-drift.sh --base <AI 기준 SHA>
 #
-# 감시 경로와 SHA를 손으로 옮겨 적지 않게 하려고 만든 스크립트다.
+# 기준 SHA는 이전 동기화 PR이나 검증 기록에서 확인한다. 임의로 최신 커밋을 사용하지 않는다.
 # 어디서 실행하든 manyak-ai 레포 루트를 스스로 찾는다(두 레포를 오가는 스킬이라 작업 디렉터리를 믿지 않는다).
 #
 # 종료코드: 0  = 기준 SHA 이후 변경 없음      10 = 감시 경로 안에 변경 있음(변경 분류로)
 #           11 = 감시 경로 밖 변경만 있음(커밋 메시지 확인 필요)
-#           1  = 대상 문서 없음            3  = 메타 표에 기준 코드 SHA 없음
+#           1  = 대상 문서 없음            3  = 기준 코드 SHA 미지정
 #           4  = 기준 SHA가 로컬에 없음    5  = git fetch 실패    2  = 사용법 오류
 # 각 코드의 대응은 ../reference.md §4
 set -uo pipefail
@@ -16,14 +16,19 @@ set -uo pipefail
 case "${1:-}" in
   -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
 esac
-[ $# -eq 0 ] || { echo "FAIL: 인자를 받지 않습니다." >&2; exit 2; }
-
+if [ $# -eq 0 ]; then
+  echo "FAIL: 이전 동기화 PR이나 검증 기록의 AI 기준 SHA를 --base로 지정하세요." >&2
+  exit 3
+fi
+[ $# -eq 2 ] && [ "$1" = "--base" ] && [[ "$2" =~ ^[0-9a-f]{7,40}$ ]] || {
+  echo "FAIL: 사용법: detect-drift.sh --base <AI 기준 SHA>" >&2
+  exit 2
+}
+BASE_SHA=$2
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) \
   || { echo "FAIL: git 레포 안에서 실행해야 합니다." >&2; exit 1; }
-SPEC="$ROOT/../knk-harness/docs/spec/5-ai-server-spec.md"
-DESIGN="$ROOT/../knk-harness/docs/design/3-ai-server-design.md"
-ADR="$ROOT/../knk-harness/docs/adr/3-ai-server-adr.md"
+DOMAIN_ROOT="$ROOT/../knk-harness/docs/domain"
 
 # 감시 경로 — 스펙에 영향이 있는 곳. 표에서 눈으로 옮기지 않도록 여기 한 곳에만 둔다.
 WATCH=(src/ prompt/ spec/ Dockerfile pyproject.toml .github/workflows/ .env.example)
@@ -31,21 +36,16 @@ WATCH=(src/ prompt/ spec/ Dockerfile pyproject.toml .github/workflows/ .env.exam
 EXCLUDE=()
 for p in "${WATCH[@]}"; do EXCLUDE+=(":(exclude)$p"); done
 
-# 동기화 대상인 Spec·Design·ADR이 모두 있어야 진행한다.
-for f in "$SPEC" "$DESIGN" "$ADR"; do
-  [ -f "$f" ] || {
-    echo "FAIL: knk-harness 경로를 확인해주세요. '${f#"$ROOT"/}'를 찾을 수 없습니다(Spec·Design·ADR 모두 필요)." >&2
-    exit 1
-  }
+# 현재 AI 세트의 안내와 계약을 확인한다. 기준 SHA는 현재 명세에 새로 저장하지 않는다.
+for domain in STORY CHAT MODERATION; do
+  for filename in AGENTS.md 5-CONTRACT.md; do
+    f="$DOMAIN_ROOT/$domain/AI/$filename"
+    [ -f "$f" ] || {
+      echo "FAIL: knk-harness 경로를 확인해주세요. '$f'를 찾을 수 없습니다." >&2
+      exit 1
+    }
+  done
 done
-
-# 메타 표의 '기준 코드' 행에서 dev 브랜치 SHA만 뽑는다(같은 줄의 main SHA와 헷갈리지 않게 '브랜치' 뒤로 한정).
-BASE_SHA=$(grep -m1 '^| *기준 코드 *|' "$SPEC" | sed -nE 's/.*브랜치 `([0-9a-f]{7,40})`.*/\1/p')
-[ -n "$BASE_SHA" ] || {
-  echo "FAIL: 메타 표에서 기준 코드 SHA를 찾지 못했습니다 — 앵커가 없으면 감지가 불가능합니다." >&2
-  echo "      사용자에게 기준 시점을 물어 SHA를 확정하고, 갱신할 때 메타 표에 앵커 행을 복구하세요." >&2
-  exit 3
-}
 
 # fetch가 실패하면 로컬 origin/dev는 낡은 상태다. 그대로 비교하면 새 커밋을 못 보고
 # "스펙 최신"이라 답하게 되므로(이 스킬이 막으려는 바로 그 사고) 경고가 아니라 중단이다.
@@ -100,5 +100,5 @@ if [ -z "$IN" ]; then
   echo ">>> 설계 변경을 시사하면 변경 분류로, 아니면 '문서 반영 대상 변경 없음'으로 보고합니다."
   exit 11
 fi
-echo ">>> 갱신 후 메타 표에 적을 새 기준 코드: $NEW_SHA"
+echo ">>> 동기화 PR과 검증 기록에 남길 비교 대상 코드: $NEW_SHA"
 exit 10

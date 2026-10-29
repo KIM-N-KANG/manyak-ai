@@ -28,13 +28,14 @@ def main() -> None:
         script = repo / ".agents/skills/sync-ai-spec/scripts/detect-drift.sh"
         script.parent.mkdir(parents=True)
         shutil.copyfile(Path(__file__).with_name("detect-drift.sh"), script)
-        docs = [root / "knk-harness/docs" / name for name in (
-            "spec/5-ai-server-spec.md", "design/3-ai-server-design.md", "adr/3-ai-server-adr.md"
-        )]
-        metadata = f"# 5-ai-server-spec\n\n## 문서 정보\n\n| 기준 코드 | dev 브랜치 `{sha[:12]}` |\n"
+        docs = [
+            root / "knk-harness/docs/domain" / domain / "AI" / filename
+            for domain in ("STORY", "CHAT", "MODERATION")
+            for filename in ("AGENTS.md", "5-CONTRACT.md")
+        ]
         for doc in docs:
             doc.parent.mkdir(parents=True, exist_ok=True)
-            doc.write_text(metadata, encoding="utf-8")
+            doc.write_text("# AI document\n", encoding="utf-8")
 
         def check(expected: int, *args: str) -> None:
             result = subprocess.run(
@@ -42,17 +43,16 @@ def main() -> None:
             )
             assert result.returncode == expected, (expected, result.stdout, result.stderr)
 
-        check(0)
+        check(0, "--base", sha)
+        check(3)
         check(2, "unexpected")
+        check(2, "--base", "origin/dev")
+        check(2, "--base")
         for doc in docs:
             doc.unlink()
-            check(1)
-            doc.write_text(metadata, encoding="utf-8")
-        docs[0].write_text("# Missing metadata\n", encoding="utf-8")
-        check(3)
-        docs[0].write_text(metadata.replace(sha[:12], "0" * 12), encoding="utf-8")
-        check(4)
-        docs[0].write_text(metadata, encoding="utf-8")
+            check(1, "--base", sha)
+            doc.write_text("# AI document\n", encoding="utf-8")
+        check(4, "--base", "0" * 12)
         for filename, expected in (("README.md", 11), ("src/change.py", 10)):
             file = repo / filename
             file.parent.mkdir(parents=True, exist_ok=True)
@@ -60,10 +60,10 @@ def main() -> None:
             git("add", "--", filename)
             git("-c", "commit.gpgsign=false", "commit", "-m", filename)
             git("push", "origin", "dev")
-            check(expected)
+            check(expected, "--base", sha)
         git("remote", "set-url", "origin", str(root / "missing.git"))
-        check(5)
-    print("PASS: new document paths, metadata, change detection, and failure exit codes")
+        check(5, "--base", sha)
+    print("PASS: new document paths, explicit baseline, change detection, and failure exit codes")
 
 
 if __name__ == "__main__":

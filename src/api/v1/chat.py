@@ -12,7 +12,7 @@ AI가 발행하는 SSE 이벤트는 token·character_image·completed·error·pi
 본문·이미지를 기다리는 동안 나가는 신호로, 백엔드의 이벤트 간 상한 시계를 되돌린다(KNK-750 — `EVENT_PING` 주석).
 started·chatId·turnId는 백엔드(manyak-server)가 부착한다. completed의 ai_output·character_images·meta는
 와이어 계약 키(aiOutput·characterImages·camelCase)로 직렬화한다(by_alias=True). completed의 choices는 하위호환 빈 배열 고정 —
-백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3)이라 선행 배포에 안전하다.
+백엔드는 '빈 배열이면 저장하지 않음'(docs/domain/CHAT/BACKEND/4-2-CONTRACT.md)이라 선행 배포에 안전하다.
 판정 메타 3필드(targetMainEvent·occurredMainEventName·endingName)는 판정 제거(KNK-1626)와 함께
 completed에서 뺐다. 백엔드는 없는 필드를 null로 읽어 동작이 같다.
 """
@@ -155,7 +155,7 @@ async def _event_stream(
     prompt_versions = body_prompt_versions()
     selected_model, _ = select_chat_model(req.user_id, req.model_tier)
     selected_provider = llm.provider_of(selected_model)
-    # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
+    # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(docs/REFERENCE/ANALYTICS.md).
     with observe_request(
         "채팅 턴",
         # 업로드 슬롯에는 임시 쓰기 권한이 담긴 서명 URL이 있어 관측에서 제외한다.
@@ -230,7 +230,7 @@ async def _event_stream(
                         trace.set_metadata(model=meta.model, provider=meta.provider)
                         payload = CompletedData(
                             ai_output=ev["ai_output"],
-                            # 하위호환 빈 배열 — 백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3).
+                            # 하위호환 빈 배열 — 백엔드는 '빈 배열이면 저장하지 않음'(docs/domain/CHAT/BACKEND/4-2-CONTRACT.md).
                             # 프론트·백엔드 전환 완료 후 필드 제거를 검토한다.
                             choices=[],
                             character_images=ev.get("character_images", []),
@@ -289,7 +289,7 @@ async def chat_choices(request: ChatChoicesRequest) -> ChatChoicesResponse:
     """
     # 누적 재호출(최대 3회)까지 한 트레이스로 묶인다(KNK-624). 분석 차원 부착(KNK-640):
     # 프롬프트 버전은 미리, 재호출 횟수는 생성 결과에서 사후에 싣는다.
-    # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(spec/5-ai-server-spec.md §5-6).
+    # 장르 태그는 스토리 제작 트레이스에만 — 채팅 쪽은 KNK-652에서 제거(docs/REFERENCE/ANALYTICS.md).
     with observe_request(
         "채팅 선택지",
         input_data=request.model_dump(mode="json", exclude={"user_source", "image_slots"}),
