@@ -185,10 +185,10 @@ class ChatCommonRequest(BaseModel):
     # 넣는다(빈 문자열이면 빈 칸 그대로). 메모리를 요약·기록(생성)하는 로직은 별개 기능(Phase 4)
     # 이라, 그전까지 백엔드는 빈 문자열을 보낸다.
     summary: str
-    # ── 주요 사건·엔딩 진행 재료 (KNK-482, spec/5-ai-server-spec.md §5-3-4 · adr/3-ai-server-adr.md D11) ──────────────
+    # ── 주요 사건·엔딩 진행 재료 (KNK-482, docs/domain/CHAT/AI/5-CONTRACT.md · docs/reference/decisions/AI.md D11) ──────────────
     # 둘 다 선택 필드다 — 사건·엔딩이 없는 스토리(레거시 포함)에서는 재료가 실리지
     # 않으므로, 없으면 기존 요청과 동일하게 동작한다(하위호환 — 백엔드 전달은
-    # spec/4-backend-server-spec.md §4-3-10). 재료가 실리면 본문 프롬프트에 들어간다.
+    # docs/domain/CHAT/BACKEND/4-1-PIPELINES.md). 재료가 실리면 본문 프롬프트에 들어간다.
     # 목표 사건(`target_main_event`)·완결 사건(`occurred_main_event_names`)은 판정 제거(KNK-1626)로
     # 뺐다. 백엔드가 계속 보내도 모르는 필드라 무시된다(pydantic 기본 extra="ignore").
     main_events: list[MainEvent] = Field(default_factory=list, max_length=10)
@@ -289,7 +289,7 @@ class CompletedData(BaseModel):
       한 턴에서 정식 인물 이름 기준으로 한 항목씩 담으며, 본명·별칭의 반복 대사는 추가하지 않는다.
     - choices: **하위호환 빈 배열 고정**(KNK-625). 선택지 생성은 전용 엔드포인트
       `/chat/choices`로 분리됐다 — completed가 선택지를 기다리지 않아 본문 확정이
-      밀리지 않는다. 백엔드는 '빈 배열이면 저장하지 않음'(spec/4-backend-server-spec.md §4-3-3)이라
+      밀리지 않는다. 백엔드는 '빈 배열이면 저장하지 않음'(docs/domain/CHAT/BACKEND/4-2-CONTRACT.md)이라
       선행 배포에 안전하며, 전환 완료 후 필드 제거를 검토한다. 빈 배열은 스키마
       제약(max_length=0)으로 강제한다 — 선택지가 다시 섞이는 회귀를 스키마가 막는다.
     """

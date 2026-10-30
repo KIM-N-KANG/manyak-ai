@@ -4,8 +4,6 @@ import re
 
 from pydantic import JsonValue
 
-from src.services.llm.base import TokenUsage
-
 _DATA_URI = re.compile(r"data:[^,\s]*;base64,", re.IGNORECASE)
 _WEB_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
@@ -25,16 +23,3 @@ def without_media(data: JsonValue) -> JsonValue:
             for key, value in data.items()
         }
     return data
-
-
-def usage_details(usage: TokenUsage) -> dict[str, int]:
-    """입력 합계에 이미 포함된 캐시 토큰을 분리해 중복 과금을 막는다."""
-    details = {}
-    if usage.input_tokens is not None:
-        cached = usage.cache_read_input_tokens or 0
-        details["input"] = usage.input_tokens - cached
-        if usage.cache_read_input_tokens is not None:
-            details["input_cached_tokens"] = cached
-    if usage.output_tokens is not None:
-        details["output"] = usage.output_tokens
-    return details

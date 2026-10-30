@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from src.api.router import api_router
 from src.core.config import settings
@@ -13,6 +13,7 @@ from src.core.langfuse import init_langfuse, shutdown_langfuse
 from src.core.middleware import RequestContextMiddleware
 from src.core.sentry import init_sentry
 from src.core.tracing import bounded_shutdown, instrument_app, shutdown_tracing
+from src.services.chat_compact import CompactFailed
 from src.services.image import validate_startup as validate_image_startup
 from src.services.llm import validate_startup
 
@@ -62,12 +63,19 @@ app = FastAPI(
 @app.exception_handler(RequestValidationError)
 async def chat_validation_error(request: Request, exc: RequestValidationError) -> Response:
     """채팅·검수 검증 실패 시 입력 원문과 이미지 URL을 응답에서 제외한다."""
-    if request.url.path in ("/api/v1/chat/turns", "/api/v1/chat/choices", "/api/v1/moderation/story"):
+    if request.url.path in ("/api/v1/chat/turns", "/api/v1/chat/choices", "/api/v1/chat/compact", "/api/v1/moderation/story"):
         # 필수 필드 누락은 슬롯이 아닌 요청 본문 전체를 input에 담을 수 있다.
         errors = [{key: error[key] for key in ("type", "loc", "msg") if key in error}
                   for error in exc.errors()]
         exc = RequestValidationError(errors)
     return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(CompactFailed)
+async def compact_failed(_request: Request, _exc: CompactFailed) -> JSONResponse:
+    return JSONResponse(status_code=502, content={
+        "code": "COMPACT_FAILED", "message": "대화 요약을 생성하지 못했습니다.",
+    })
 
 
 # 백엔드가 헤더로 넘긴 요청 상관관계 식별자를 요청 단위 context로 옮긴다(KNK-266).
