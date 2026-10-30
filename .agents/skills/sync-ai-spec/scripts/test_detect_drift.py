@@ -37,13 +37,27 @@ def main() -> None:
             doc.parent.mkdir(parents=True, exist_ok=True)
             doc.write_text("# AI document\n", encoding="utf-8")
 
-        def check(expected: int, *args: str) -> None:
+        def check(expected: int, *args: str) -> subprocess.CompletedProcess[str]:
             result = subprocess.run(
                 ["bash", str(script), *args], cwd=root, capture_output=True, text=True
             )
             assert result.returncode == expected, (expected, result.stdout, result.stderr)
+            return result
 
         check(0, "--base", sha)
+        check(0, "--base", sha[:12])
+        git("checkout", "-b", "unmerged")
+        git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "unmerged")
+        unmerged_sha = git("rev-parse", "HEAD")
+
+        def check_unmerged_base() -> None:
+            result = check(4, "--base", unmerged_sha)
+            assert "origin/dev 이력에 포함되지 않습니다" in result.stderr, result.stderr
+            assert "기준 SHA 이후 변경이 없습니다" not in result.stdout, result.stdout
+
+        # The unmerged commit is ahead of origin/dev: log would otherwise be empty.
+        check_unmerged_base()
+        git("checkout", "dev")
         check(3)
         check(2, "unexpected")
         check(2, "--base", "origin/dev")
@@ -61,6 +75,9 @@ def main() -> None:
             git("-c", "commit.gpgsign=false", "commit", "-m", filename)
             git("push", "origin", "dev")
             check(expected, "--base", sha)
+            check(0, "--base", git("rev-parse", "HEAD"))
+            # Once dev advances, the same unmerged branch has diverged from it.
+            check_unmerged_base()
         git("remote", "set-url", "origin", str(root / "missing.git"))
         check(5, "--base", sha)
     print("PASS: new document paths, explicit baseline, change detection, and failure exit codes")

@@ -9,7 +9,7 @@
 # 종료코드: 0  = 기준 SHA 이후 변경 없음      10 = 감시 경로 안에 변경 있음(변경 분류로)
 #           11 = 감시 경로 밖 변경만 있음(커밋 메시지 확인 필요)
 #           1  = 대상 문서 없음            3  = 기준 코드 SHA 미지정
-#           4  = 기준 SHA가 로컬에 없음    5  = git fetch 실패    2  = 사용법 오류
+#           4  = 기준 SHA가 없거나 dev 이력 밖    5  = git fetch 실패    2  = 사용법 오류
 # 각 코드의 대응은 ../reference.md §4
 set -uo pipefail
 
@@ -58,6 +58,21 @@ git -C "$ROOT" cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || {
 }
 
 NEW_SHA=$(git -C "$ROOT" rev-parse --short=12 origin/dev) || { echo "FAIL: origin/dev를 읽지 못했습니다." >&2; exit 1; }
+
+# 미병합 커밋을 기준으로 삼으면 빈 log가 "변경 없음"으로 오인될 수 있다.
+git -C "$ROOT" merge-base --is-ancestor "$BASE_SHA" origin/dev
+ANCESTOR_STATUS=$?
+case "$ANCESTOR_STATUS" in
+  0) ;;
+  1)
+    echo "FAIL: 기준 SHA $BASE_SHA 는 origin/dev 이력에 포함되지 않습니다. 이전 동기화 기록의 기준 SHA를 확인하세요." >&2
+    exit 4
+    ;;
+  *)
+    echo "FAIL: 기준 SHA와 origin/dev의 이력 관계를 확인하지 못했습니다." >&2
+    exit 1
+    ;;
+esac
 
 echo "기준 코드 $BASE_SHA -> origin/dev $NEW_SHA"
 echo "감시 경로: ${WATCH[*]}"
