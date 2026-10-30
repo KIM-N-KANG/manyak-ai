@@ -19,6 +19,16 @@
 
 ---
 
+## v0.5.5 — 2026-10-30 운영 배포 성공 (버전 표시 갱신 누락)
+
+- 범위: KNK-1780 대화 요약 compact API(#207), KNK-1922 선택지 행동 기준 강화(#209), KNK-1914 도메인 명세 참조·AI 동기화 도구 전환(#208), v0.5.4 배포 이력(#206).
+- [배포 PR #210](https://github.com/KIM-N-KANG/manyak-ai/pull/210) → main `221dcb82c2112a6a4ec3cf6f076c27826207651d`(사용자 직접 Merge Commit). [운영 워크플로](https://github.com/KIM-N-KANG/manyak-ai/actions/runs/41024626461)는 2026-10-30 17:19:58 KST에 성공했다.
+- 검증: 워크플로의 Test, Image smoke (health), Docker build and publish, Deploy to ECS (prod) 모두 성공. 운영 AI 컨테이너 헬스 검사도 통과했다. 별도 ECS imageDigest 대조와 운영 생성·채팅 실측은 미실시.
+- QA: 릴리스 전 `qa.sh`와 3관점 최종 리뷰는 미실시. CI 성공을 라이브 QA 통과로 간주하지 않는다.
+- **버전 표시 갱신 누락:** `pyproject.toml`, `src/core/config.py`, `.env.example`은 0.5.4로 남았다. 태그 `v0.5.5`는 실제 배포 커밋 `221dcb8`을 가리키지만 앱 버전 표시는 릴리스 이름과 다르다. 세 파일 갱신과 운영 재배포가 후속으로 필요하며, 이번 후처리에서는 재배포하지 않았다.
+- 요약 모델은 `claude-sonnet-5-5`, 대체 모델은 `deepseek-flash`다. Anthropic 키가 기동 검사에 포함된다. 운영 헬스 통과는 확인했지만 실제 요약 호출 성공과 백엔드 연동 배포 여부는 별도 확인이 필요하다.
+- 역류 불필요: 후처리 시 `release/v0.5.5`와 `origin/dev`가 모두 `f66b2a2`로 동일했다. Jira KNK-1929 상태는 변경하지 않았다.
+
 ## v0.5.4 — 2026-10-28 배포 완료
 
 - 범위: KNK-1619 컴파일 인물 외형 묘사 정리로 이미지 거부 줄이기(#200), KNK-1859 내용 거절을 422 `content_refused`로 응답(#201), KNK-1556 FastAPI HTTP 서버 지표 OTLP 전송(#202), KNK-1834 v0.5.3 이력 문서(#199), KNK-1883 버전 0.5.4(#203).
