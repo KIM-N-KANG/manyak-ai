@@ -1024,3 +1024,25 @@ def test_removed_chat_settings_are_ignored_at_startup(monkeypatch) -> None:
     monkeypatch.setattr(registry, "settings", _settings())
     llm.validate_startup()
     assert "CHAT_MODEL" not in dict(registry.selected_models())
+
+
+def test_gpt_6_1_terra_capabilities_and_pricing() -> None:
+    resolved = registry.resolve("gpt-6.1-terra")
+    assert resolved.provider == PROVIDER_OPENAI
+    assert resolved.adapter == ADAPTER_OPENAI_SDK
+    assert resolved.reasoning_effort == "medium"
+    assert resolved.use_thinking is True
+    assert resolved.supports_image_input is True
+    assert resolved.context_window_tokens == 1_050_000
+    assert resolved.max_output_tokens == 128_000
+    assert resolved.supported_reasoning_efforts == frozenset(
+        {"none", "low", "medium", "high", "xhigh", "max"}
+    )
+    price = resolved.pricing_on(date(2026, 10, 30))
+    assert price.input_usd_per_1m_tokens == Decimal("1.00")
+    assert price.cache_read_input_usd_per_1m_tokens == Decimal("0.05")
+    assert price.cache_write_input_usd_per_1m_tokens == Decimal("1.25")
+    assert price.output_usd_per_1m_tokens == Decimal("5.00")
+    assert price.long_context_threshold_tokens == 272_000
+    assert price.long_context_input_multiplier == Decimal("2")
+    assert price.long_context_output_multiplier == Decimal("1.5")
