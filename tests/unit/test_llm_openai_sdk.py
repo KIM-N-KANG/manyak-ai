@@ -1176,3 +1176,56 @@ async def test_empty_refusal_field_keeps_original_finish_reason(monkeypatch) -> 
     result = await openai_sdk.complete(_req(), _FLASH)
 
     assert result.finish_reason == "stop"
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "xhigh", "max"])
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_gpt_6_1_terra_request_through_gateway(monkeypatch, effort, streaming) -> None:
+    result = (
+        _agen([_chunk("본문"), _chunk(finish_reason="stop")])
+        if streaming else _response(model="gpt-6.1-terra")
+    )
+    completions = _FakeCompletions(result=result)
+    _install(monkeypatch, completions)
+    req = _req(
+        model="gpt-6.1-terra", reasoning_effort=effort,
+        temperature=0.75, max_tokens=128_000,
+    )
+    if streaming:
+        events = [event async for event in llm.stream(req)]
+        assert events[0] == TextDelta("본문")
+        assert isinstance(events[-1], StreamCompleted)
+    else:
+        assert (await llm.complete(req)).model == "gpt-6.1-terra"
+    body = completions.captured
+    assert body["model"] == "gpt-6.1-terra"
+    assert body["reasoning_effort"] == effort
+    assert body["max_completion_tokens"] == 128_000
+    assert "temperature" not in body
+    assert "max_tokens" not in body
+    if streaming:
+        assert body["stream"] is True
+        assert body["stream_options"] == {"include_usage": True}
+    assert registry.resolve("gpt-6.1-terra").reasoning_effort == "medium"
+
+
+@pytest.mark.parametrize("effort", ["minimal", "unsupported"])
+def test_gpt_6_1_terra_rejects_unsupported_effort(effort) -> None:
+    with pytest.raises(LlmConfigError, match="추론 강도"):
+        llm.request_body(_req(model="gpt-6.1-terra", reasoning_effort=effort))
+
+
+def test_gpt_6_1_terra_rejects_excess_output_tokens() -> None:
+    with pytest.raises(LlmConfigError, match="최대 출력"):
+        llm.request_body(_req(model="gpt-6.1-terra", max_tokens=128_001))
+
+
+@pytest.mark.parametrize("json_mode", [True, False])
+def test_gpt_6_1_terra_structured_output(json_mode) -> None:
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    body = llm.request_body(_req(
+        model="gpt-6.1-terra", json_mode=json_mode,
+        response_schema=None if json_mode else schema,
+    ))
+    assert body["response_format"]["type"] == ("json_object" if json_mode else "json_schema")
+    assert body["reasoning_effort"] == "medium"

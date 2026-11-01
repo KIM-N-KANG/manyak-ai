@@ -67,7 +67,10 @@ def test_moderation_models_declare_image_input(model: str) -> None:
 
 def test_image_input_defaults_to_false_for_other_models() -> None:
     """확인하지 않은 모델은 못 받는 것으로 둔다 — 새 모델은 문서 확인 뒤에만 True."""
-    others = [m for m in registry._REGISTRY if m not in {"gpt-5.6-luna", "gpt-6-luna", "deepseek-flash"}]
+    others = [
+        m for m in registry._REGISTRY
+        if m not in {"gpt-5.6-luna", "gpt-6-luna", "deepseek-flash", "gpt-6.1-terra"}
+    ]
     assert others  # 등록부에 다른 모델이 있어야 이 테스트가 의미 있다
     assert all(registry.resolve(m).supports_image_input is False for m in others)
 

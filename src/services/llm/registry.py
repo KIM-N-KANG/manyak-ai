@@ -106,6 +106,45 @@ _REGISTRY: dict[str, ResolvedModel] = {
             ),
         ),
     ),
+    "gpt-6.1-terra": ResolvedModel(
+        model="gpt-6.1-terra",
+        provider=PROVIDER_OPENAI,
+        adapter=ADAPTER_OPENAI_SDK,
+        use_thinking=True,
+        # none 외의 추론 강도는 temperature를 받지 않아 기존 GPT 정책처럼 생략한다.
+        supports_temperature=False,
+        context_window_tokens=1_050_000,
+        max_output_tokens=128_000,
+        reasoning_effort="medium",
+        supported_reasoning_efforts=frozenset(
+            {"none", "low", "medium", "high", "xhigh", "max"}
+        ),
+        structured_output_modes=frozenset(
+            {STRUCTURED_OUTPUT_JSON_OBJECT, STRUCTURED_OUTPUT_JSON_SCHEMA}
+        ),
+        supports_image_input=True,
+        capabilities_verified_on=date(2026, 10, 30),
+        capabilities_source_urls=(
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/docs/guides/latest-model",
+        ),
+        # 공식 페이지에 별도의 고정 스냅샷 ID가 없다.
+        snapshot_model=None,
+        pricing=(
+            ModelPricing(
+                input_usd_per_1m_tokens=Decimal("1.00"),
+                cache_read_input_usd_per_1m_tokens=Decimal("0.05"),
+                output_usd_per_1m_tokens=Decimal("5.00"),
+                # 기본 30분 캐시 쓰기 단가.
+                cache_write_input_usd_per_1m_tokens=Decimal("1.25"),
+                source_url="https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+                verified_on=date(2026, 10, 30),
+                long_context_threshold_tokens=272_000,
+                long_context_input_multiplier=Decimal("2"),
+                long_context_output_multiplier=Decimal("1.5"),
+            ),
+        ),
+    ),
     "gpt-5.6-terra": ResolvedModel(
         model="gpt-5.6-terra",
         provider=PROVIDER_OPENAI,
