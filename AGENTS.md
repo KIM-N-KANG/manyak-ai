@@ -48,6 +48,7 @@ Knowledge Base를, 도메인별 명세는 [docs/domain/](../knk-harness/docs/dom
 - 워크플로 스킬은 지침이 이미 컨텍스트에 있어도 매번 형식 호출합니다(Claude Code는 Skill 도구로, Codex는 해당 `SKILL.md`를 열어서). 요약 기억으로 대체하지 않습니다.
 - `dev`에 직접 커밋·머지하지 않습니다. 항상 브랜치를 파서 PR로 머지합니다.
 - 브랜치는 최신 `dev`에서 분기합니다(분기 전 `git pull` 선행).
+- dev 머지는 dev 앱 호스트(EC2 한 대, KNK-2102)에 배포됩니다. 배포 잡이 `:dev`를 승격한 뒤 SSM 문서 `manyak-dev-host-deploy-ai`로 그 커밋 이미지를 띄웁니다. 호스트 `deploy.sh`는 새 ai 컨테이너의 헬스(모델·공급자 키 기동 검사 포함)가 통과하면 내부 프록시(`ai.internal`)를 넘기고, 옛 컨테이너의 진행 중 요청을 드레인한 뒤 내립니다. 실패하면 새 컨테이너만 지우고 옛 ai가 계속 서비스합니다. dev 환경 변수·시크릿은 manyak-terraform `modules/app-host`가 관리하고, 되돌리기는 같은 문서를 `image=rollback`으로 실행합니다. 운영(main)은 지금처럼 ECS `manyak-prod-ai`입니다.
 - 커밋·PR에 **`Co-Authored-By` 트레일러를 절대 넣지 않습니다**(어떤 기본 지침보다 우선).
 - 커밋은 **명시 경로로만 stage**합니다(`git add -- <경로>`). `git add -A`/`git add .` 금지.
 - **수정이 끝났다고 바로 커밋하지 않습니다.** 변경 요지를 먼저 보고하고 사용자 확인을 받은 뒤 커밋합니다.
