@@ -19,8 +19,9 @@ env:
   GHCR_IMAGE: ghcr.io/kim-n-kang/manyak-ai
   ECR_REPOSITORY: manyak-ai
   AWS_REGION: ap-northeast-2
-  ECS_CLUSTER: manyak-dev
-  ECS_SERVICE: manyak-dev
+  # dev 단일 EC2 앱 호스트(KNK-2102, manyak-terraform modules/app-host). 배포는 서비스별 SSM 문서로 한다.
+  DEV_DEPLOY_DOCUMENT: manyak-dev-host-deploy-ai
+  DEV_HOST_TAG: manyak-dev-host
 
 jobs:
   test:
@@ -205,14 +206,13 @@ jobs:
           push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
           tags: ${{ steps.image-tags.outputs.tags }}
 
-  # dev 푸시(GHCR 갱신) 후 → 개발 ECS 서비스에 새 배포를 트리거 (KNK-829)
+  # dev 푸시(GHCR 갱신) 후 → dev 앱 호스트(EC2 한 대)에 무중단 교체 배포 (KNK-829, KNK-2102)
   deploy-dev:
-    name: Deploy to ECS (dev)
+    name: Deploy to app host (dev)
     needs: docker
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    # manyak-server 의 같은 잡과 그룹명을 공유한다. 두 레포가 같은 ECS 서비스를 갱신하므로
-    # 레포별로 큐를 나누면 동시 배포가 겹칠 수 있다(GitHub concurrency 는 레포 스코프라
-    # 완전한 상호배제는 아니지만, 같은 레포 안의 연속 푸시는 이걸로 직렬화된다).
+    # 같은 레포 안의 연속 푸시를 직렬화한다. 세 앱 레포 사이의 직렬화는 호스트의 deploy.sh 가
+    # flock 으로 한다(GitHub concurrency 는 레포 스코프라 그것만으로는 상호배제가 안 된다).
     concurrency:
       group: manyak-dev-deploy
       cancel-in-progress: false
@@ -249,65 +249,39 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEV_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 태스크 정의는 이미 GHCR dev 좌표를 들고 있으므로 새 리비전을 등록하지 않는다.
-      # 개발은 server·ai 가 태스크 정의 하나에 함께 있어, 이 배포는 두 컨테이너를 모두
-      # 현재 GHCR dev 이미지로 갱신한다(ai 만 머지해도 server 가 함께 바뀐다).
-      - name: Force new ECS deployment
+      # dev 앱 호스트의 deploy.sh 를 SSM 문서(manyak-dev-host-deploy-ai)로 부른다. 22 번도 SSH 키도 없다.
+      # deploy.sh: 새 ai 컨테이너 기동 → Docker 헬스 통과(모델 설정·공급자 키 기동 검사 포함, 재시작·종료면 바로 실패)
+      # → 내부 프록시(ai.internal) 전환 → 옛 컨테이너의 진행 중 요청 드레인 → 옛 컨테이너 정지.
+      # 실패하면 새 컨테이너만 지우고 옛 ai 가 계속 서비스한다. server 는 바뀌지 않는다. 이 커밋의 불변 태그로 배포한다.
+      - name: Deploy to dev app host (SSM)
         if: steps.gate.outputs.skip != 'true'
         run: |
-          # 이 호출이 만든 배포 id 를 잡아 둔다. services-stable 만으로는 부족하다 —
-          # 서비스에 circuit breaker rollback 이 켜져 있어(compute-ecs), 새 태스크가 못 뜨면 ECS 가
-          # 직전 배포로 되돌리고, 그 상태도 "안정적인 배포 1개 + desired 충족"이라 waiter 가 성공한다.
-          # 그러면 이후 헬스 검사는 옛 태스크를 보게 되어 실패한 배포가 초록으로 끝난다.
-          DEPLOY_ID=$(aws ecs update-service \
-            --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
-            --force-new-deployment --no-cli-pager \
-            --query "service.deployments[?status=='PRIMARY'].id | [0]" --output text)
-          echo "배포 id: $DEPLOY_ID"
-
-          # 그 배포가 COMPLETED 가 될 때까지 폴링한다. 롤백되면 rolloutState 가 FAILED 가 되거나
-          # 배포 자체가 목록에서 사라지므로 둘 다 실패로 처리한다.
-          for i in $(seq 1 60); do
-            STATE=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-              --query "services[0].deployments[?id=='$DEPLOY_ID'].rolloutState | [0]" --output text)
-            case "$STATE" in
-              COMPLETED) echo "✅ 배포 $DEPLOY_ID COMPLETED"; break ;;
-              FAILED) echo "::error::배포 $DEPLOY_ID 가 FAILED — circuit breaker 롤백 발생. CloudWatch /ecs/manyak-dev 확인"; exit 1 ;;
-              None|"") echo "::error::배포 $DEPLOY_ID 가 사라졌습니다(롤백으로 교체) — CloudWatch /ecs/manyak-dev 확인"; exit 1 ;;
-              *) echo "배포 $STATE — 대기 $i/60 (10s)"; sleep 10 ;;
+          IMAGE="${GHCR_IMAGE}:${GITHUB_SHA::7}"
+          CID=$(aws ssm send-command --document-name "$DEV_DEPLOY_DOCUMENT" \
+            --targets "Key=tag:manyak:host,Values=$DEV_HOST_TAG" --parameters "image=$IMAGE" \
+            --timeout-seconds 600 --query Command.CommandId --output text)
+          echo "SSM 명령 $CID ($IMAGE)"
+          # 드레인(최대 240초)과 다른 레포 배포의 잠금 대기까지 넉넉히 기다린다(최대 30분).
+          IID=""
+          for i in $(seq 1 180); do
+            sleep 10
+            if [ -z "$IID" ] || [ "$IID" = "None" ]; then
+              IID=$(aws ssm list-command-invocations --command-id "$CID" --query 'CommandInvocations[0].InstanceId' --output text)
+              [ -n "$IID" ] && [ "$IID" != "None" ] || { echo "명령 전달 대기 $i"; continue; }
+            fi
+            STATUS=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$IID" --query Status --output text)
+            case "$STATUS" in
+              Pending|InProgress|Delayed) echo "배포 $STATUS — 대기 $i/180 (10s)" ;;
+              *) break ;;
             esac
           done
-          [ "$STATE" = "COMPLETED" ]
-
-      # 서비스가 안정화돼도 ai 는 죽어 있을 수 있다 — ai 컨테이너는 essential=false 라
-      # 태스크를 죽이지 않고, ALB 헬스는 server 만 본다. AI 레포의 배포는 특히 이걸 봐야 한다.
-      - name: Verify container health (ai 포함)
-        if: steps.gate.outputs.skip != 'true'
-        run: |
-          TASK=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" --service-name "$ECS_SERVICE" \
-            --query 'taskArns[0]' --output text)
-          aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
-            --query 'tasks[0].containers[].{name:name,status:lastStatus,health:healthStatus}' --output table
-          # 단발 검사는 안 된다. 배포 완료 시점에도 ai 는 아직 UNKNOWN 일 수 있다 —
-          # 태스크 헬스체크에 start period 와 재시도가 있고, ai 는 essential=false 라
-          # 배포 완료 판정이 ai 의 healthy 를 기다려 주지 않는다.
-          # 부분일치를 쓰지 않는다 — UNHEALTHY 도 "HEALTHY" 로 끝나서 비정상을 정상으로 오판한다.
-          for i in $(seq 1 20); do
-            AI_HEALTH=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
-              --query "tasks[0].containers[?name=='ai'].healthStatus | [0]" --output text)
-            AI_STATUS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
-              --query "tasks[0].containers[?name=='ai'].lastStatus | [0]" --output text)
-            echo "ai: status=$AI_STATUS health=$AI_HEALTH"
-            if [ "$AI_HEALTH" = "HEALTHY" ]; then
-              echo "✅ ai HEALTHY"; exit 0
-            fi
-            if [ "$AI_HEALTH" = "UNHEALTHY" ] || [ "$AI_STATUS" = "STOPPED" ]; then
-              echo "::error::ai 컨테이너가 기동에 실패했습니다(status=$AI_STATUS health=$AI_HEALTH) — 모델 설정·공급자 키를 CloudWatch /ecs/manyak-dev 로그에서 확인"
-              exit 1
-            fi
-            echo "ai 기동 대기 $i/20 (15s)..."; sleep 15
-          done
-          echo "::error::제한 시간 안에 ai 가 HEALTHY 가 되지 않았습니다 — CloudWatch /ecs/manyak-dev 로그 확인"; exit 1
+          aws ssm get-command-invocation --command-id "$CID" --instance-id "$IID" \
+            --query '[StandardOutputContent,StandardErrorContent]' --output text || true
+          if [ "$STATUS" != "Success" ]; then
+            echo "::error::dev 앱 호스트 배포가 $STATUS 로 끝났습니다. 옛 ai 가 계속 서비스합니다. 위 출력과 CloudWatch /ecs/manyak-dev 확인"
+            exit 1
+          fi
+          echo "✅ dev 앱 호스트 배포 완료: $IMAGE"
 
       - name: Smoke test (server /actuator/health)
         if: steps.gate.outputs.skip != 'true'
