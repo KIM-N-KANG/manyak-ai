@@ -29,7 +29,7 @@ def main() -> None:
         script.parent.mkdir(parents=True)
         shutil.copyfile(Path(__file__).with_name("detect-drift.sh"), script)
         docs = [
-            root / "knk-harness/docs/domain" / domain / "AI" / filename
+            root / "knk-harness/docs/spec" / domain / "AI" / filename
             for domain in ("STORY", "CHAT", "MODERATION")
             for filename in ("AGENTS.md", "5-CONTRACT.md")
         ]

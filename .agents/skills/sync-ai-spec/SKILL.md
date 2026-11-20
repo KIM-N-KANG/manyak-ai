@@ -15,7 +15,7 @@ description: |
 
 # AI 서버 스펙 동기화 (sync-ai-spec)
 
-knk-harness의 `docs/domain/<DOMAIN>/AI/AGENTS.md`에서 대상과 읽는 순서를 확인한다.
+knk-harness의 `docs/spec/<DOMAIN>/AI/AGENTS.md`에서 대상과 읽는 순서를 확인한다.
 STORY, CHAT, MODERATION 중 영향을 받는 세트만 갱신하며, 번호 문서의 형식은 하네스 작성 가이드를 따른다.
 아래 파일명은 해당 AI 세트 기준이다.
 
@@ -51,7 +51,7 @@ STORY, CHAT, MODERATION 중 영향을 받는 세트만 갱신하며, 번호 문�
 
 ## 하드 룰
 
-- **수정 대상은 관련 `docs/domain/<DOMAIN>/AI/` 세트다.** 다른 서비스와 공용 문서의 불일치는 임의로 고치지 않고 보고한다.
+- **수정 대상은 관련 `docs/spec/<DOMAIN>/AI/` 세트다.** 다른 서비스와 공용 문서의 불일치는 임의로 고치지 않고 보고한다.
 - **Spec은 승인된 계약, Design은 현재 구조를 담는다.** 승인된 계약과 검증된 구조만 각 정본에 반영하고, "이전에는 …였다"류 서술은 지운다.
   근거가 필요하면 ADR 항목으로 연결만 한다.
 - **결정이 걸리면 ADR부터 쓴다.** 방법을 갈아탄 변경을 스펙 값만 고쳐 끝내면 ADR의 근거 서술이

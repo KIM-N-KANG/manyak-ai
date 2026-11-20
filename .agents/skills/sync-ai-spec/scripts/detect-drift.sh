@@ -28,7 +28,7 @@ BASE_SHA=$2
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) \
   || { echo "FAIL: git 레포 안에서 실행해야 합니다." >&2; exit 1; }
-DOMAIN_ROOT="$ROOT/../knk-harness/docs/domain"
+DOMAIN_ROOT="$ROOT/../knk-harness/docs/spec"
 
 # 감시 경로 — 스펙에 영향이 있는 곳. 표에서 눈으로 옮기지 않도록 여기 한 곳에만 둔다.
 WATCH=(src/ prompt/ spec/ Dockerfile pyproject.toml .github/workflows/ .env.example)

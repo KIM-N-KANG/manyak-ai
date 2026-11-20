@@ -5,7 +5,7 @@
 작업을 시작할 때 형제 하네스 레포지토리의 운영 규칙 `../knk-harness/AGENTS.md`를 먼저 확인합니다
 (Claude Code는 SessionStart 훅(`.claude/settings.json`)이 자동 로드하고, Codex는 직접 엽니다).
 제품 명세를 미리 전부 읽지 않습니다. 문서 목록은 [하네스 운영 지침](../knk-harness/AGENTS.md)의
-Knowledge Base를, 도메인별 명세는 [docs/domain/](../knk-harness/docs/domain/)을 참고합니다.
+Knowledge Base를, 도메인별 명세는 [docs/spec/](../knk-harness/docs/spec/)을 참고합니다.
 
 - 작업에 맞는 도메인을 고르고, 해당 도메인과 세트의 `AGENTS.md`에서 안내하는 순서에 따라 필요한 명세를 읽습니다.
 - AI 명세는 해당 도메인 세트의 번호 문서와 `DECISIONS.md`에서 확인합니다.
@@ -15,7 +15,7 @@ Knowledge Base를, 도메인별 명세는 [docs/domain/](../knk-harness/docs/dom
 
 `../knk-harness` 같은 상위 공통 하네스는 참조만 하고 수정하지 않습니다. 두 가지 예외가 있습니다.
 
-1. 구현이 `dev`에 머지된 뒤 `sync-ai-spec` 스킬로 해당 `docs/domain/<DOMAIN>/AI/` 세트의 계약, 구현과 결정 기록을 동기화하는 것(아래 "작업 워크플로" 참조).
+1. 구현이 `dev`에 머지된 뒤 `sync-ai-spec` 스킬로 해당 `docs/spec/<DOMAIN>/AI/` 세트의 계약, 구현과 결정 기록을 동기화하는 것(아래 "작업 워크플로" 참조).
 2. AI 서버 변경 때문에 다른 제품 스펙을 고쳐야 하면, 고칠 곳과 문구를 먼저 보여주고 승인받은 뒤 그 부분만 고칩니다.
    다른 서비스(백엔드·프론트)에도 걸리는 규칙이면 그 사실을 함께 알립니다.
 
@@ -113,6 +113,6 @@ Codex가 이 레포의 PR을 리뷰할 때 따르는 기준입니다. "통과시
 - 성능·불필요한 비용: 중복 LLM 호출, N+1, 토큰 낭비
 - 테스트 부재·약한 단언·커버되지 않은 분기
 - 팀 컨벤션 위반: 커밋·PR에 `Co-Authored-By` 금지, `git add -- <경로>`만 사용(`git add -A`/`.` 금지), `dev` 직접 커밋 금지, 프롬프트 전문·시크릿·채팅 원문 노출 금지
-- 제품 동작·계약 변경이 관련 하네스 명세(`../knk-harness/docs/domain/`의 해당 AI 세트)과 어긋나는지
+- 제품 동작·계약 변경이 관련 하네스 명세(`../knk-harness/docs/spec/`의 해당 AI 세트)과 어긋나는지
 
 각 지적에는 코드상의 근거와 구체적 수정 방향을 함께 답니다. 실제 결함이 없으면 억지 지적 없이 그 사실을 밝힙니다.
