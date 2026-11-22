@@ -162,7 +162,7 @@ def dimension_tags(
     후속, docs/reference/ANALYTICS.md). story `genre_tags`는 키워드 단계 개편(KNK-621)이 커스텀 장르
     입력을 400으로 차단하면 사전 정의만 남는다 — 켜기는 그 배포 이후로 순서를 잡는다.
     주인공·주변 인물 특징(인물 세트 `features`, KNK-833)은 사용자가 직접 키워드를 입력해
-    추가할 수 있어(US-3-3, docs/domain/STORY/BACKEND/3-2-DB-SCHEMA.md) **원문이 섞이고 카디널리티가 폭발**한다 — 그래서
+    추가할 수 있어(US-3-3, docs/spec/STORY/BACKEND/3-2-DB-SCHEMA.md) **원문이 섞이고 카디널리티가 폭발**한다 — 그래서
     인자 자체를 두지 않아 트레이스 태그로 새어 나갈 경로를 없앴다(AN-4-10·§6-7 원문 비수집,
     KNK-640 리뷰). 사용자 자유입력(user_input·additional_info)도 마찬가지.
     """
