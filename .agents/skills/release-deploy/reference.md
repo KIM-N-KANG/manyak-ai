@@ -169,7 +169,7 @@ bash .agents/skills/release-deploy/scripts/infra-check.sh        # 읽기 전용
 
 **운영 헬스체크는 SSM으로만 된다.** AI 서버는 외부에 노출돼 있지 않아 브라우저·curl로 못 두드린다. `prod-health.sh`가 EC2를 태그로 찾아 `/api/v1/health`를 찌른다. `curl`은 `-f`가 없으면 HTTP 500에도 종료코드 0이라, 스크립트가 응답 본문의 `status`·`version`을 직접 검사한다.
 
-> 주의(KNK-2127): `prod-health.sh`와 `infra-check.sh`는 아직 옛 호스트 태그 `Name=manyak-prod-app`과 옛 SSM 문서 `manyak-prod-ai-deploy`를 찾는다. 운영 앱 호스트(`manyak-prod-host`)에 맞춰 고치기 전까지는 EC2를 찾지 못해 실패한다. 그동안 배포 확인은 `deploy-prod` 잡의 `ai: deployed <image>` 줄로 한다.
+> 주의(KNK-2127): `prod-health.sh`와 `infra-check.sh`는 아직 옛 호스트 태그 `Name=manyak-prod-app`과 옛 SSM 문서 `manyak-prod-ai-deploy`를 찾는다. 운영 앱 호스트(`manyak-prod-host`)에 맞춰 고치기 전까지는 EC2를 찾지 못해 실패한다. 그동안 배포 확인은 `deploy-prod` 잡 로그의 `ai: deployed <image>` 줄로 한다(SKILL.md Phase C). 호스트 `deploy.sh`는 새 ai 컨테이너가 헬스를 통과하고 프록시가 넘어간 뒤에만 이 줄을 찍는다.
 
 > AWS 자격: 로컬 `aws configure`로 배포 권한이 있는 IAM 사용자 키가 등록돼 있어야 한다. 없으면 `NoCredentials`.
 

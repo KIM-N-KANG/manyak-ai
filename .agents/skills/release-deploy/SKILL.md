@@ -28,7 +28,7 @@ description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 �
 - `.agents/skills/release-deploy/reference.md` — 인프라 사실·동작 원리·브랜치 규칙·QA 상세·트러블슈팅. 해당 절만 펼쳐 본다.
 - `.agents/skills/release-deploy/history.md` — 배포 이력. Phase A(범위)와 Phase D(기록)에서 읽는다.
 - `.agents/skills/release-deploy/scripts/` — `qa.sh` · `watch-deploy.sh` · `prod-health.sh` · `infra-check.sh`.
-  **읽지 말고 실행한다.** 넷 다 **종료코드가 판정**이다.
+  **읽지 말고 실행한다.** 넷 다 **종료코드가 판정**이다. 단 `prod-health.sh`와 `infra-check.sh`는 아직 옛 운영 호스트를 찾아 지금은 실패한다(reference §6 주의).
 
 **레포가 PUBLIC이다.** AWS 계정번호·비밀값을 이 폴더 어디에도 적지 않는다 —
 `../manyak-terraform`(비공개)이나 GitHub Variables를 가리킨다.
@@ -67,8 +67,10 @@ description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 �
 - [ ] Merge Commit으로 머지 ← 이 순간이 배포
 - [ ] `bash .agents/skills/release-deploy/scripts/watch-deploy.sh` — 배포 워크플로를 끝까지 감시.
       `gh run watch`를 맨손으로 부르지 않는다(run ID 없이는 비대화형에서 즉시 실패한다)
-- [ ] `bash .agents/skills/release-deploy/scripts/prod-health.sh <버전>` — 버전을 인자로 넘겨야 "새 이미지가 실제로 떴는지"까지 검사한다.
-      종료코드 0이 아니면 `.agents/skills/release-deploy/reference.md` §7
+- [ ] 새 이미지가 실제로 떴는지 본다: 감시한 실행의 `deploy-prod` 로그에 `ai: deployed <ECR>/manyak-ai:<머지 커밋 short-sha>` 줄이 있어야 한다
+      (`gh run view <run-id> -R KIM-N-KANG/manyak-ai --log | grep -F 'ai: deployed'`). 이 줄은 호스트 `deploy.sh`가 새 컨테이너의
+      헬스를 통과시키고 프록시를 넘긴 뒤에만 찍는다. 줄이 없거나 잡이 실패하면 `.agents/skills/release-deploy/reference.md` §7.
+      `prod-health.sh`는 운영 앱 호스트에 맞게 고치기 전까지 쓰지 않는다(reference §6 주의).
 
 ## Phase D — 사후
 
