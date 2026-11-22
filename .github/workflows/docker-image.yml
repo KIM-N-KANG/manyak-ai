@@ -19,9 +19,6 @@ env:
   GHCR_IMAGE: ghcr.io/kim-n-kang/manyak-ai
   ECR_REPOSITORY: manyak-ai
   AWS_REGION: ap-northeast-2
-  # dev 단일 EC2 앱 호스트(KNK-2102, manyak-terraform modules/app-host). 배포는 서비스별 SSM 문서로 한다.
-  DEV_DEPLOY_DOCUMENT: manyak-dev-host-deploy-ai
-  DEV_HOST_TAG: manyak-dev-host
   # 운영 단일 EC2 앱 호스트(KNK-2106, manyak-terraform envs/prod/app-host.tf). 배포는 서비스별 SSM 문서로 한다.
   PROD_DEPLOY_DOCUMENT: manyak-prod-host-deploy-ai
   PROD_HOST_TAG: manyak-prod-host
@@ -209,13 +206,12 @@ jobs:
           push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
           tags: ${{ steps.image-tags.outputs.tags }}
 
-  # dev 푸시(GHCR 갱신) 후 → dev 앱 호스트(EC2 한 대)에 무중단 교체 배포 (KNK-829, KNK-2102)
+  # dev 푸시(GHCR 갱신) 후 → :dev 승격(홈서버 updater가 받아 감, KNK-2125)
   deploy-dev:
     name: Deploy to app host (dev)
     needs: docker
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    # 같은 레포 안의 연속 푸시를 직렬화한다. 세 앱 레포 사이의 직렬화는 호스트의 deploy.sh 가
-    # flock 으로 한다(GitHub concurrency 는 레포 스코프라 그것만으로는 상호배제가 안 된다).
+    # :dev 승격을 직렬화한다(늦게 끝난 옛 실행이 태그를 되돌리지 않게). 잡 이름은 체크 이름을 바꾸지 않으려고 그대로 둔다.
     concurrency:
       group: manyak-dev-deploy
       cancel-in-progress: false
@@ -245,47 +241,11 @@ jobs:
           docker buildx imagetools create --tag "${GHCR_IMAGE}:dev" "${GHCR_IMAGE}:${GITHUB_SHA::7}"
           echo "✅ :dev -> ${GITHUB_SHA::7}"
 
-      - name: Configure AWS credentials (OIDC)
-        if: steps.gate.outputs.skip != 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_DEV_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+      # dev 서버는 홈서버에서 돈다(KNK-2125, manyak-terraform homeserver/dev). 홈서버 updater가 1분마다 :dev 다이제스트를
+      # 확인해 스스로 pull하고 ai 컨테이너를 다시 만든다. 들어오는 길이 없으므로 여기서는 :dev만 옮기고 배포 명령을 보내지 않는다.
+      # (예전 EC2 앱 호스트 SSM 배포 단계는 전환과 함께 뺐다.)
 
-      # dev 앱 호스트의 deploy.sh 를 SSM 문서(manyak-dev-host-deploy-ai)로 부른다. 22 번도 SSH 키도 없다.
-      # deploy.sh: 새 ai 컨테이너 기동 → Docker 헬스 통과(모델 설정·공급자 키 기동 검사 포함, 재시작·종료면 바로 실패)
-      # → 내부 프록시(ai.internal) 전환 → 옛 컨테이너의 진행 중 요청 드레인 → 옛 컨테이너 정지.
-      # 실패하면 새 컨테이너만 지우고 옛 ai 가 계속 서비스한다. server 는 바뀌지 않는다. 이 커밋의 불변 태그로 배포한다.
-      - name: Deploy to dev app host (SSM)
-        if: steps.gate.outputs.skip != 'true'
-        run: |
-          IMAGE="${GHCR_IMAGE}:${GITHUB_SHA::7}"
-          CID=$(aws ssm send-command --document-name "$DEV_DEPLOY_DOCUMENT" \
-            --targets "Key=tag:manyak:host,Values=$DEV_HOST_TAG" --parameters "image=$IMAGE" \
-            --timeout-seconds 600 --query Command.CommandId --output text)
-          echo "SSM 명령 $CID ($IMAGE)"
-          # 드레인(최대 240초)과 다른 레포 배포의 잠금 대기까지 넉넉히 기다린다(최대 30분).
-          IID=""
-          for i in $(seq 1 180); do
-            sleep 10
-            if [ -z "$IID" ] || [ "$IID" = "None" ]; then
-              IID=$(aws ssm list-command-invocations --command-id "$CID" --query 'CommandInvocations[0].InstanceId' --output text)
-              [ -n "$IID" ] && [ "$IID" != "None" ] || { echo "명령 전달 대기 $i"; continue; }
-            fi
-            STATUS=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$IID" --query Status --output text)
-            case "$STATUS" in
-              Pending|InProgress|Delayed) echo "배포 $STATUS — 대기 $i/180 (10s)" ;;
-              *) break ;;
-            esac
-          done
-          aws ssm get-command-invocation --command-id "$CID" --instance-id "$IID" \
-            --query '[StandardOutputContent,StandardErrorContent]' --output text || true
-          if [ "$STATUS" != "Success" ]; then
-            echo "::error::dev 앱 호스트 배포가 $STATUS 로 끝났습니다. 옛 ai 가 계속 서비스합니다. 위 출력과 CloudWatch /ecs/manyak-dev 확인"
-            exit 1
-          fi
-          echo "✅ dev 앱 호스트 배포 완료: $IMAGE"
-
+      # 공개 주소로 끝까지 닿는지 본다. 새 이미지 교체는 updater가 1분 안에 하므로 여기서 버전까지 맞추지는 않는다.
       - name: Smoke test (server /actuator/health)
         if: steps.gate.outputs.skip != 'true'
         run: |
@@ -295,7 +255,7 @@ jobs:
             fi
             echo "health 대기 $i/12 (15s)..."; sleep 15
           done
-          echo "::error::dev health 200/UP 확인 실패 — CloudWatch /ecs/manyak-dev 로그 확인"; exit 1
+          echo "::error::dev health 200/UP 확인 실패. 홈서버 manyak-dev 스택(docker compose ps, logs ai) 확인"; exit 1
 
 
   # main 푸시(ECR 갱신) 후 → 운영 앱 호스트에 SSM 문서로 배포 + 헬스 스모크 (KNK-2106, 예전 ECS 는 KNK-963)
