@@ -206,7 +206,7 @@ jobs:
           push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
           tags: ${{ steps.image-tags.outputs.tags }}
 
-  # dev 푸시(GHCR 갱신) 후 → :dev 승격(홈서버 updater가 받아 감, KNK-2125)
+  # dev 푸시(GHCR 갱신) 후 → :dev 승격(dev 환경이 받아 감, KNK-2125)
   deploy-dev:
     name: Deploy to app host (dev)
     needs: docker
@@ -241,11 +241,11 @@ jobs:
           docker buildx imagetools create --tag "${GHCR_IMAGE}:dev" "${GHCR_IMAGE}:${GITHUB_SHA::7}"
           echo "✅ :dev -> ${GITHUB_SHA::7}"
 
-      # dev 서버는 홈서버에서 돈다(KNK-2125, manyak-terraform homeserver/dev). 홈서버 updater가 1분마다 :dev 다이제스트를
-      # 확인해 스스로 pull하고 ai 컨테이너를 다시 만든다. 들어오는 길이 없으므로 여기서는 :dev만 옮기고 배포 명령을 보내지 않는다.
+      # dev 환경이 :dev 다이제스트를 주기적으로 확인해 스스로 pull하고 ai 컨테이너를 다시 만든다(KNK-2125).
+      # 여기서는 :dev만 옮기고 배포 명령을 보내지 않는다.
       # (예전 EC2 앱 호스트 SSM 배포 단계는 전환과 함께 뺐다.)
 
-      # 공개 주소로 끝까지 닿는지 본다. 새 이미지 교체는 updater가 1분 안에 하므로 여기서 버전까지 맞추지는 않는다.
+      # 공개 주소로 끝까지 닿는지 본다. 새 이미지 교체는 dev 환경이 따로 하므로 여기서 버전까지 맞추지는 않는다.
       - name: Smoke test (server /actuator/health)
         if: steps.gate.outputs.skip != 'true'
         run: |
@@ -255,7 +255,7 @@ jobs:
             fi
             echo "health 대기 $i/12 (15s)..."; sleep 15
           done
-          echo "::error::dev health 200/UP 확인 실패. 홈서버 manyak-dev 스택(docker compose ps, logs ai) 확인"; exit 1
+          echo "::error::dev health 200/UP 확인 실패. dev 환경의 ai 컨테이너 상태와 로그 확인"; exit 1
 
 
   # main 푸시(ECR 갱신) 후 → 운영 앱 호스트에 SSM 문서로 배포 + 헬스 스모크 (KNK-2106, 예전 ECS 는 KNK-963)

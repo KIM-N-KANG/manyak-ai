@@ -4,7 +4,7 @@
 > 배포 이력은 `history.md`.
 > **레포가 PUBLIC이다.** AWS 계정번호·비밀값은 여기 적지 않고 `../manyak-terraform`(비공개)이나
 > GitHub Variables를 가리킨다. 리소스 이름과 절차만 둔다.
-> 최종 갱신: 2026-07-22 (KNK-664로 로컬 런북 `scripts/spec/spec-docs/deploy-spec.md`를 여기로 통합)
+> 최종 갱신: 2026-11-22 (KNK-2127, 운영 앱 호스트 기준으로 배포 설명 갱신)
 
 ---
 
@@ -13,31 +13,29 @@
 | 항목 | 값 |
 |---|---|
 | AWS 계정 / 리전 | 계정번호는 `../manyak-terraform`(비공개) 참조 — 이 문서에 적지 않는다 / `ap-northeast-2`(서울) |
-| EC2 (운영 서버) | 태그 `manyak-prod-app`, t3.small. **id는 적어두지 않는다** — user-data가 바뀌면 EC2가 통째로 교체된다(2026-07-11 실제 교체). 태그로 조회할 것 |
-| ECS (운영, 현재 경로) | 클러스터 `manyak-prod`. **AI는 전용 서비스 `manyak-prod-ai`**(컨테이너 `ai`, 이미지 `manyak-ai:latest`)로 돈다 — v0.4.5까지 AI가 돌던 서비스 `manyak-prod`와 다르다(2026-10-13 v0.4.6에서 확인). 검증은 이 서비스 태스크의 `ai` imageDigest를 ECR `<short-sha>` 태그와 맞춘다 |
+| EC2 (운영 앱 호스트) | 태그 `manyak:host=manyak-prod-host`(Name도 같다). server, ai, notification이 이 한 대에서 돈다(KNK-2106). **id는 적어두지 않는다**. 태그로 조회할 것 |
 | ECR (이미지 창고) | `<계정>.dkr.ecr.ap-northeast-2.amazonaws.com/manyak-ai` |
-| SSM 문서 (배포 명령) | `manyak-prod-ai-deploy` (파라미터 `ImageUri`) |
+| SSM 문서 (배포 명령) | `manyak-prod-host-deploy-ai` (파라미터 `image`: 이미지 URI, `current`, `rollback` 중 하나) |
 | Secrets Manager | `manyak/prod/app` — `DEEPSEEK_API_KEY` 포함 8키 |
 | GitHub Variables | `AWS_ROLE_ARN` — 레포 Settings → Variables에 설정됨. 값은 `arn:aws:iam::<계정>:role/manyak-prod-gha-ai` 형태 |
 | GitHub Secrets | **배포용은 없다** — AWS 인증은 OIDC라 불필요. 현재 있는 `CLAUDE_CODE_OAUTH_TOKEN` 1개는 배포와 무관(2026-07-22 확인) |
 
 > 비밀값(키 실제 값), 콘솔 비밀번호, 개인 액세스 키는 **여기에도 적지 않는다.** 위는 식별자·존재 여부만.
 
-**인프라 코드 정본은 `../manyak-terraform` 레포다.** ECR·EC2·SSM 문서·AI 전용 OIDC 역할, 운영 `docker-compose.prod.yml`, EC2 user-data(= `/opt/manyak/deploy.sh` 생성기)가 전부 거기 있다. 예전엔 `manyak-server`의 `infra/terraform/`이었으나 분리됐다. `manyak-infra` 레포는 **로컬 GHCR 개발용 compose**일 뿐 운영 인프라가 아니다 — 헷갈리기 쉽다.
+**인프라 코드 정본은 `../manyak-terraform` 레포다.** ECR, 운영 앱 호스트(`terraform/envs/prod/app-host.tf`, 모듈 `terraform/modules/app-host`), SSM 문서, AI 전용 OIDC 역할, 호스트 `deploy.sh`(`modules/app-host/files/deploy.sh`)가 전부 거기 있다. 예전엔 `manyak-server`의 `infra/terraform/`이었으나 분리됐다. `manyak-infra` 레포는 **로컬 GHCR 개발용 compose**일 뿐 운영 인프라가 아니다 — 헷갈리기 쉽다.
 
 ---
 
 ## 2. 배포 동작 원리
 
-- **트리거는 `main` push**(= `release → main` 머지). dev push는 GHCR 개발 이미지만 만들고 배포하지 않는다.
-- **CI**: `.github/workflows/docker-image.yml` — `test` → `docker`(build/push) → `deploy`.
-  - `dev` push → GHCR `ghcr.io/kim-n-kang/manyak-ai` (`:dev`, `:<short-sha>`)
-  - `main` push → ECR `manyak-ai` (`:latest`, `:<short-sha>`) + `deploy` 잡 실행
-- **deploy 잡**: stale-SHA 게이트(더 새 main이 있으면 skip) → OIDC 로그인 → EC2 탐색(태그) → `aws ssm send-command`로 `manyak-prod-ai-deploy` 호출 → 상태 폴링(최대 60×10s).
-- **EC2 측**: `AI_IMAGE_OVERRIDE=<ImageUri> bash /opt/manyak/deploy.sh` → `docker compose pull ai` + `up -d --wait ai`. **헬스 게이트**가 `/api/v1/health`의 `status==ok`를 통과할 때까지 기다린다.
-- **배포 이미지 태그는 short-sha**(`:latest` 아님 — 추적성).
-- **부트스트랩 안전장치**: ECR에 이미지가 없어도 `deploy.sh`가 부재를 감지해 graceful skip. server↔ai `depends_on`도 끊어둬 순서 사고가 없다.
-- **운영 컨테이너 env의 출처**: `deploy.sh`가 실행될 때마다 Secrets Manager(`manyak/prod/app`)를 새로 읽어 `.env`를 쓴다. 그래서 **시크릿 값만 바꿀 때는 코드 릴리스가 불필요**하고 AI 재배포(SSM)만으로 반영된다. 단 `deploy.sh` 자체를 바꾸려면 user-data 변경 → `terraform apply` → **EC2 교체**가 필요하다.
+- **트리거는 `main` push**(= `release → main` 머지). dev push는 GHCR `:dev`만 옮기고, dev 환경(`dev-api.manyak.app`)이 그 이미지를 자동으로 받아 교체한다.
+- **CI**: `.github/workflows/docker-image.yml`. `test`, `smoke` → `docker`(build/push) → `deploy-dev` 또는 `deploy-prod`.
+  - `dev` push → GHCR `ghcr.io/kim-n-kang/manyak-ai:<short-sha>`. `deploy-dev`가 최신 dev SHA 게이트 뒤 `:dev`로 옮긴다
+  - `main` push → ECR `manyak-ai:<short-sha>`. `:latest`는 빌드에서 붙이지 않고, 배포가 성공한 뒤 `deploy-prod`가 옮긴다
+- **deploy-prod 잡**: 배포 대상은 이 실행의 커밋이 아니라 현재 main HEAD다 → OIDC 로그인 → HEAD 이미지가 ECR에 있는지 확인(아직 없으면 그 커밋의 실행이 배포하므로 건너뜀) → `aws ssm send-command`로 `manyak-prod-host-deploy-ai`를 태그 `manyak:host=manyak-prod-host` 대상으로 호출 → 상태 폴링(최대 180×10s) → 출력의 `ai: deployed <image>` 줄 확인 → `:latest` 승격.
+- **호스트 측**: `deploy.sh ai <image>`가 새 ai 컨테이너를 띄우고, 헬스(`/api/v1/health`, 모델과 공급자 키 기동 검사 포함)가 통과하면 내부 프록시(`ai.internal`)를 넘긴 뒤 옛 컨테이너의 진행 중 스트림을 드레인(240초)하고 내린다. 헬스를 못 넘으면 새 컨테이너만 지우고 실패로 끝나며 옛 ai가 계속 서비스한다. 세 앱 레포의 배포는 호스트에서 `flock`으로 직렬화된다.
+- **배포 이미지 태그는 short-sha**(`:latest` 아님, 추적성). 호스트가 현재와 직전 이미지를 `/data/state`에 기록하고, `:latest`는 기록이 없을 때(새 데이터 디스크)의 기본값이다.
+- **운영 컨테이너 env의 출처**: 값은 `terraform/envs/prod/app-host.tf`의 `app_host_defs`가 정본이고, 시크릿은 Secrets Manager(`manyak/prod/app`) 참조로 둔다. `deploy.sh`가 실행될 때마다 S3의 호스트 설정을 받고 시크릿을 새로 읽는다. 그래서 **시크릿 값만 바꿀 때는 코드 릴리스가 불필요**하고 같은 SSM 문서를 `image=current`로 실행하면 반영된다. env나 모델 선택값(Parameter Store)을 바꾸면 terraform apply 뒤 `image=current`로 실행한다.
 
 ---
 
@@ -171,18 +169,20 @@ bash .agents/skills/release-deploy/scripts/infra-check.sh        # 읽기 전용
 
 **운영 헬스체크는 SSM으로만 된다.** AI 서버는 외부에 노출돼 있지 않아 브라우저·curl로 못 두드린다. `prod-health.sh`가 EC2를 태그로 찾아 `/api/v1/health`를 찌른다. `curl`은 `-f`가 없으면 HTTP 500에도 종료코드 0이라, 스크립트가 응답 본문의 `status`·`version`을 직접 검사한다.
 
+> 주의(KNK-2127): `prod-health.sh`와 `infra-check.sh`는 아직 옛 호스트 태그 `Name=manyak-prod-app`과 옛 SSM 문서 `manyak-prod-ai-deploy`를 찾는다. 운영 앱 호스트(`manyak-prod-host`)에 맞춰 고치기 전까지는 EC2를 찾지 못해 실패한다. 그동안 배포 확인은 `deploy-prod` 잡 로그의 `ai: deployed <image>` 줄로 한다(SKILL.md Phase C). 호스트 `deploy.sh`는 새 ai 컨테이너가 헬스를 통과하고 프록시가 넘어간 뒤에만 이 줄을 찍는다.
+
 > AWS 자격: 로컬 `aws configure`로 배포 권한이 있는 IAM 사용자 키가 등록돼 있어야 한다. 없으면 `NoCredentials`.
 
 ---
 
 ## 7. 트러블슈팅
 
-- **성공 신호**: `deploy` 잡 success + ECR에 새 short-sha 태그 + 운영 health가 `ok`이고 version이 이번 릴리스 값.
-- **deploy 잡 실패**: `gh run view <id> --log-failed -R KIM-N-KANG/manyak-ai`
-  - `"running 상태의 manyak-prod-app EC2를 찾지 못했습니다"` → terraform apply 선행 필요.
-  - SSM 실패(Failed/TimedOut) → EC2의 `deploy.sh` 또는 compose health 실패. AI 컨테이너 로그 확인 필요(인프라 담당·EC2 접근).
+- **성공 신호**: `deploy-prod` 잡 success(출력에 `ai: deployed <이번 이미지>`) + ECR에 새 short-sha 태그와 `:latest` 승격.
+- **deploy-prod 잡 실패**: `gh run view <id> --log-failed -R KIM-N-KANG/manyak-ai`
+  - SSM 상태가 Success가 아님(Failed/TimedOut) → 호스트 `deploy.sh` 또는 새 ai 컨테이너 헬스 실패. 옛 ai가 계속 서비스한다. CloudWatch `/manyak/prod/app-host` 로그 확인(인프라 담당).
+  - 명령은 성공했는데 `deployed <image>` 줄이 없음 → 호스트의 `/data/state/ai.image` 확인.
 - **AI가 응답 못 함**: Secrets의 `DEEPSEEK_API_KEY` 확인.
-- **롤백**: 직전 정상 short-sha 이미지로 SSM 재배포(수동). manyak-ai 전용 롤백 절차는 아직 미정 — 필요 시 인프라 담당과 협의. ⚠️ 외부 계약이 바뀐 릴리스는 **AI만 되돌리면 안 된다**(3자 동시 롤백 — `history.md` v0.2.1 참조).
+- **롤백**: SSM 문서 `manyak-prod-host-deploy-ai`를 `image=rollback`으로 실행하면 호스트가 기록한 직전 이미지로 되돌린다. 특정 short-sha로 가려면 `image=<ECR 이미지 URI>:<short-sha>`. ⚠️ 외부 계약이 바뀐 릴리스는 **AI만 되돌리면 안 된다**(3자 동시 롤백, `history.md` v0.2.1 참조).
 
 ---
 
