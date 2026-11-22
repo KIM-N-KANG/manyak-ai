@@ -4,7 +4,7 @@
 > 배포 이력은 `history.md`.
 > **레포가 PUBLIC이다.** AWS 계정번호·비밀값은 여기 적지 않고 `../manyak-terraform`(비공개)이나
 > GitHub Variables를 가리킨다. 리소스 이름과 절차만 둔다.
-> 최종 갱신: 2026-11-22 (KNK-2127, 운영 앱 호스트와 홈서버 dev 기준으로 배포 설명 갱신)
+> 최종 갱신: 2026-11-22 (KNK-2127, 운영 앱 호스트 기준으로 배포 설명 갱신)
 
 ---
 
@@ -22,13 +22,13 @@
 
 > 비밀값(키 실제 값), 콘솔 비밀번호, 개인 액세스 키는 **여기에도 적지 않는다.** 위는 식별자·존재 여부만.
 
-**인프라 코드 정본은 `../manyak-terraform` 레포다.** ECR, 운영 앱 호스트(`terraform/envs/prod/app-host.tf`, 모듈 `terraform/modules/app-host`), SSM 문서, AI 전용 OIDC 역할, 호스트 `deploy.sh`(`modules/app-host/files/deploy.sh`)가 전부 거기 있다. dev 서버는 홈서버 compose 스택(`homeserver/dev`)이다. 예전엔 `manyak-server`의 `infra/terraform/`이었으나 분리됐다. `manyak-infra` 레포는 **로컬 GHCR 개발용 compose**일 뿐 운영 인프라가 아니다 — 헷갈리기 쉽다.
+**인프라 코드 정본은 `../manyak-terraform` 레포다.** ECR, 운영 앱 호스트(`terraform/envs/prod/app-host.tf`, 모듈 `terraform/modules/app-host`), SSM 문서, AI 전용 OIDC 역할, 호스트 `deploy.sh`(`modules/app-host/files/deploy.sh`)가 전부 거기 있다. 예전엔 `manyak-server`의 `infra/terraform/`이었으나 분리됐다. `manyak-infra` 레포는 **로컬 GHCR 개발용 compose**일 뿐 운영 인프라가 아니다 — 헷갈리기 쉽다.
 
 ---
 
 ## 2. 배포 동작 원리
 
-- **트리거는 `main` push**(= `release → main` 머지). dev push는 GHCR `:dev`만 옮기고, 홈서버 dev 서버의 updater가 1분마다 받아 간다(KNK-2125).
+- **트리거는 `main` push**(= `release → main` 머지). dev push는 GHCR `:dev`만 옮기고, dev 환경(`dev-api.manyak.app`)이 그 이미지를 자동으로 받아 교체한다.
 - **CI**: `.github/workflows/docker-image.yml`. `test`, `smoke` → `docker`(build/push) → `deploy-dev` 또는 `deploy-prod`.
   - `dev` push → GHCR `ghcr.io/kim-n-kang/manyak-ai:<short-sha>`. `deploy-dev`가 최신 dev SHA 게이트 뒤 `:dev`로 옮긴다
   - `main` push → ECR `manyak-ai:<short-sha>`. `:latest`는 빌드에서 붙이지 않고, 배포가 성공한 뒤 `deploy-prod`가 옮긴다

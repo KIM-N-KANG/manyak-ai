@@ -67,9 +67,11 @@ description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 �
 - [ ] Merge Commit으로 머지 ← 이 순간이 배포
 - [ ] `bash .agents/skills/release-deploy/scripts/watch-deploy.sh` — 배포 워크플로를 끝까지 감시.
       `gh run watch`를 맨손으로 부르지 않는다(run ID 없이는 비대화형에서 즉시 실패한다)
-- [ ] 새 이미지가 실제로 떴는지 본다: 감시한 실행의 `deploy-prod` 로그에 `ai: deployed <ECR>/manyak-ai:<머지 커밋 short-sha>` 줄이 있어야 한다
-      (`gh run view <run-id> -R KIM-N-KANG/manyak-ai --log | grep -F 'ai: deployed'`). 이 줄은 호스트 `deploy.sh`가 새 컨테이너의
-      헬스를 통과시키고 프록시를 넘긴 뒤에만 찍는다. 줄이 없거나 잡이 실패하면 `.agents/skills/release-deploy/reference.md` §7.
+- [ ] 새 이미지가 실제로 떴는지 본다. `gh run view <run-id> -R KIM-N-KANG/manyak-ai --log | grep -E '배포 대상 main HEAD|ai: deployed'`로
+      두 줄을 보고, `ai: deployed` 줄의 이미지 태그가 `배포 대상 main HEAD`의 앞 7자리와 같은지 확인한다. `deploy-prod`는 이 실행의
+      커밋이 아니라 그 시점의 main HEAD를 배포한다. 그사이 main이 더 나갔다면 `git merge-base --is-ancestor <머지 커밋> <배포 대상 HEAD>`로
+      이번 릴리스가 들어 있는지 본다. `ai: deployed` 줄이 없으면(HEAD 이미지가 아직 없어 건너뜀) 그 HEAD 커밋의 실행을 같은 방법으로 본다.
+      이 줄은 호스트 `deploy.sh`가 새 컨테이너의 헬스를 통과시키고 프록시를 넘긴 뒤에만 찍는다. 잡이 실패하면 `.agents/skills/release-deploy/reference.md` §7.
       `prod-health.sh`는 운영 앱 호스트에 맞게 고치기 전까지 쓰지 않는다(reference §6 주의).
 
 ## Phase D — 사후
