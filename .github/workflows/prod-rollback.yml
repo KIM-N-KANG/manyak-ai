@@ -44,11 +44,14 @@ jobs:
             ahead|identical) ;;
             *) echo "::error::$FULL 은 main에 없는 커밋입니다(compare: $STATUS)"; exit 1 ;;
           esac
-          ACTIVE=$(gh run list --repo "${{ github.repository }}" --workflow docker-image.yml --branch main --event push \
-            --limit 20 --json status --jq '[.[] | select(.status != "completed")] | length')
-          if [ "$ACTIVE" != "0" ]; then
-            echo "::error::main 배포 실행 $ACTIVE 개가 아직 끝나지 않았습니다. 끝나면 :prod가 main HEAD로 옮겨지므로, 끝난 뒤 다시 실행하세요"; exit 1
-          fi
+          # 끝나지 않은 상태마다 서버 쪽에서 걸러 묻는다(최근 N개만 훑으면 오래된 진행 중 실행을 놓친다).
+          for st in queued in_progress waiting requested pending; do
+            RUN=$(gh run list --repo "${{ github.repository }}" --workflow docker-image.yml --branch main --event push \
+              --status "$st" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if [ -n "$RUN" ]; then
+              echo "::error::main 배포 실행 $RUN 이 아직 끝나지 않았습니다($st). 끝나면 :prod가 main HEAD로 옮겨지므로, 끝난 뒤 다시 실행하세요"; exit 1
+            fi
+          done
           echo "short=${FULL:0:7}" >> "$GITHUB_OUTPUT"
           echo "대상: $FULL"
 
