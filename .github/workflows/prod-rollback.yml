@@ -44,24 +44,38 @@ jobs:
             ahead|identical) ;;
             *) echo "::error::$FULL 은 main에 없는 커밋입니다(compare: $STATUS)"; exit 1 ;;
           esac
-          # 끝나지 않은 상태마다 서버 쪽에서 걸러 묻는다(최근 N개만 훑으면 오래된 진행 중 실행을 놓친다).
-          for st in queued in_progress waiting requested pending; do
-            RUN=$(gh run list --repo "${{ github.repository }}" --workflow docker-image.yml --branch main --event push \
-              --status "$st" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-            if [ -n "$RUN" ]; then
-              echo "::error::main 배포 실행 $RUN 이 아직 끝나지 않았습니다($st). 끝나면 :prod가 main HEAD로 옮겨지므로, 끝난 뒤 다시 실행하세요"; exit 1
-            fi
-          done
           echo "short=${FULL:0:7}" >> "$GITHUB_OUTPUT"
           echo "대상: $FULL"
 
+      # 두 워크플로를 한 잠금으로 묶지 않는다(같은 concurrency 그룹이면 대기 중인 되돌리기가 취소될 수 있다).
+      # 대신 옮기기 바로 앞에서 끝나지 않은 main 배포가 있으면 멈추고, 옮긴 뒤 새로 시작된 실행이 보이면 경고한다.
+      # 새 main 실행이 :prod 승격까지 가려면 테스트, 빌드, 배포로 수 분이 걸려, 확인과 옮기기 사이(수 초)에 앞지를 수 없다.
       - name: Move :prod
         env:
+          GH_TOKEN: ${{ github.token }}
           SHORT_SHA: ${{ steps.target.outputs.short }}
         run: |
+          # 끝나지 않은 상태마다 서버 쪽에서 걸러 묻는다(최근 N개만 훑으면 오래된 진행 중 실행을 놓친다).
+          # 진행 중인 실행이 있으면 그 id를 찍는다. 조회가 실패하면 1을 돌려준다("없음"으로 넘기지 않는다).
+          active_main_run() {
+            local st id
+            for st in queued in_progress waiting requested pending; do
+              id=$(gh run list --repo "${{ github.repository }}" --workflow docker-image.yml --branch main --event push \
+                --status "$st" --limit 1 --json databaseId --jq '.[0].databaseId // empty') || return 1
+              if [ -n "$id" ]; then echo "$id ($st)"; return 0; fi
+            done
+          }
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           if ! docker buildx imagetools inspect "${GHCR_IMAGE}:${SHORT_SHA}" > /dev/null; then
             echo "::error::GHCR에 ${GHCR_IMAGE}:${SHORT_SHA} 이 없습니다(GHCR 운영 이미지를 올리기 전의 커밋일 수 있음)"; exit 1
           fi
+          RUN=$(active_main_run) || { echo "::error::진행 중인 main 배포 실행을 조회하지 못했습니다"; exit 1; }
+          if [ -n "$RUN" ]; then
+            echo "::error::main 배포 실행 $RUN 이 아직 끝나지 않았습니다. 끝나면 :prod가 main HEAD로 옮겨지므로, 끝난 뒤 다시 실행하세요"; exit 1
+          fi
           docker buildx imagetools create --tag "${GHCR_IMAGE}:prod" "${GHCR_IMAGE}:${SHORT_SHA}"
           echo "✅ GHCR :prod -> ${SHORT_SHA}"
+          RUN=$(active_main_run) || RUN="조회 실패"
+          if [ -n "$RUN" ]; then
+            echo "::warning::옮기는 동안 main 배포 실행 $RUN 이 시작됐습니다. 그 배포가 성공하면 :prod가 main HEAD로 다시 옮겨집니다"
+          fi
