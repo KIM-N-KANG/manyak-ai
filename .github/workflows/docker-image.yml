@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  packages: write # GHCR(dev) 푸시
+  packages: write # GHCR 푸시(dev, 그리고 OCI 운영 전환 준비로 main도)
   id-token: write # AWS OIDC(dev·main) 인증
 
 env:
@@ -146,9 +146,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # dev 푸시 → 개발용 GHCR
+      # dev 푸시 → 개발용 GHCR. main(푸시, 수동 실행)도 같은 이미지를 GHCR에 함께 올린다(KNK-2126, OCI 운영 호스트가 받을 이미지).
       - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/dev') || (github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -171,7 +171,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 대상 레지스트리/태그 결정: main → ECR(short-sha), 그 외 → GHCR(short-sha)
+      # 대상 레지스트리/태그 결정: main → ECR(short-sha)과 GHCR(short-sha), 그 외 → GHCR(short-sha)
       - name: Resolve image tags
         id: image-tags
         run: |
@@ -184,6 +184,7 @@ jobs:
             {
               echo "tags<<EOF"
               echo "${REGISTRY}/${ECR_REPOSITORY}:${SHORT_SHA}"
+              echo "${GHCR_IMAGE}:${SHORT_SHA}"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else
@@ -377,3 +378,14 @@ jobs:
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}"
           docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${{ steps.gate.outputs.deploy_short_sha }}"
           echo "✅ :latest -> ${{ steps.gate.outputs.deploy_short_sha }}"
+
+      # OCI 운영 전환 준비(KNK-2126): AWS 배포가 성공한 main HEAD를 GHCR :prod로도 가리킨다. OCI 운영 호스트가 전환 뒤
+      # :prod 다이제스트를 보고 스스로 받는다. 전환 전에는 아무도 :prod를 받지 않아 영향이 없다.
+      # 이 잡의 직렬화 구간 안에서 옮기므로 늦게 끝난 옛 실행이 :prod를 되돌리지 않는다. 같은 빌드가 ECR과 GHCR에 함께 올렸으니
+      # GHCR :<sha7>도 있어야 한다. 없으면 실패로 알린다(AWS 배포와 :latest는 이미 끝난 상태).
+      - name: Promote main HEAD to GHCR :prod
+        if: steps.deploy.outputs.deployed == 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create --tag "${GHCR_IMAGE}:prod" "${GHCR_IMAGE}:${{ steps.gate.outputs.deploy_short_sha }}"
+          echo "✅ GHCR :prod -> ${{ steps.gate.outputs.deploy_short_sha }}"

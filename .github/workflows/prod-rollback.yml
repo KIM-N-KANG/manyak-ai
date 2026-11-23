@@ -1,0 +1,57 @@
+name: Prod Rollback (GHCR :prod)
+
+# OCI 운영 전환 준비(KNK-2126): GHCR :prod를 입력한 main 커밋의 이미지로 옮긴다.
+# OCI 운영 호스트는 :prod 다이제스트가 바뀌면 그 이미지로 스스로 교체한다. 전환 전에는 아무도 :prod를 받지 않는다.
+# 지금의 AWS 운영 앱 호스트 되돌리기는 이 워크플로가 아니라 SSM 문서를 image=rollback으로 실행한다(AGENTS.md).
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: ":prod로 되돌릴 main 커밋 sha(7자 이상)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  GHCR_IMAGE: ghcr.io/kim-n-kang/manyak-ai
+
+jobs:
+  rollback:
+    name: Move GHCR :prod
+    # docker-image.yml의 deploy-prod(:prod 승격)와 같은 그룹이라 둘이 겹쳐 돌지 않는다.
+    concurrency:
+      group: manyak-prod-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check sha is on main
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          if ! printf '%s' "$INPUT_SHA" | grep -qE '^[0-9a-f]{7,40}$'; then
+            echo "::error::sha는 7~40자 소문자 16진수여야 합니다: $INPUT_SHA"; exit 1
+          fi
+          FULL=$(gh api "repos/${{ github.repository }}/commits/$INPUT_SHA" --jq '.sha')
+          STATUS=$(gh api "repos/${{ github.repository }}/compare/$FULL...main" --jq '.status')
+          case "$STATUS" in
+            ahead|identical) ;;
+            *) echo "::error::$FULL 은 main에 없는 커밋입니다(compare: $STATUS)"; exit 1 ;;
+          esac
+          echo "short=${FULL:0:7}" >> "$GITHUB_OUTPUT"
+          echo "대상: $FULL"
+
+      - name: Move :prod
+        env:
+          SHORT_SHA: ${{ steps.target.outputs.short }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if ! docker buildx imagetools inspect "${GHCR_IMAGE}:${SHORT_SHA}" > /dev/null; then
+            echo "::error::GHCR에 ${GHCR_IMAGE}:${SHORT_SHA} 이 없습니다(GHCR 운영 이미지를 올리기 전의 커밋일 수 있음)"; exit 1
+          fi
+          docker buildx imagetools create --tag "${GHCR_IMAGE}:prod" "${GHCR_IMAGE}:${SHORT_SHA}"
+          echo "✅ GHCR :prod -> ${SHORT_SHA}"
