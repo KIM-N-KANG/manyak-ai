@@ -28,7 +28,7 @@ description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 �
 - `.agents/skills/release-deploy/reference.md` — 인프라 사실·동작 원리·브랜치 규칙·QA 상세·트러블슈팅. 해당 절만 펼쳐 본다.
 - `.agents/skills/release-deploy/history.md` — 배포 이력. Phase A(범위)와 Phase D(기록)에서 읽는다.
 - `.agents/skills/release-deploy/scripts/` — `qa.sh` · `watch-deploy.sh` · `prod-health.sh` · `infra-check.sh`.
-  **읽지 말고 실행한다.** 넷 다 **종료코드가 판정**이다. 단 `prod-health.sh`와 `infra-check.sh`는 아직 옛 운영 호스트를 찾아 지금은 실패한다(reference §6 주의).
+  **읽지 말고 실행한다.** 넷 다 **종료코드가 판정**이다. 단 `prod-health.sh`와 `infra-check.sh`는 옛 AWS 호스트를 찾아 지금은 쓸 수 없다(reference §6).
 
 **레포가 PUBLIC이다.** AWS 계정번호·비밀값을 이 폴더 어디에도 적지 않는다 —
 `../manyak-terraform`(비공개)이나 GitHub Variables를 가리킨다.
@@ -67,12 +67,10 @@ description: manyak-ai를 운영에 배포하는 릴리즈 루틴을 수행할 �
 - [ ] Merge Commit으로 머지 ← 이 순간이 배포
 - [ ] `bash .agents/skills/release-deploy/scripts/watch-deploy.sh` — 배포 워크플로를 끝까지 감시.
       `gh run watch`를 맨손으로 부르지 않는다(run ID 없이는 비대화형에서 즉시 실패한다)
-- [ ] 새 이미지가 실제로 떴는지 본다. `gh run view <run-id> -R KIM-N-KANG/manyak-ai --log | grep -E '배포 대상 main HEAD|ai: deployed'`로
-      두 줄을 보고, `ai: deployed` 줄의 이미지 태그가 `배포 대상 main HEAD`의 앞 7자리와 같은지 확인한다. `deploy-prod`는 이 실행의
-      커밋이 아니라 그 시점의 main HEAD를 배포한다. 그사이 main이 더 나갔다면 `git merge-base --is-ancestor <머지 커밋> <배포 대상 HEAD>`로
-      이번 릴리스가 들어 있는지 본다. `ai: deployed` 줄이 없으면(HEAD 이미지가 아직 없어 건너뜀) 그 HEAD 커밋의 실행을 같은 방법으로 본다.
-      이 줄은 호스트 `deploy.sh`가 새 컨테이너의 헬스를 통과시키고 프록시를 넘긴 뒤에만 찍는다. 잡이 실패하면 `.agents/skills/release-deploy/reference.md` §7.
-      `prod-health.sh`는 운영 앱 호스트에 맞게 고치기 전까지 쓰지 않는다(reference §6 주의).
+- [ ] 새 이미지가 실제로 떴는지 본다. `gh run view <run-id> -R KIM-N-KANG/manyak-ai --log | grep -E '배포 대상 main HEAD|GHCR :prod ->'`로
+      `:prod`가 이번 main HEAD로 옮겨졌는지 보고, updater 운영 알림 `manyak 운영 배포 완료: ai <다이제스트>`로 교체를 확인한다.
+      `deploy-prod`는 이 실행의 커밋이 아니라 그 시점의 main HEAD를 배포한다. 그사이 main이 더 나갔다면
+      `git merge-base --is-ancestor <머지 커밋> <배포 대상 HEAD>`로 이번 릴리스가 들어 있는지 본다. 잡이 실패하면 `.agents/skills/release-deploy/reference.md` §7.
 
 ## Phase D — 사후
 

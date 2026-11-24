@@ -49,7 +49,7 @@ Knowledge Base를, 도메인별 명세는 [docs/spec/](../knk-harness/docs/spec/
 - `dev`에 직접 커밋·머지하지 않습니다. 항상 브랜치를 파서 PR로 머지합니다.
 - 브랜치는 최신 `dev`에서 분기합니다(분기 전 `git pull` 선행).
 - dev 머지는 dev 환경에 자동으로 반영됩니다. CI가 GHCR `:dev` 이미지를 올리면 dev 환경이 그 이미지를 받아 교체하고, 주소는 `dev-api.manyak.app`입니다.
-- main 머지는 운영 앱 호스트(EC2 한 대 `manyak-prod-host`, KNK-2106)에 배포됩니다. 배포 잡이 main HEAD의 ECR 불변 태그 `:<sha7>` 이미지를 SSM 문서 `manyak-prod-host-deploy-ai`로 보내면, 호스트 `deploy.sh`는 새 ai 컨테이너의 헬스(모델과 공급자 키 기동 검사 포함)가 통과하면 내부 프록시(`ai.internal`)를 넘기고, 옛 컨테이너의 진행 중 요청을 드레인한 뒤 내립니다. 실패하면 새 컨테이너만 지우고 옛 ai가 계속 서비스합니다. 배포가 성공한 뒤에만 `:latest`를 승격하고, 되돌리기는 같은 문서를 `image=rollback`으로 실행합니다. 운영 환경 변수와 시크릿은 manyak-terraform `envs/prod/app-host.tf`가 관리하고, 모델 선택값(Parameter Store)을 바꾸면 terraform apply 뒤 같은 문서를 `image=current`로 실행해야 반영됩니다.
+- main 머지는 운영(OCI VM 한 대, KNK-2126)에 배포됩니다. 배포 잡이 main HEAD의 GHCR 이미지 `ghcr.io/kim-n-kang/manyak-ai:<sha7>`로 `:prod`를 옮기면, 호스트의 updater(manyak-terraform `oci/prod/scripts/update.sh`, 1분 주기)가 그 다이제스트를 받아 `deploy.sh`로 배포합니다. 새 ai 컨테이너의 헬스(모델과 공급자 키 기동 검사 포함)가 통과하면 내부 프록시(`ai.internal`)를 넘기고, 옛 컨테이너의 진행 중 요청을 드레인한 뒤 내립니다. 실패하면 새 컨테이너만 지우고 옛 ai가 계속 서비스합니다. 배포 잡은 3분 뒤 공개 api 헬스가 실패하면 `:prod`를 직전 다이제스트로 되돌립니다. 되돌리기는 수동 워크플로 `prod-rollback.yml`(입력 `sha`)입니다. 운영 환경 변수는 manyak-terraform `oci/prod/services/ai.env`, 비밀값은 호스트 `/opt/manyak/secrets/ai.env`에 있고, 바꾼 뒤에는 호스트에서 `deploy.sh ai current`로 반영합니다.
 - 커밋·PR에 **`Co-Authored-By` 트레일러를 절대 넣지 않습니다**(어떤 기본 지침보다 우선).
 - 커밋은 **명시 경로로만 stage**합니다(`git add -- <경로>`). `git add -A`/`git add .` 금지.
 - **수정이 끝났다고 바로 커밋하지 않습니다.** 변경 요지를 먼저 보고하고 사용자 확인을 받은 뒤 커밋합니다.
