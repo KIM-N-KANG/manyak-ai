@@ -1,6 +1,6 @@
 [project]
 name = "ai-service"
-version = "0.5.4"
+version = "0.5.6"
 requires-python = ">=3.11"
 dependencies = [
     # SDK 1.44.0의 semantic-conventions와 contrib 0.65b0을 함께 고정합니다.
@@ -19,7 +19,9 @@ dependencies = [
     # 더 낮은 버전이 되는지는 확인하지 않았다. 낮출 이유가 생기면 그때 같은 방식으로 확인하고 정한다.
     # 0.x라 major 상한도 함께 둔다(langfuse와 같은 관례).
     "anthropic>=0.120.0,<1",
-    "sentry-sdk[fastapi]>=2.0.0",
+    # 3.0에서 sentry_sdk.init의 include_local_variables 옵션이 없어져 src/core/sentry.py가 TypeError로 깨진다.
+    # 3.0으로 옮길 때까지 2.x로 묶는다(KNK-2126).
+    "sentry-sdk[fastapi]>=2.0.0,<3",
     "langfuse>=4.0.0,<5",
     "httpx>=0.27.0",  # TypeSafe HTTP 판정 어댑터
 ]
