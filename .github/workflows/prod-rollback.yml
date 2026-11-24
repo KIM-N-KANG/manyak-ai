@@ -1,8 +1,7 @@
 name: Prod Rollback (GHCR :prod)
 
-# OCI 운영 전환 준비(KNK-2126): GHCR :prod를 입력한 main 커밋의 이미지로 옮긴다.
-# OCI 운영 호스트는 :prod 다이제스트가 바뀌면 그 이미지로 스스로 교체한다. 전환 전에는 아무도 :prod를 받지 않는다.
-# 지금의 AWS 운영 앱 호스트 되돌리기는 이 워크플로가 아니라 SSM 문서를 image=rollback으로 실행한다(AGENTS.md).
+# 운영 되돌리기(KNK-2126): GHCR :prod를 입력한 main 커밋(보통 직전 릴리스)의 이미지로 옮긴다.
+# OCI 운영 호스트의 updater가 :prod 다이제스트가 바뀐 것을 보고 그 이미지로 무중단 교체한다(1~2분).
 on:
   workflow_dispatch:
     inputs:

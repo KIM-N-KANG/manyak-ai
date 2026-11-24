@@ -12,17 +12,15 @@
 
 | 항목 | 값 |
 |---|---|
-| AWS 계정 / 리전 | 계정번호는 `../manyak-terraform`(비공개) 참조 — 이 문서에 적지 않는다 / `ap-northeast-2`(서울) |
-| EC2 (운영 앱 호스트) | 태그 `manyak:host=manyak-prod-host`(Name도 같다). server, ai, notification이 이 한 대에서 돈다(KNK-2106). **id는 적어두지 않는다**. 태그로 조회할 것 |
-| ECR (이미지 창고) | `<계정>.dkr.ecr.ap-northeast-2.amazonaws.com/manyak-ai` |
-| SSM 문서 (배포 명령) | `manyak-prod-host-deploy-ai` (파라미터 `image`: 이미지 URI, `current`, `rollback` 중 하나) |
-| Secrets Manager | `manyak/prod/app` — `DEEPSEEK_API_KEY` 포함 8키 |
-| GitHub Variables | `AWS_ROLE_ARN` — 레포 Settings → Variables에 설정됨. 값은 `arn:aws:iam::<계정>:role/manyak-prod-gha-ai` 형태 |
-| GitHub Secrets | **배포용은 없다** — AWS 인증은 OIDC라 불필요. 현재 있는 `CLAUDE_CODE_OAUTH_TOKEN` 1개는 배포와 무관(2026-07-22 확인) |
+| 운영 호스트 | OCI VM 한 대(KNK-2126). server, ai, notification이 이 한 대에서 돈다. 접속 정보는 이 문서에 적지 않는다 |
+| 이미지 창고 | GHCR `ghcr.io/kim-n-kang/manyak-ai`(private). 운영은 `:prod` 태그를 따라간다 |
+| 배포 명령 | 없음. CI가 `:prod`를 옮기면 호스트의 updater가 스스로 받아 교체한다 |
+| 운영 비밀값 | 호스트 `/opt/manyak/secrets/ai.env` 파일(키 이름은 manyak-terraform `oci/prod/secrets/ai.env.example`) |
+| GitHub Secrets | **배포용은 없다** — GHCR은 워크플로의 `GITHUB_TOKEN`으로 쓴다. 현재 있는 `CLAUDE_CODE_OAUTH_TOKEN` 1개는 배포와 무관(2026-07-22 확인) |
 
 > 비밀값(키 실제 값), 콘솔 비밀번호, 개인 액세스 키는 **여기에도 적지 않는다.** 위는 식별자·존재 여부만.
 
-**인프라 코드 정본은 `../manyak-terraform` 레포다.** ECR, 운영 앱 호스트(`terraform/envs/prod/app-host.tf`, 모듈 `terraform/modules/app-host`), SSM 문서, AI 전용 OIDC 역할, 호스트 `deploy.sh`(`modules/app-host/files/deploy.sh`)가 전부 거기 있다. 예전엔 `manyak-server`의 `infra/terraform/`이었으나 분리됐다. `manyak-infra` 레포는 **로컬 GHCR 개발용 compose**일 뿐 운영 인프라가 아니다 — 헷갈리기 쉽다.
+**인프라 정본은 `../manyak-terraform` 레포의 `oci/prod`다.** 호스트 `deploy.sh`, updater(`scripts/update.sh`), 서비스 설정(`services/ai.env`, `ai.conf`, `ai.healthcmd`)이 거기 있다. `manyak-infra` 레포는 **로컬 GHCR 개발용 compose**일 뿐 운영 인프라가 아니다 — 헷갈리기 쉽다.
 
 ---
 
@@ -31,11 +29,11 @@
 - **트리거는 `main` push**(= `release → main` 머지). dev push는 GHCR `:dev`만 옮기고, dev 환경(`dev-api.manyak.app`)이 그 이미지를 자동으로 받아 교체한다.
 - **CI**: `.github/workflows/docker-image.yml`. `test`, `smoke` → `docker`(build/push) → `deploy-dev` 또는 `deploy-prod`.
   - `dev` push → GHCR `ghcr.io/kim-n-kang/manyak-ai:<short-sha>`. `deploy-dev`가 최신 dev SHA 게이트 뒤 `:dev`로 옮긴다
-  - `main` push → ECR `manyak-ai:<short-sha>`. `:latest`는 빌드에서 붙이지 않고, 배포가 성공한 뒤 `deploy-prod`가 옮긴다
-- **deploy-prod 잡**: 배포 대상은 이 실행의 커밋이 아니라 현재 main HEAD다 → OIDC 로그인 → HEAD 이미지가 ECR에 있는지 확인(아직 없으면 그 커밋의 실행이 배포하므로 건너뜀) → `aws ssm send-command`로 `manyak-prod-host-deploy-ai`를 태그 `manyak:host=manyak-prod-host` 대상으로 호출 → 상태 폴링(최대 180×10s) → 출력의 `ai: deployed <image>` 줄 확인 → `:latest` 승격.
-- **호스트 측**: `deploy.sh ai <image>`가 새 ai 컨테이너를 띄우고, 헬스(`/api/v1/health`, 모델과 공급자 키 기동 검사 포함)가 통과하면 내부 프록시(`ai.internal`)를 넘긴 뒤 옛 컨테이너의 진행 중 스트림을 드레인(240초)하고 내린다. 헬스를 못 넘으면 새 컨테이너만 지우고 실패로 끝나며 옛 ai가 계속 서비스한다. 세 앱 레포의 배포는 호스트에서 `flock`으로 직렬화된다.
-- **배포 이미지 태그는 short-sha**(`:latest` 아님, 추적성). 호스트가 현재와 직전 이미지를 `/data/state`에 기록하고, `:latest`는 기록이 없을 때(새 데이터 디스크)의 기본값이다.
-- **운영 컨테이너 env의 출처**: 값은 `terraform/envs/prod/app-host.tf`의 `app_host_defs`가 정본이고, 시크릿은 Secrets Manager(`manyak/prod/app`) 참조로 둔다. `deploy.sh`가 실행될 때마다 S3의 호스트 설정을 받고 시크릿을 새로 읽는다. 그래서 **시크릿 값만 바꿀 때는 코드 릴리스가 불필요**하고 같은 SSM 문서를 `image=current`로 실행하면 반영된다. env나 모델 선택값(Parameter Store)을 바꾸면 terraform apply 뒤 `image=current`로 실행한다.
+  - `main` push → GHCR `ghcr.io/kim-n-kang/manyak-ai:<short-sha>`. `:prod`는 빌드에서 붙이지 않고 `deploy-prod`가 옮긴다
+- **deploy-prod 잡**: 배포 대상은 이 실행의 커밋이 아니라 현재 main HEAD다 → HEAD 이미지가 GHCR에 있는지 확인(아직 없으면 그 커밋의 실행이 배포하므로 건너뜀) → 지금 `:prod` 다이제스트를 기록하고 `:prod`를 HEAD로 옮김 → 3분 대기(updater 주기와 기동) → `api.manyak.app/actuator/health` 스모크. 스모크가 실패하면 `:prod`를 직전 다이제스트로 되돌린다. ai는 공개 주소가 없어 잡이 교체를 직접 보지 못한다.
+- **호스트 측**: updater(1분 주기)가 `:prod` 다이제스트가 바뀐 것을 보면 `deploy.sh ai <image>`가 새 ai 컨테이너를 띄우고, 헬스(`/api/v1/health`, 모델과 공급자 키 기동 검사 포함)가 통과하면 내부 프록시(`ai.internal`)를 넘긴 뒤 옛 컨테이너의 진행 중 스트림을 드레인(240초)하고 내린다. 헬스를 못 넘으면 새 컨테이너만 지우고 실패로 끝나며 옛 ai가 계속 서비스한다. 실패한 다이제스트는 기록해 두고 다시 시도하지 않는다. 세 서비스의 배포는 호스트에서 `flock`으로 직렬화된다. 결과는 updater가 운영 알림으로 보낸다.
+- **호스트는 다이제스트로 배포한다**(`<repo>@sha256:...`). 현재와 직전 이미지를 `/data/state`에 기록한다.
+- **운영 컨테이너 env의 출처**: 비밀이 아닌 값은 manyak-terraform `oci/prod/services/ai.env`, 비밀값은 호스트 `/opt/manyak/secrets/ai.env`다. 바꾼 뒤에는 호스트에서 `deploy.sh sync`(설정일 때)와 `deploy.sh ai current`로 반영한다. 코드 릴리스는 필요 없다.
 
 ---
 
@@ -137,7 +135,7 @@ curl http://localhost:8000/api/v1/health
 
 ### 5-3. 실제 AI 기능 (LLM 호출 — 과금)
 
-**키를 손으로 만지지 않는다.** `qa.sh`가 `.env`에 필요한 키(스크립트의 `REQUIRED_KEYS` — 현재 `DEEPSEEK_API_KEY`·`OPENAI_API_KEY`)가 하나라도 없으면 Secrets Manager에서 받아 넣고, 끝나면 내용을 원상복구한다(파일 권한은 0600으로 유지). 값은 변수에만 담기고 화면·로그에 찍히지 않는다. 컴파일 모델의 공급자가 바뀌면 `REQUIRED_KEYS`도 같이 고친다 — v0.2.6 QA에서 DEEPSEEK만 주입하다 OPENAI 키 부재로 라이브가 기동 실패한 전례가 있다.
+**키를 손으로 만지지 않는다.** `qa.sh`가 `.env`에 필요한 키(스크립트의 `REQUIRED_KEYS` — 현재 `DEEPSEEK_API_KEY`·`OPENAI_API_KEY`)가 하나라도 없으면 Secrets Manager에서 받아 넣고, 끝나면 내용을 원상복구한다(파일 권한은 0600으로 유지). AWS를 정리한 뒤로는 이 자동 주입이 실패하므로 키를 로컬 `.env`에 미리 넣어 둔다(§6). 값은 변수에만 담기고 화면·로그에 찍히지 않는다. 컴파일 모델의 공급자가 바뀌면 `REQUIRED_KEYS`도 같이 고친다 — v0.2.6 QA에서 DEEPSEEK만 주입하다 OPENAI 키 부재로 라이브가 기동 실패한 전례가 있다.
 
 > 예전 런북에는 `aws secretsmanager … | python -c "print(...)"`를 실행한 뒤 "출력을 화면에 남기지 말라"고 적혀 있었다. **그 명령은 실행하는 순간 이미 키를 터미널에 뿌린다**(대화 기록·스크롤백에 남는다). 쓰지 말 것.
 
@@ -165,30 +163,26 @@ bash .agents/skills/release-deploy/scripts/infra-check.sh        # 읽기 전용
 
 `watch-deploy.sh`가 따로 있는 이유: `gh run watch`를 run ID 없이 부르면 비대화형 환경에서 `run ID required when not running interactively`로 즉시 실패한다. 스크립트가 최신 main 실행을 찾아 넘기고 `--exit-status`로 워크플로 실패를 종료코드에 싣는다.
 
-**`qa.sh`는 필요한 키(`REQUIRED_KEYS`)가 없으면 Secrets Manager에서 가져와 `.env`에 넣고, 끝나면 내용을 원상복구한다**(파일 권한은 0600으로 유지 — 기본이 0666이라 되돌리면 다음 주입 때 또 위험해진다). 값은 어디에도 출력하지 않는다(`test.sh`가 docker 인자를 화면에 그대로 찍기 때문에 `-e`로 넘기면 키가 노출된다 — 그래서 `.env` 경유다).
+**`qa.sh`는 필요한 키(`REQUIRED_KEYS`)를 `.env`에서 읽는다.** AWS를 정리한 뒤로는 Secrets Manager가 없으니 키를 로컬 `.env`에 직접 넣어 둔다. 예전 동작: 키가 없으면 Secrets Manager에서 가져와 `.env`에 넣고, 끝나면 내용을 원상복구한다**(파일 권한은 0600으로 유지 — 기본이 0666이라 되돌리면 다음 주입 때 또 위험해진다). 값은 어디에도 출력하지 않는다(`test.sh`가 docker 인자를 화면에 그대로 찍기 때문에 `-e`로 넘기면 키가 노출된다 — 그래서 `.env` 경유다).
 
-**운영 헬스체크는 SSM으로만 된다.** AI 서버는 외부에 노출돼 있지 않아 브라우저·curl로 못 두드린다. `prod-health.sh`가 EC2를 태그로 찾아 `/api/v1/health`를 찌른다. `curl`은 `-f`가 없으면 HTTP 500에도 종료코드 0이라, 스크립트가 응답 본문의 `status`·`version`을 직접 검사한다.
-
-> 주의(KNK-2127): `prod-health.sh`와 `infra-check.sh`는 아직 옛 호스트 태그 `Name=manyak-prod-app`과 옛 SSM 문서 `manyak-prod-ai-deploy`를 찾는다. 운영 앱 호스트(`manyak-prod-host`)에 맞춰 고치기 전까지는 EC2를 찾지 못해 실패한다. 그동안 배포 확인은 `deploy-prod` 잡 로그의 `ai: deployed <image>` 줄로 한다(SKILL.md Phase C). 호스트 `deploy.sh`는 새 ai 컨테이너가 헬스를 통과하고 프록시가 넘어간 뒤에만 이 줄을 찍는다.
-
-> AWS 자격: 로컬 `aws configure`로 배포 권한이 있는 IAM 사용자 키가 등록돼 있어야 한다. 없으면 `NoCredentials`.
+**`prod-health.sh`와 `infra-check.sh`는 옛 AWS 호스트(SSM, ECR)를 찾아 지금은 쓸 수 없다.** AI 서버는 공개 주소가 없다. 배포 확인은 `deploy-prod` 잡 success와 updater 운영 알림(`manyak 운영 배포 완료: ai <다이제스트>`)으로 한다. 알림이 `배포 실패`면 옛 ai가 계속 서비스 중이다.
 
 ---
 
 ## 7. 트러블슈팅
 
-- **성공 신호**: `deploy-prod` 잡 success(출력에 `ai: deployed <이번 이미지>`) + ECR에 새 short-sha 태그와 `:latest` 승격.
+- **성공 신호**: `deploy-prod` 잡 success(`GHCR :prod -> <short-sha>`)와 updater 운영 알림 `manyak 운영 배포 완료: ai <다이제스트>`.
 - **deploy-prod 잡 실패**: `gh run view <id> --log-failed -R KIM-N-KANG/manyak-ai`
-  - SSM 상태가 Success가 아님(Failed/TimedOut) → 호스트 `deploy.sh` 또는 새 ai 컨테이너 헬스 실패. 옛 ai가 계속 서비스한다. CloudWatch `/manyak/prod/app-host` 로그 확인(인프라 담당).
-  - 명령은 성공했는데 `deployed <image>` 줄이 없음 → 호스트의 `/data/state/ai.image` 확인.
-- **AI가 응답 못 함**: Secrets의 `DEEPSEEK_API_KEY` 확인.
-- **롤백**: SSM 문서 `manyak-prod-host-deploy-ai`를 `image=rollback`으로 실행하면 호스트가 기록한 직전 이미지로 되돌린다. 특정 short-sha로 가려면 `image=<ECR 이미지 URI>:<short-sha>`. ⚠️ 외부 계약이 바뀐 릴리스는 **AI만 되돌리면 안 된다**(3자 동시 롤백, `history.md` v0.2.1 참조).
+  - `:prod` 이동 전 실패 → GHCR 권한이나 HEAD 이미지 문제. 운영은 그대로다.
+  - 스모크 실패 → 잡이 `:prod`를 직전 다이제스트로 되돌렸다. updater가 1~2분 안에 다시 배포한다.
+- **AI가 응답 못 함**: 호스트 비밀값(`ai.env`)의 `DEEPSEEK_API_KEY` 확인(인프라 담당).
+- **롤백**: 수동 워크플로 `prod-rollback.yml`(입력 `sha`, main 커밋만)로 `:prod`를 직전 릴리스 커밋으로 옮기면 updater가 그 이미지로 교체한다. ⚠️ 외부 계약이 바뀐 릴리스는 **AI만 되돌리면 안 된다**(3자 동시 롤백, `history.md` v0.2.1 참조).
 
 ---
 
 ## 8. 미해결 / 주의 (백로그)
 
-- [ ] `AI_SENTRY_DSN` — 빈 값이어도 배포는 정상(Sentry no-op). **책임 분담**: AI팀은 Sentry 프로젝트 생성→DSN 발급→전달까지. **Secrets Manager에 값 입력은 백엔드·인프라 담당 몫.**
+- [ ] `AI_SENTRY_DSN` — 빈 값이어도 배포는 정상(Sentry no-op). **책임 분담**: AI팀은 Sentry 프로젝트 생성→DSN 발급→전달까지. **운영 비밀값(호스트 `ai.env`) 입력은 백엔드·인프라 담당 몫.**
 - [x] 스타일가이드의 옛 규칙 `release → dev (Rebase and Merge)` → `Merge Commit`으로 고침(KNK-665, 2026-07-22). `dev` 룰셋이 `["squash","merge"]`라 문서대로 rebase하면 머지가 막혔다. **원인은 설정만 고치고 문서를 안 고친 것** — 룰셋을 바꾸면 이 표(§3-3)와 스타일가이드를 함께 본다.
 - [x] `main` 브랜치 보호 — 룰셋으로 설정돼 있음을 2026-07-22 확인(옛 "미설정" 기록은 오류였다).
 - [x] Gemini 코드리뷰 제거 — 무료판이 2026-07-22 종료돼(PR #61에 봇이 종료 안내를 남김) `.gemini/` 폴더를 걷어냈다(KNK-665). 안에 있던 팀 코딩 규칙 190줄은 버리지 않고 `.agents/STYLEGUIDE.md`로 옮겼다. 이제 PR 리뷰는 Codex 하나다. GitHub 앱 설치가 남아 있다면 레포 설정에서 제거하는 것은 별개 작업이다.
